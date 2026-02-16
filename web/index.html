@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Busy38 Management UI</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header>
+        <h1>Busy38 Management UI</h1>
+        <p>Operational control for provider routing, agents, and deployment health.</p>
+        <p class="meta"><span id="healthState">Checking service…</span></p>
+      </header>
+
+      <section class="panel">
+        <h2>Service settings</h2>
+        <form id="settingsForm">
+          <label>
+            Heartbeat (seconds)
+            <input name="heartbeat_interval" type="number" min="5" step="5" />
+          </label>
+          <label>
+            Fallback budget / hour
+            <input name="fallback_budget_per_hour" type="number" min="0" />
+          </label>
+          <label>
+            Auto-restart
+            <input name="auto_restart" type="checkbox" />
+          </label>
+          <button type="submit">Save settings</button>
+          <p id="settingsStatus" class="status"></p>
+        </form>
+      </section>
+
+      <section class="panel">
+        <h2>Providers</h2>
+        <div id="providers"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Agents</h2>
+        <div id="agents"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Recent events</h2>
+        <ul id="events"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>Memory</h2>
+        <div id="memory"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Chat history</h2>
+        <ul id="chatHistory"></ul>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
