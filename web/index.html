@@ -12,6 +12,7 @@
         <h1>Busy38 Management UI</h1>
         <p>Operational control for provider routing, agents, and deployment health.</p>
         <p class="meta"><span id="healthState">Checking service…</span></p>
+        <p class="meta"><span id="eventStreamState">Event stream: waiting for init…</span></p>
         <div class="auth-row">
           <label>
             API token
@@ -39,6 +40,24 @@
           <button type="submit">Save settings</button>
           <p id="settingsStatus" class="status"></p>
         </form>
+      </section>
+
+      <section class="panel">
+        <h2>Busy runtime</h2>
+        <p id="runtimeStatus">Checking runtime…</p>
+        <div class="control-row">
+          <label>
+            Service
+            <select id="runtimeService">
+              <option value="busy">busy</option>
+            </select>
+          </label>
+          <button type="button" data-action="runtime-start">Start</button>
+          <button type="button" data-action="runtime-stop">Stop</button>
+          <button type="button" data-action="runtime-restart">Restart</button>
+        </div>
+        <div id="runtimeServices" class="card-list"></div>
+        <p id="runtimeStatusText" class="status"></p>
       </section>
 
       <section class="panel">

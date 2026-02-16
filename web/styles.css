@@ -77,6 +77,20 @@ button:hover {
   background: #60a5fa;
 }
 
+.control-row {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  margin-bottom: 12px;
+}
+
+.control-row label {
+  display: grid;
+  gap: 4px;
+}
+
 .card-list {
   display: grid;
   gap: 8px;

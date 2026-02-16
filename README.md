@@ -36,6 +36,12 @@ If set, the API requires either:
 - `Authorization: Bearer <token>`
 - or `?token=<token>` on GET/POST/PATCH endpoints.
 
+You can also configure role-specific tokens:
+
+- `MANAGEMENT_ADMIN_TOKEN` for privileged write actions (settings, provider, agent, runtime, chat/memory writes)
+- `MANAGEMENT_READ_TOKEN` for read-only access to status and telemetry
+- legacy `MANAGEMENT_API_TOKEN` still works for both roles when role tokens are not set.
+
 Token is stored locally in browser for this UI only (client-side convenience) via the `Save token` control.
 
 Then open `web/index.html` in a browser (or serve it from any static host).
@@ -62,11 +68,17 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `GET /api/agents`
 - `PATCH /api/agents/{agent_id}`
 - `GET /api/events`
-- `POST /api/events` not yet available (event stream is append-only from internal actions)
+- `GET  /api/events` for latest event list
+- `GET  /api/events/ws` for live websocket event stream
 - `GET /api/memory`
 - `GET /api/chat_history`
 - `POST /api/memory`
 - `POST /api/chat_history`
+- `GET  /api/runtime/status`
+- `GET  /api/runtime/services`
+- `POST /api/runtime/services/{service_name}/start`
+- `POST /api/runtime/services/{service_name}/stop`
+- `POST /api/runtime/services/{service_name}/restart`
 
 ## License
 

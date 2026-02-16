@@ -9,7 +9,9 @@ const state = {
   providers: [],
   agents: [],
   events: [],
+  runtimeServices: [],
 };
+let eventSocket = null;
 
 const qs = (selector) => document.querySelector(selector);
 
@@ -38,6 +40,12 @@ function setStatus(id, text, kind = "") {
   el.className = `status ${kind}`;
 }
 
+function apiBaseForWs() {
+  return API_BASE.startsWith("https://")
+    ? API_BASE.replace(/^https:/, "wss:")
+    : API_BASE.replace(/^http:/, "ws:");
+}
+
 function authHeaders(overrides = {}) {
   const token = getToken();
   const headers = {
@@ -48,6 +56,15 @@ function authHeaders(overrides = {}) {
     headers.Authorization = `Bearer ${token}`;
   }
   return headers;
+}
+
+function authQuery(path) {
+  const token = getToken();
+  if (!token) {
+    return path;
+  }
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}token=${encodeURIComponent(token)}`;
 }
 
 async function apiRequest(path, options = {}) {
@@ -71,14 +88,14 @@ async function fetchJson(path) {
 }
 
 async function postJson(path, body) {
-  return apiRequest(path, {
+  return apiRequest(authQuery(path), {
     method: "POST",
     body: JSON.stringify(body),
   });
 }
 
 async function patchJson(path, body) {
-  return apiRequest(path, {
+  return apiRequest(authQuery(path), {
     method: "PATCH",
     body: JSON.stringify(body),
   });
@@ -99,7 +116,8 @@ function buildProviderCard(provider) {
       <h3>${provider.name}</h3>
       <p><strong>Status:</strong> ${provider.status}</p>
       <p><strong>Model:</strong> ${provider.model}</p>
-      <p><strong>Endpoint:</strong> ${provider.endpoint}</p>
+      <p><strong>Endpoint:</strong> ${provider.endpoint || "n/a"}</p>
+      ${provider.metadata ? `<p><strong>Metadata:</strong> ${provider.metadata}</p>` : ""}
       <p>
         <label>
           Enabled:
@@ -133,13 +151,41 @@ function buildAgentCard(agent) {
   `;
 }
 
+function renderRuntimeServices(services) {
+  const hasServices = Array.isArray(services) && services.length > 0;
+  const options = hasServices
+    ? services
+        .map((service) => `<option value="${service.name}">${service.name}</option>`)
+        .join("")
+    : "<option value=\"busy\">busy</option>";
+
+  const select = qs("#runtimeService");
+  if (select) {
+    select.innerHTML = options;
+    if (!select.value && hasServices) {
+      select.value = "busy";
+    }
+  }
+
+  const renderService = (service) => `
+    <div class="card">
+      <h3>${service.name}</h3>
+      <p><strong>Running:</strong> ${service.running ? "yes" : "no"}</p>
+      <p><strong>PID:</strong> ${service.pid || "-"}</p>
+      <p><strong>Log:</strong> ${service.log_file || "-"}</p>
+    </div>
+  `;
+
+  renderCards("#runtimeServices", services || [], renderService);
+}
+
 function renderEvents(items) {
   const list = qs("#events");
   if (!list) {
     return;
   }
   list.innerHTML = (items || [])
-    .map((event) => `<li>${event.created_at} — [${event.level}] ${event.message}</li>`)
+    .map((event) => `<li>${event.created_at} — [${event.level}] ${event.message}</li>`) 
     .join("");
 }
 
@@ -164,6 +210,45 @@ function renderChat(rows) {
       (row) => `<li><strong>${row.agent_id}</strong> (${row.id}): ${row.summary} — <small>${row.timestamp}</small></li>`
     )
     .join("");
+}
+
+function connectEvents() {
+  if (eventSocket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(eventSocket.readyState)) {
+    return;
+  }
+
+  const token = getToken();
+  const query = token ? `?token=${encodeURIComponent(token)}` : "";
+  const ws = new WebSocket(`${apiBaseForWs()}${API_BASE.includes("://") ? "" : "ws://"}${API_BASE.replace(/^https?:\/\//, "")}/api/events/ws${query}`);
+  eventSocket = ws;
+  setStatus("#eventStreamState", "Event stream: connecting", "");
+
+  ws.onopen = () => {
+    setStatus("#eventStreamState", "Event stream: live", "ok");
+  };
+
+  ws.onmessage = (evt) => {
+    let payload = null;
+    try {
+      payload = JSON.parse(evt.data);
+    } catch (err) {
+      return;
+    }
+    if (payload?.type === "events" && Array.isArray(payload.events)) {
+      state.events = payload.events;
+      renderEvents(payload.events);
+    }
+  };
+
+  ws.onclose = () => {
+    setStatus("#eventStreamState", "Event stream: disconnected", "err");
+    setTimeout(connectEvents, 2000);
+  };
+
+  ws.onerror = () => {
+    setStatus("#eventStreamState", "Event stream: error", "err");
+    ws.close();
+  };
 }
 
 async function loadHealth() {
@@ -201,6 +286,24 @@ async function loadEvents() {
   renderEvents(state.events);
 }
 
+async function loadRuntime() {
+  try {
+    const payload = await fetchJson("/api/runtime/status");
+    const status = payload.runtime || {};
+    const source = status.source || "none";
+    const connected = Boolean(status.connected);
+    setStatus("#runtimeStatus", `runtime (${source}) — connected: ${connected ? "yes" : "no"}` , "ok");
+
+    const servicesPayload = await fetchJson("/api/runtime/services");
+    state.runtimeServices = servicesPayload.services || [];
+    renderRuntimeServices(state.runtimeServices);
+  } catch (err) {
+    setStatus("#runtimeStatus", `runtime unavailable: ${err.message}`, "err");
+    state.runtimeServices = [];
+    renderRuntimeServices([]);
+  }
+}
+
 async function loadMemory() {
   const payload = await fetchJson("/api/memory");
   renderMemory(payload.memory || []);
@@ -222,7 +325,7 @@ async function saveSettings(event) {
     auto_restart: autoRestart,
   };
 
-  setStatus("#settingsStatus", "saving...", "");
+  setStatus("#settingsStatus", "saving", "");
   try {
     await patchJson("/api/settings", payload);
     setStatus("#settingsStatus", "settings saved", "ok");
@@ -271,10 +374,37 @@ async function submitChat(event) {
   }
 }
 
+async function controlRuntime(action) {
+  const service = qs("#runtimeService")?.value || "busy";
+  const body = {};
+  try {
+    await postJson(`/api/runtime/services/${service}/${action}`, body);
+    setStatus("#runtimeStatusText", `${action} submitted for ${service}`, "ok");
+    await loadRuntime();
+  } catch (err) {
+    setStatus("#runtimeStatusText", `${action} failed: ${err.message}`, "err");
+  }
+}
+
 async function onTableChange(event) {
   const target = event.target;
   const action = target.dataset.action;
   if (!action) {
+    return;
+  }
+
+  if (action === "runtime-start") {
+    await controlRuntime("start");
+    return;
+  }
+
+  if (action === "runtime-stop") {
+    await controlRuntime("stop");
+    return;
+  }
+
+  if (action === "runtime-restart") {
+    await controlRuntime("restart");
     return;
   }
 
@@ -311,16 +441,18 @@ async function boot() {
     tokenInput.value = token;
   }
 
-  await loadHealth();
   try {
     await Promise.all([
+      loadHealth(),
       loadSettings(),
       loadProviders(),
       loadAgents(),
       loadEvents(),
       loadMemory(),
       loadChatHistory(),
+      loadRuntime(),
     ]);
+    connectEvents();
   } catch (err) {
     setStatus("#healthState", `loading failed: ${err.message}`, "err");
   }
@@ -331,6 +463,15 @@ qs("#settingsForm")?.addEventListener("submit", saveSettings);
 qs("#memoryForm")?.addEventListener("submit", submitMemory);
 qs("#chatForm")?.addEventListener("submit", submitChat);
 document.body.addEventListener("change", onTableChange);
+
+document.body.addEventListener("click", (event) => {
+  const target = event.target;
+  const action = target?.dataset?.action;
+  if (!action || !action.startsWith("runtime-")) {
+    return;
+  }
+  onTableChange(event);
+});
 
 boot();
 setInterval(boot, 15000);
