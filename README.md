@@ -67,9 +67,8 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `PATCH /api/providers/{provider_id}`
 - `GET /api/agents`
 - `PATCH /api/agents/{agent_id}`
-- `GET /api/events`
-- `GET  /api/events` for latest event list
-- `GET  /api/events/ws` for live websocket event stream
+- `GET /api/events` for latest event list
+- `GET /api/events/ws` for live websocket event stream (role included in each frame)
 - `GET /api/memory`
 - `GET /api/chat_history`
 - `POST /api/memory`
@@ -79,6 +78,20 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `POST /api/runtime/services/{service_name}/start`
 - `POST /api/runtime/services/{service_name}/stop`
 - `POST /api/runtime/services/{service_name}/restart`
+
+The web UI now shows a role badge at the top of the page:
+
+- `admin` — token has write permission
+- `viewer` — read-only access
+- `unauthorized` — invalid or missing credentials when auth is configured
+
+## Test and validation
+
+```bash
+python3 -m py_compile backend/app/main.py backend/app/runtime.py
+node -c web/app.js
+python3 -m unittest discover -s tests
+```
 
 ## License
 

@@ -102,6 +102,14 @@ def _role_from_token(auth_token: Optional[str] = None, query_token: Optional[str
     return ""
 
 
+def _readable_role_name(role: str) -> str:
+    if role == "admin":
+        return "admin"
+    if role == "viewer":
+        return "viewer"
+    return "unknown"
+
+
 def _require_role(required: str = "viewer"):
     def _checker(
         auth: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
@@ -243,13 +251,28 @@ async def events_ws(
     await ws.accept()
     last_event_id = None
     try:
-        await ws.send_json({"type": "events", "events": storage.list_events(25), "updated_at": _now_iso(), "status": "stream-start"})
+        await ws.send_json(
+            {
+                "type": "events",
+                "role": _readable_role_name(role),
+                "events": storage.list_events(25),
+                "updated_at": _now_iso(),
+                "status": "stream-start",
+            }
+        )
         while True:
             rows = storage.list_events(25)
             current = rows[0]["id"] if rows else None
             if current != last_event_id:
                 last_event_id = current
-                await ws.send_json({"type": "events", "events": rows, "updated_at": _now_iso()})
+                await ws.send_json(
+                    {
+                        "type": "events",
+                        "role": _readable_role_name(role),
+                        "events": rows,
+                        "updated_at": _now_iso(),
+                    }
+                )
             await asyncio.sleep(1.5)
     except WebSocketDisconnect:
         return

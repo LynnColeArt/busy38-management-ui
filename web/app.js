@@ -10,6 +10,7 @@ const state = {
   agents: [],
   events: [],
   runtimeServices: [],
+  role: "unknown",
 };
 let eventSocket = null;
 
@@ -24,9 +25,11 @@ function saveToken() {
   if (token === "") {
     localStorage.removeItem(TOKEN_KEY);
     setStatus("#healthState", "token cleared", "");
+    updateRoleBadge("unknown");
   } else {
     localStorage.setItem(TOKEN_KEY, token);
     setStatus("#healthState", "token saved", "ok");
+    updateRoleBadge("unknown");
   }
   boot();
 }
@@ -74,7 +77,9 @@ async function apiRequest(path, options = {}) {
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+    const err = new Error(`${res.status} ${res.statusText}: ${text}`);
+    err.status = res.status;
+    throw err;
   }
   const contentType = res.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
@@ -108,6 +113,17 @@ function renderCards(targetId, items, renderRow) {
   }
   const cards = (items || []).map(renderRow).join("");
   container.innerHTML = `<div class="card-list">${cards || "<p>No data</p>"}</div>`;
+}
+
+function updateRoleBadge(role) {
+  const el = qs("#authRoleBadge");
+  if (!el) {
+    return;
+  }
+  const nextRole = role === "admin" ? "admin" : role === "viewer" ? "viewer" : role === "unauthorized" ? "unauthorized" : "unknown";
+  state.role = nextRole;
+  el.textContent = `Role: ${nextRole}`;
+  el.className = `role-badge role-${nextRole}`;
 }
 
 function buildProviderCard(provider) {
@@ -235,6 +251,9 @@ function connectEvents() {
       return;
     }
     if (payload?.type === "events" && Array.isArray(payload.events)) {
+      if (payload?.role) {
+        updateRoleBadge(payload.role);
+      }
       state.events = payload.events;
       renderEvents(payload.events);
     }
@@ -266,6 +285,8 @@ async function loadSettings() {
   qs('input[name="heartbeat_interval"]').value = state.settings.heartbeat_interval || "";
   qs('input[name="fallback_budget_per_hour"]').value = state.settings.fallback_budget_per_hour || "";
   qs('input[name="auto_restart"]').checked = Boolean(state.settings.auto_restart);
+  updateRoleBadge(payload.role);
+  return payload;
 }
 
 async function loadProviders() {
@@ -387,6 +408,10 @@ async function controlRuntime(action) {
 }
 
 async function onTableChange(event) {
+  if (state.role === "viewer") {
+    setStatus("#healthState", "viewer role: read-only", "err");
+    return;
+  }
   const target = event.target;
   const action = target.dataset.action;
   if (!action) {
@@ -442,9 +467,9 @@ async function boot() {
   }
 
   try {
+    await loadSettings();
     await Promise.all([
       loadHealth(),
-      loadSettings(),
       loadProviders(),
       loadAgents(),
       loadEvents(),
@@ -454,6 +479,13 @@ async function boot() {
     ]);
     connectEvents();
   } catch (err) {
+    if (err?.status === 401) {
+      updateRoleBadge("unauthorized");
+    } else if (err?.status === 403) {
+      updateRoleBadge("viewer");
+    } else if (state.role === "unknown") {
+      updateRoleBadge("unknown");
+    }
     setStatus("#healthState", `loading failed: ${err.message}`, "err");
   }
 }

@@ -143,7 +143,7 @@ def ensure_schema() -> None:
                 )
                 VALUES(?, ?, ?, ?, ?, ?, NULL, ?)
                 """,
-                (*agent, now),
+                (*agent, now, now),
             )
 
         defaults = [
