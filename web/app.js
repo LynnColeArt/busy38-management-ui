@@ -3,6 +3,7 @@ const API_BASE = (() => {
   return configured !== "" ? configured : "http://127.0.0.1:8031";
 })();
 
+const TOKEN_KEY = "busy38-management-token";
 const state = {
   settings: {},
   providers: [],
@@ -11,6 +12,22 @@ const state = {
 };
 
 const qs = (selector) => document.querySelector(selector);
+
+function getToken() {
+  return (qs("#apiToken")?.value || localStorage.getItem(TOKEN_KEY) || "").trim();
+}
+
+function saveToken() {
+  const token = qs("#apiToken").value.trim();
+  if (token === "") {
+    localStorage.removeItem(TOKEN_KEY);
+    setStatus("#healthState", "token cleared", "");
+  } else {
+    localStorage.setItem(TOKEN_KEY, token);
+    setStatus("#healthState", "token saved", "ok");
+  }
+  boot();
+}
 
 function setStatus(id, text, kind = "") {
   const el = qs(id);
@@ -21,20 +38,59 @@ function setStatus(id, text, kind = "") {
   el.className = `status ${kind}`;
 }
 
-async function fetchJson(path) {
+function authHeaders(overrides = {}) {
+  const token = getToken();
+  const headers = {
+    "Content-Type": "application/json",
+    ...overrides,
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+async function apiRequest(path, options = {}) {
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    ...options,
+    headers: authHeaders(options.headers || {}),
   });
   if (!res.ok) {
-    throw new Error(`${res.status} ${res.statusText}`);
+    const text = await res.text().catch(() => "");
+    throw new Error(`${res.status} ${res.statusText}: ${text}`);
+  }
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    return {};
   }
   return res.json();
 }
 
+async function fetchJson(path) {
+  return apiRequest(path);
+}
+
+async function postJson(path, body) {
+  return apiRequest(path, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+async function patchJson(path, body) {
+  return apiRequest(path, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
 function renderCards(targetId, items, renderRow) {
   const container = qs(targetId);
+  if (!container) {
+    return;
+  }
   const cards = (items || []).map(renderRow).join("");
-  container.innerHTML = `<div class=\"card-list\">${cards || "<p>No data</p>"}</div>`;
+  container.innerHTML = `<div class="card-list">${cards || "<p>No data</p>"}</div>`;
 }
 
 function buildProviderCard(provider) {
@@ -79,7 +135,12 @@ function buildAgentCard(agent) {
 
 function renderEvents(items) {
   const list = qs("#events");
-  list.innerHTML = (items || []).map((event) => `<li>${event.created_at} — [${event.level}] ${event.message}</li>`).join("");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = (items || [])
+    .map((event) => `<li>${event.created_at} — [${event.level}] ${event.message}</li>`)
+    .join("");
 }
 
 function renderMemory(items) {
@@ -95,7 +156,14 @@ function renderMemory(items) {
 
 function renderChat(rows) {
   const list = qs("#chatHistory");
-  list.innerHTML = (rows || []).map((row) => `<li><strong>${row.agent_id}</strong> (${row.id}): ${row.summary} — <small>${row.timestamp}</small></li>`).join("");
+  if (!list) {
+    return;
+  }
+  list.innerHTML = (rows || [])
+    .map(
+      (row) => `<li><strong>${row.agent_id}</strong> (${row.id}): ${row.summary} — <small>${row.timestamp}</small></li>`
+    )
+    .join("");
 }
 
 async function loadHealth() {
@@ -134,44 +202,73 @@ async function loadEvents() {
 }
 
 async function loadMemory() {
-  try {
-    const payload = await fetchJson("/api/memory");
-    renderMemory(payload.memory || []);
-  } catch (err) {
-    console.warn("memory load failed", err);
-  }
+  const payload = await fetchJson("/api/memory");
+  renderMemory(payload.memory || []);
 }
 
 async function loadChatHistory() {
-  try {
-    const payload = await fetchJson("/api/chat_history");
-    renderChat(payload.chat_history || []);
-  } catch (err) {
-    console.warn("chat history load failed", err);
-  }
+  const payload = await fetchJson("/api/chat_history");
+  renderChat(payload.chat_history || []);
 }
 
 async function saveSettings(event) {
   event.preventDefault();
   const autoRestart = qs('input[name="auto_restart"]').checked;
+  const heartbeat = Number(qs('input[name="heartbeat_interval"]').value);
+  const fallback = Number(qs('input[name="fallback_budget_per_hour"]').value);
   const payload = {
-    heartbeat_interval: Number(qs('input[name="heartbeat_interval"]').value) || state.settings.heartbeat_interval,
-    fallback_budget_per_hour: Number(qs('input[name="fallback_budget_per_hour"]').value) || state.settings.fallback_budget_per_hour,
+    heartbeat_interval: heartbeat || state.settings.heartbeat_interval,
+    fallback_budget_per_hour: fallback || state.settings.fallback_budget_per_hour,
     auto_restart: autoRestart,
   };
+
   setStatus("#settingsStatus", "saving...", "");
-  const res = await fetch(`${API_BASE}/api/settings`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    setStatus("#settingsStatus", `save failed: ${body}`, "err");
+  try {
+    await patchJson("/api/settings", payload);
+    setStatus("#settingsStatus", "settings saved", "ok");
+    await loadSettings();
+  } catch (err) {
+    setStatus("#settingsStatus", `save failed: ${err.message}`, "err");
+  }
+}
+
+async function submitMemory(event) {
+  event.preventDefault();
+  const scope = qs('input[name="memoryScope"]').value.trim();
+  const type = qs('input[name="memoryType"]').value.trim();
+  const content = qs('input[name="memoryContent"]').value.trim();
+  if (!scope || !type || !content) {
+    setStatus("#memoryStatus", "memory form requires scope, type, and content", "err");
     return;
   }
-  setStatus("#settingsStatus", "settings saved", "ok");
-  await loadSettings();
+
+  try {
+    await postJson("/api/memory", { scope, type, content });
+    setStatus("#memoryStatus", "memory saved", "ok");
+    qs('input[name="memoryContent"]').value = "";
+    await loadMemory();
+  } catch (err) {
+    setStatus("#memoryStatus", `save failed: ${err.message}`, "err");
+  }
+}
+
+async function submitChat(event) {
+  event.preventDefault();
+  const agent_id = qs('input[name="chatAgentId"]').value.trim();
+  const summary = qs('input[name="chatSummary"]').value.trim();
+  if (!agent_id || !summary) {
+    setStatus("#chatStatus", "chat form requires agent id and summary", "err");
+    return;
+  }
+
+  try {
+    await postJson("/api/chat_history", { agent_id, summary });
+    setStatus("#chatStatus", "chat note added", "ok");
+    qs('input[name="chatSummary"]').value = "";
+    await loadChatHistory();
+  } catch (err) {
+    setStatus("#chatStatus", `save failed: ${err.message}`, "err");
+  }
 }
 
 async function onTableChange(event) {
@@ -181,46 +278,58 @@ async function onTableChange(event) {
     return;
   }
 
-  if (action === "toggle-provider") {
-    const id = target.dataset.id;
-    const payload = { enabled: target.checked };
-    await fetch(`${API_BASE}/api/providers/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    await loadProviders();
-  }
+  try {
+    if (action === "toggle-provider") {
+      const id = target.dataset.id;
+      await patchJson(`/api/providers/${id}`, { enabled: target.checked });
+      await loadProviders();
+      return;
+    }
 
-  if (action === "set-provider-priority") {
-    const id = target.dataset.id;
-    const payload = { priority: Number(target.value) || 0 };
-    await fetch(`${API_BASE}/api/providers/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    await loadProviders();
-  }
+    if (action === "set-provider-priority") {
+      const id = target.dataset.id;
+      await patchJson(`/api/providers/${id}`, { priority: Number(target.value) || 0 });
+      await loadProviders();
+      return;
+    }
 
-  if (action === "toggle-agent") {
-    const id = target.dataset.id;
-    const payload = { enabled: target.checked };
-    await fetch(`${API_BASE}/api/agents/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    await loadAgents();
+    if (action === "toggle-agent") {
+      const id = target.dataset.id;
+      await patchJson(`/api/agents/${id}`, { enabled: target.checked });
+      await loadAgents();
+      return;
+    }
+  } catch (err) {
+    setStatus("#healthState", `update failed: ${err.message}`, "err");
   }
 }
 
 async function boot() {
+  const token = getToken();
+  const tokenInput = qs("#apiToken");
+  if (tokenInput && token && !tokenInput.value) {
+    tokenInput.value = token;
+  }
+
   await loadHealth();
-  await Promise.all([loadSettings(), loadProviders(), loadAgents(), loadEvents(), loadMemory(), loadChatHistory()]);
+  try {
+    await Promise.all([
+      loadSettings(),
+      loadProviders(),
+      loadAgents(),
+      loadEvents(),
+      loadMemory(),
+      loadChatHistory(),
+    ]);
+  } catch (err) {
+    setStatus("#healthState", `loading failed: ${err.message}`, "err");
+  }
 }
 
-qs("#settingsForm").addEventListener("submit", saveSettings);
+qs("#saveToken")?.addEventListener("click", saveToken);
+qs("#settingsForm")?.addEventListener("submit", saveSettings);
+qs("#memoryForm")?.addEventListener("submit", submitMemory);
+qs("#chatForm")?.addEventListener("submit", submitChat);
 document.body.addEventListener("change", onTableChange);
 
 boot();

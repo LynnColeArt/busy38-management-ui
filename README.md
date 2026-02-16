@@ -25,6 +25,19 @@ pip install -r backend/requirements.txt
 cd backend && uvicorn app.main:app --reload --port 8031
 ```
 
+Optional token protection:
+
+```bash
+export MANAGEMENT_API_TOKEN="your-shared-secret"
+```
+
+If set, the API requires either:
+
+- `Authorization: Bearer <token>`
+- or `?token=<token>` on GET/POST/PATCH endpoints.
+
+Token is stored locally in browser for this UI only (client-side convenience) via the `Save token` control.
+
 Then open `web/index.html` in a browser (or serve it from any static host).
 
 Set this environment variable if you want different backend routing:
@@ -36,7 +49,7 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 ## Current behavior
 
 - Mock data is used to boot quickly and prove flow.
-- No persistent configuration store yet (intentional in this MVP).
+- Persistence is now backed by SQLite in `backend/data/management.db` (auto-created).
 - API is versioned by endpoint conventions and can be swapped behind a proxy later.
 
 ## API surface (MVP)
@@ -49,8 +62,11 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `GET /api/agents`
 - `PATCH /api/agents/{agent_id}`
 - `GET /api/events`
+- `POST /api/events` not yet available (event stream is append-only from internal actions)
 - `GET /api/memory`
 - `GET /api/chat_history`
+- `POST /api/memory`
+- `POST /api/chat_history`
 
 ## License
 

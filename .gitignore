@@ -1,8 +1,8 @@
 /.venv
+backend/data/*.db
 __pycache__/
 *.py[cod]
 .DS_Store
 *.log
 backend/.mypy_cache
 web/.cache
-

@@ -4,8 +4,10 @@ services:
     working_dir: /app
     volumes:
       - .:/app
+      - ./backend/data:/app/backend/data
     command: ["sh", "-c", "pip install -r backend/requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8031"]
     ports:
       - "8031:8031"
     environment:
       - PYTHONUNBUFFERED=1
+      - MANAGEMENT_DB_PATH=/app/backend/data/management.db

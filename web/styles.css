@@ -36,14 +36,26 @@ h2 {
   margin: 12px 0;
 }
 
-form {
-  display: grid;
-  gap: 8px;
-}
-
 label {
   display: grid;
   gap: 4px;
+}
+
+.auth-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+  margin-top: 8px;
+}
+
+.auth-row input {
+  max-width: 420px;
+}
+
+form {
+  display: grid;
+  gap: 8px;
 }
 
 input,

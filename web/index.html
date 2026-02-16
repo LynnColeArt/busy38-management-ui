@@ -12,6 +12,13 @@
         <h1>Busy38 Management UI</h1>
         <p>Operational control for provider routing, agents, and deployment health.</p>
         <p class="meta"><span id="healthState">Checking service…</span></p>
+        <div class="auth-row">
+          <label>
+            API token
+            <input id="apiToken" type="password" placeholder="set MANAGEMENT_API_TOKEN for API auth" />
+          </label>
+          <button id="saveToken" type="button">Save token</button>
+        </div>
       </header>
 
       <section class="panel">
@@ -51,11 +58,39 @@
 
       <section class="panel">
         <h2>Memory</h2>
+        <form id="memoryForm">
+          <label>
+            Scope
+            <input name="memoryScope" type="text" placeholder="global" />
+          </label>
+          <label>
+            Type
+            <input name="memoryType" type="text" placeholder="insight" />
+          </label>
+          <label>
+            Content
+            <input name="memoryContent" type="text" placeholder="note" />
+          </label>
+          <button type="submit">Add memory</button>
+          <p id="memoryStatus" class="status"></p>
+        </form>
         <div id="memory"></div>
       </section>
 
       <section class="panel">
         <h2>Chat history</h2>
+        <form id="chatForm">
+          <label>
+            Agent ID
+            <input name="chatAgentId" type="text" placeholder="orchestrator-core" />
+          </label>
+          <label>
+            Summary
+            <input name="chatSummary" type="text" placeholder="summary text" />
+          </label>
+          <button type="submit">Add note</button>
+          <p id="chatStatus" class="status"></p>
+        </form>
         <ul id="chatHistory"></ul>
       </section>
     </main>
