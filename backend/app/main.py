@@ -102,6 +102,21 @@ def _role_from_token(auth_token: Optional[str] = None, query_token: Optional[str
     return ""
 
 
+def _token_source(auth_token: Optional[str] = None, query_token: Optional[str] = None) -> str:
+    if not (_admin_token or _viewer_token):
+        return "open-access"
+
+    token = auth_token or query_token or ""
+    if token.startswith("Bearer "):
+        token = token[7:].strip()
+
+    if _admin_token and token == _admin_token:
+        return "admin-token"
+    if _viewer_token and token == _viewer_token:
+        return "read-token"
+    return "invalid-token"
+
+
 def _readable_role_name(role: str) -> str:
     if role == "admin":
         return "admin"
@@ -165,10 +180,19 @@ def health() -> Dict[str, Any]:
 
 
 @app.get("/api/settings")
-def get_settings(role: str = Depends(_require_role("viewer"))) -> Dict[str, Any]:
+def get_settings(
+    role: str = Depends(_require_role("viewer")),
+    auth: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    token: Optional[str] = Query(default=None, alias="token"),
+) -> Dict[str, Any]:
     settings = storage.get_settings()
     settings["auto_restart"] = bool(settings["auto_restart"])
-    return {"settings": settings, "updated_at": settings["updated_at"], "role": role}
+    return {
+        "settings": settings,
+        "updated_at": settings["updated_at"],
+        "role": role,
+        "role_source": _token_source(auth.credentials if auth else None, token),
+    }
 
 
 @app.patch("/api/settings")
@@ -236,13 +260,11 @@ def get_events(limit: int = 25, role: str = Depends(_require_role("viewer"))) ->
 
 
 @app.websocket("/api/events/ws")
-async def events_ws(
-    ws: WebSocket,
-    token: Optional[str] = Query(default=None, alias="token"),
-) -> None:
+async def events_ws(ws: WebSocket) -> None:
+    query_token = ws.query_params.get("token", "")
     role = _role_from_token(
         auth_token=ws.headers.get("authorization") or "",
-        query_token=token,
+        query_token=query_token,
     )
     if not role:
         await ws.close(code=4401)
@@ -255,6 +277,7 @@ async def events_ws(
             {
                 "type": "events",
                 "role": _readable_role_name(role),
+                "role_source": _token_source(ws.headers.get("authorization") or "", query_token),
                 "events": storage.list_events(25),
                 "updated_at": _now_iso(),
                 "status": "stream-start",
@@ -269,6 +292,7 @@ async def events_ws(
                     {
                         "type": "events",
                         "role": _readable_role_name(role),
+                        "role_source": _token_source(ws.headers.get("authorization") or "", query_token),
                         "events": rows,
                         "updated_at": _now_iso(),
                     }

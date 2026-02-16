@@ -98,6 +98,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         settings = self.client.get("/api/settings", headers=read_headers)
         self.assertEqual(settings.status_code, 200)
         self.assertEqual(settings.json()["role"], "viewer")
+        self.assertEqual(settings.json()["role_source"], "read-token")
 
         denied = self.client.patch("/api/settings", headers=read_headers, json={"auto_restart": False})
         self.assertEqual(denied.status_code, 403)
@@ -137,4 +138,5 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             first = ws.receive_json()
             self.assertEqual(first["type"], "events")
             self.assertEqual(first["role"], "viewer")
+            self.assertEqual(first["role_source"], "read-token")
             self.assertIn("events", first)

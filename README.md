@@ -85,6 +85,8 @@ The web UI now shows a role badge at the top of the page:
 - `viewer` — read-only access
 - `unauthorized` — invalid or missing credentials when auth is configured
 
+The badge tooltip displays the token source currently in use (for example `admin-token`, `read-token`, or `invalid-or-missing-token`).
+
 ## Test and validation
 
 ```bash

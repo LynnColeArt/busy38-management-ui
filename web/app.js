@@ -11,6 +11,7 @@ const state = {
   events: [],
   runtimeServices: [],
   role: "unknown",
+  roleSource: "unknown",
 };
 let eventSocket = null;
 
@@ -115,15 +116,18 @@ function renderCards(targetId, items, renderRow) {
   container.innerHTML = `<div class="card-list">${cards || "<p>No data</p>"}</div>`;
 }
 
-function updateRoleBadge(role) {
+function updateRoleBadge(role, source) {
   const el = qs("#authRoleBadge");
   if (!el) {
     return;
   }
   const nextRole = role === "admin" ? "admin" : role === "viewer" ? "viewer" : role === "unauthorized" ? "unauthorized" : "unknown";
+  const tokenSource = source || "unknown";
   state.role = nextRole;
+  state.roleSource = tokenSource;
   el.textContent = `Role: ${nextRole}`;
   el.className = `role-badge role-${nextRole}`;
+  el.title = `Token source: ${tokenSource}`;
 }
 
 function buildProviderCard(provider) {
@@ -252,7 +256,7 @@ function connectEvents() {
     }
     if (payload?.type === "events" && Array.isArray(payload.events)) {
       if (payload?.role) {
-        updateRoleBadge(payload.role);
+        updateRoleBadge(payload.role, payload?.role_source);
       }
       state.events = payload.events;
       renderEvents(payload.events);
@@ -285,7 +289,7 @@ async function loadSettings() {
   qs('input[name="heartbeat_interval"]').value = state.settings.heartbeat_interval || "";
   qs('input[name="fallback_budget_per_hour"]').value = state.settings.fallback_budget_per_hour || "";
   qs('input[name="auto_restart"]').checked = Boolean(state.settings.auto_restart);
-  updateRoleBadge(payload.role);
+  updateRoleBadge(payload.role, payload.role_source);
   return payload;
 }
 
@@ -479,10 +483,10 @@ async function boot() {
     ]);
     connectEvents();
   } catch (err) {
-    if (err?.status === 401) {
-      updateRoleBadge("unauthorized");
+      if (err?.status === 401) {
+      updateRoleBadge("unauthorized", "invalid-or-missing-token");
     } else if (err?.status === 403) {
-      updateRoleBadge("viewer");
+      updateRoleBadge("viewer", "read-token");
     } else if (state.role === "unknown") {
       updateRoleBadge("unknown");
     }
