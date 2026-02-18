@@ -115,7 +115,7 @@ class ImportDecisionRequest(BaseModel):
 
 
 @app.on_event("startup")
-def _startup() -> None:
+async def _startup() -> None:
     storage.ensure_schema()
 
 

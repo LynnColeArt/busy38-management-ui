@@ -104,6 +104,7 @@ The badge tooltip displays the token source currently in use (for example `admin
 ```bash
 python3 -m py_compile backend/app/main.py backend/app/runtime.py
 node -c web/app.js
+pip install -r backend/requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest tests
 ```
 
