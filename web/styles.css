@@ -107,6 +107,68 @@ button:hover {
   background: #60a5fa;
 }
 
+.chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chain-node {
+  background: #0f172a;
+  border: 1px solid #223355;
+  padding: 8px 10px;
+  border-radius: 6px;
+}
+
+.chain-node.is-active {
+  border-color: #34d399;
+}
+
+.status-badge {
+  display: inline-block;
+  border: 1px solid #223355;
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin-right: 6px;
+  font-size: 0.85rem;
+}
+
+.status-active {
+  border-color: #34d399;
+  color: #34d399;
+}
+
+.status-standby {
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
+.status-unreachable {
+  border-color: #ef4444;
+  color: #f87171;
+}
+
+.status-running {
+  border-color: #60a5fa;
+  color: #93c5fd;
+}
+
+.status-unknown {
+  border-color: #6b7280;
+  color: #d1d5db;
+}
+
+.status-degraded {
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  gap: 8px;
+}
+
 .control-row {
   display: flex;
   gap: 8px;

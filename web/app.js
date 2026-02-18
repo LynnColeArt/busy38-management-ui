@@ -12,6 +12,8 @@ const state = {
   runtimeServices: [],
   role: "unknown",
   roleSource: "unknown",
+  providerChain: [],
+  providerDiagnostics: null,
 };
 let eventSocket = null;
 
@@ -22,7 +24,7 @@ function getToken() {
 }
 
 function saveToken() {
-  const token = qs("#apiToken").value.trim();
+  const token = qs("#apiToken")?.value.trim() || "";
   if (token === "") {
     localStorage.removeItem(TOKEN_KEY);
     setStatus("#healthState", "token cleared", "");
@@ -33,6 +35,12 @@ function saveToken() {
     updateRoleBadge("unknown");
   }
   boot();
+}
+
+function escapeHtml(value) {
+  const text = `${value}`;
+  const map = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+  return text.replace(/[&<>"']/g, (char) => map[char]);
 }
 
 function setStatus(id, text, kind = "") {
@@ -116,6 +124,81 @@ function renderCards(targetId, items, renderRow) {
   container.innerHTML = `<div class="card-list">${cards || "<p>No data</p>"}</div>`;
 }
 
+function renderProviderChain(chain) {
+  const container = qs("#providerChain");
+  if (!container) {
+    return;
+  }
+  if (!Array.isArray(chain) || chain.length === 0) {
+    container.innerHTML = "<p>No enabled providers in chain.</p>";
+    return;
+  }
+  container.innerHTML = chain
+    .map(
+      (provider) => `
+        <button class="chain-node ${provider.active ? "is-active" : ""}" type="button" data-action="show-provider-diagnostics" data-id="${provider.id}">
+          <span>${escapeHtml(provider.name)} (${escapeHtml(provider.id)})</span>
+          <span>${provider.active ? "active" : "fallback"}</span>
+        </button>
+      `
+    )
+    .join("");
+}
+
+function formatDateOrDash(value) {
+  if (!value) {
+    return "n/a";
+  }
+  return `${value}`;
+}
+
+function renderProviderDiagnosticsHtml(payload) {
+  if (!payload) {
+    return "<p>Diagnostics unavailable.</p>";
+  }
+  const metrics = payload.metrics || {};
+  const history = Array.isArray(payload.test_history) ? payload.test_history : [];
+  const rows = history
+    .map((item) => `<li>${formatDateOrDash(item.tested_at)} — ${escapeHtml(item.status || "unknown")} (${item.models_count || 0} model(s), ${item.latency_ms || 0}ms)</li>`)
+    .join("");
+
+  return `
+    <div class="status-grid">
+      <div><strong>Provider:</strong> ${escapeHtml(payload.provider_id || "unknown")}</div>
+      <div><strong>Latency last:</strong> ${metrics.latency_ms_last != null ? `${metrics.latency_ms_last}ms` : "n/a"}</div>
+      <div><strong>Latency avg (5m):</strong> ${metrics.latency_ms_avg_5m != null ? `${metrics.latency_ms_avg_5m}ms` : "n/a"}</div>
+      <div><strong>P95 latency (5m):</strong> ${metrics.latency_ms_p95_5m != null ? `${metrics.latency_ms_p95_5m}ms` : "n/a"}</div>
+      <div><strong>Success rate (5m):</strong> ${metrics.success_rate_5m != null ? `${metrics.success_rate_5m}%` : "n/a"}</div>
+      <div><strong>Failures (1m):</strong> ${metrics.failure_count_last_1m || 0}</div>
+      <div><strong>Last checked:</strong> ${formatDateOrDash(metrics.last_checked_at || payload.last_test?.tested_at)}</div>
+      <div><strong>Last error:</strong> ${escapeHtml(metrics.last_error_message || "n/a")}</div>
+    </div>
+    <h4>Recent checks</h4>
+    <ul class="compact-list">
+      ${rows || "<li>No checks run yet.</li>"}
+    </ul>
+  `;
+}
+
+function parseProviderMetadata(value) {
+  if (value == null) {
+    return {};
+  }
+  if (typeof value === "object") {
+    return value;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    return {};
+  }
+}
+
+function formatProviderStatusChip(status) {
+  const stateText = `${status || "unknown"}`.toLowerCase();
+  return `<span class="status-badge status-${stateText.replace(/[^a-z]+/g, "")}">${escapeHtml(stateText)}</span>`;
+}
+
 function updateRoleBadge(role, source) {
   const el = qs("#authRoleBadge");
   if (!el) {
@@ -131,23 +214,100 @@ function updateRoleBadge(role, source) {
 }
 
 function buildProviderCard(provider) {
+  const metadata = parseProviderMetadata(provider.metadata);
+  const discoveredModels = Array.isArray(metadata.discovered_models) ? metadata.discovered_models : [];
+  const discovery = metadata.model_discovery || {};
+  const discoveredEndpoint = escapeHtml(provider.endpoint || "");
+  const lastTest = metadata.last_test || {};
+  const secretPolicy = metadata.secret_policy || "required";
+  const secretPresent = Boolean(metadata.secret_present);
+  const testStatus = (lastTest.status || "").toLowerCase();
+  const testText = lastTest.tested_at
+    ? `Last test: ${testStatus || "unknown"} (${lastTest.models_count || 0} model(s), ${lastTest.latency_ms ? `${lastTest.latency_ms}ms` : "n/a"})`
+    : "Last test: not run";
+  const testError = lastTest.error ? `<p><strong>Test note:</strong> ${escapeHtml(lastTest.error)}</p>` : "";
+  const isViewer = state.role === "viewer";
+  const isLocked = isViewer ? "disabled" : "";
+  const discoveredLabel = discoveredModels.length
+    ? `<p><strong>Discovered models:</strong> ${discoveredModels
+      .map((model) => `<button type="button" data-action="apply-discovered-model" data-id="${provider.id}" data-model="${escapeHtml(model)}" ${isLocked}>${escapeHtml(model)}</button>`)
+      .join(" ")}</p>`
+    : "<p><strong>Discovered models:</strong> none</p>";
+  const discoveryText = discovery.status === "complete"
+    ? `Auto-discovery from ${discovery.endpoint || "provider endpoint"}`
+    : "Manual entry recommended";
+
   return `
     <div class="card">
       <h3>${provider.name}</h3>
-      <p><strong>Status:</strong> ${provider.status}</p>
+      <p><strong>Status:</strong> ${formatProviderStatusChip(provider.status)} priority ${provider.priority}</p>
       <p><strong>Model:</strong> ${provider.model}</p>
       <p><strong>Endpoint:</strong> ${provider.endpoint || "n/a"}</p>
-      ${provider.metadata ? `<p><strong>Metadata:</strong> ${provider.metadata}</p>` : ""}
+      <p><strong>Secret policy:</strong> ${escapeHtml(secretPolicy)}${secretPresent ? " (present)" : " (missing)"}</p>
+      ${isViewer ? "<p><strong>Secret:</strong> read-only role</p>" : secretPolicy !== "none" ? `<p><strong>Secret action:</strong>
+        <input type="password" data-action="provider-secret-key" data-id="${provider.id}" placeholder="api key" ${isLocked}/>
+        <button type="button" data-action="set-provider-secret" data-id="${provider.id}" data-mode="${secretPresent ? "rotate" : "set"}" ${isLocked}>
+          ${secretPresent ? "Rotate" : "Set"} secret
+        </button>
+        <button type="button" data-action="clear-provider-secret" data-id="${provider.id}" ${isLocked}>
+          Clear
+        </button>
+      </p>` : `<p><strong>Secret:</strong> not required</p>`}
+      <p><strong>Model discovery:</strong> ${discoveryText}</p>
+      ${discovery.error ? `<p><strong>Discovery note:</strong> ${escapeHtml(discovery.error)}</p>` : ""}
+      ${discoveredLabel}
+      <p><strong>Provider test:</strong> ${escapeHtml(testText)}</p>
+      ${testError}
+      <p>
+        <label>
+          Discover endpoint (optional):
+          <input
+            type="text"
+            data-action="provider-discovery-endpoint"
+            data-id="${provider.id}"
+            placeholder="e.g. https://api.openai.com/v1"
+            value="${discoveredEndpoint}"${isLocked}
+          />
+        </label>
+      </p>
+      <p>
+        <label>
+          Private endpoint key (optional):
+          <input
+            type="password"
+            data-action="provider-discovery-key"
+            data-id="${provider.id}"
+            placeholder="api key used for model list endpoint"${isLocked}
+          />
+        </label>
+      </p>
+      <p>
+        <button type="button" data-action="test-provider-models" data-id="${provider.id}" ${isLocked}>Run provider test</button>
+      </p>
+      <p>
+        <button type="button" data-action="discover-provider-models" data-id="${provider.id}" ${isLocked}>Discover models</button>
+      </p>
+      <p>
+        <button type="button" data-action="show-provider-diagnostics" data-id="${provider.id}">
+          View diagnostics
+        </button>
+      </p>
       <p>
         <label>
           Enabled:
-          <input type="checkbox" data-action="toggle-provider" data-id="${provider.id}" ${provider.enabled ? "checked" : ""} />
+          <input type="checkbox" data-action="toggle-provider" data-id="${provider.id}" ${provider.enabled ? "checked" : ""} ${isLocked} />
         </label>
       </p>
       <p>
         <label>
           Priority:
-          <input type="number" data-action="set-provider-priority" data-id="${provider.id}" value="${provider.priority}" />
+          <input type="number" data-action="set-provider-priority" data-id="${provider.id}" value="${provider.priority}" ${isLocked} />
+        </label>
+      </p>
+      <p>
+        <label>
+          Model:
+          <input type="text" data-action="set-provider-model" data-id="${provider.id}" value="${escapeHtml(provider.model || "")}" placeholder="manually set model"${isLocked} />
         </label>
       </p>
     </div>
@@ -174,9 +334,7 @@ function buildAgentCard(agent) {
 function renderRuntimeServices(services) {
   const hasServices = Array.isArray(services) && services.length > 0;
   const options = hasServices
-    ? services
-        .map((service) => `<option value="${service.name}">${service.name}</option>`)
-        .join("")
+    ? services.map((service) => `<option value="${service.name}">${service.name}</option>`).join("")
     : "<option value=\"busy\">busy</option>";
 
   const select = qs("#runtimeService");
@@ -205,7 +363,7 @@ function renderEvents(items) {
     return;
   }
   list.innerHTML = (items || [])
-    .map((event) => `<li>${event.created_at} — [${event.level}] ${event.message}</li>`) 
+    .map((event) => `<li>${event.created_at} — [${event.level}] ${event.message}</li>`)
     .join("");
 }
 
@@ -299,6 +457,28 @@ async function loadProviders() {
   renderCards("#providers", state.providers, buildProviderCard);
 }
 
+async function loadProviderChain() {
+  const payload = await fetchJson("/api/providers/routing-chain");
+  state.providerChain = payload.chain || [];
+  renderProviderChain(state.providerChain);
+}
+
+async function loadProviderDiagnostics(providerId) {
+  const payload = await fetchJson(`/api/providers/${providerId}/metrics`);
+  const historyPayload = await fetchJson(`/api/providers/${providerId}/history`);
+  const merged = {
+    provider_id: providerId,
+    metrics: payload.metrics || {},
+    last_test: payload.last_test || {},
+    test_history: historyPayload.test_history || [],
+  };
+  state.providerDiagnostics = merged;
+  const diagnosticsRoot = qs("#providerDiagnostics");
+  if (diagnosticsRoot) {
+    diagnosticsRoot.innerHTML = renderProviderDiagnosticsHtml(merged);
+  }
+}
+
 async function loadAgents() {
   const payload = await fetchJson("/api/agents");
   state.agents = payload.agents || [];
@@ -317,7 +497,7 @@ async function loadRuntime() {
     const status = payload.runtime || {};
     const source = status.source || "none";
     const connected = Boolean(status.connected);
-    setStatus("#runtimeStatus", `runtime (${source}) — connected: ${connected ? "yes" : "no"}` , "ok");
+    setStatus("#runtimeStatus", `runtime (${source}) — connected: ${connected ? "yes" : "no"}`, "ok");
 
     const servicesPayload = await fetchJson("/api/runtime/services");
     state.runtimeServices = servicesPayload.services || [];
@@ -399,6 +579,51 @@ async function submitChat(event) {
   }
 }
 
+async function submitProvider(event) {
+  event.preventDefault();
+  const provider_id = qs('input[name="providerId"]').value.trim();
+  const name = qs('input[name="providerName"]').value.trim();
+  const endpoint = qs('input[name="providerEndpoint"]').value.trim();
+  const model = qs('input[name="providerModel"]').value.trim();
+  const kind = qs('input[name="providerKind"]').value.trim();
+  const priority = Number(qs('input[name="providerPriority"]').value || "100");
+  const enabled = qs('input[name="providerEnabled"]').checked;
+
+  if (!provider_id || !name || !endpoint || !model) {
+    setStatus("#providerCreateStatus", "provider id, name, endpoint, and model are required", "err");
+    return;
+  }
+
+  const payload = {
+    id: provider_id,
+    name,
+    endpoint,
+    model,
+    priority,
+    enabled,
+    metadata: {},
+  };
+  if (kind) {
+    payload.metadata.kind = kind;
+  }
+
+  setStatus("#providerCreateStatus", "creating provider...", "");
+  try {
+    await postJson("/api/providers", payload);
+    setStatus("#providerCreateStatus", `created ${provider_id}`, "ok");
+    qs('input[name="providerId"]').value = "";
+    qs('input[name="providerName"]').value = "";
+    qs('input[name="providerEndpoint"]').value = "";
+    qs('input[name="providerModel"]').value = "";
+    qs('input[name="providerKind"]').value = "";
+    qs('input[name="providerPriority"]').value = "";
+    qs('input[name="providerEnabled"]').checked = true;
+    await Promise.all([loadProviders(), loadProviderChain()]);
+  } catch (err) {
+    setStatus("#providerCreateStatus", `create failed: ${err.message}`, "err");
+  }
+}
+
 async function controlRuntime(action) {
   const service = qs("#runtimeService")?.value || "busy";
   const body = {};
@@ -412,12 +637,8 @@ async function controlRuntime(action) {
 }
 
 async function onTableChange(event) {
-  if (state.role === "viewer") {
-    setStatus("#healthState", "viewer role: read-only", "err");
-    return;
-  }
   const target = event.target;
-  const action = target.dataset.action;
+  const action = target?.dataset?.action;
   if (!action) {
     return;
   }
@@ -437,18 +658,161 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "show-provider-diagnostics") {
+    const diagnosticsId = target.dataset.id;
+    const diagnosticsRoot = qs("#providerDiagnostics");
+    try {
+      if (!diagnosticsId) {
+        if (diagnosticsRoot) {
+          diagnosticsRoot.innerHTML = "<p>Unable to load diagnostics: provider id missing.</p>";
+        }
+        return;
+      }
+      setStatus("#providerChainStatus", "loading diagnostics...", "");
+      await loadProviderDiagnostics(diagnosticsId);
+      setStatus("#providerChainStatus", `Diagnostics loaded for ${diagnosticsId}`, "ok");
+    } catch (err) {
+      if (diagnosticsRoot) {
+        diagnosticsRoot.innerHTML = `<p>Could not load diagnostics for ${escapeHtml(diagnosticsId)}: ${escapeHtml(err.message)}</p>`;
+      }
+      setStatus("#providerChainStatus", `Could not load diagnostics: ${err.message}`, "err");
+    }
+    return;
+  }
+
+  if (state.role === "viewer") {
+    setStatus("#healthState", "viewer role: read-only", "err");
+    return;
+  }
+
   try {
+    if (action === "test-all-providers") {
+      setStatus("#providerChainStatus", "running provider checks...", "");
+      try {
+        const result = await postJson("/api/providers/test-all", {});
+        setStatus("#providerChainStatus", `Checks: ${result.pass_count} passed, ${result.fail_count} failed of ${result.checked}`, result.fail_count ? "err" : "ok");
+      } catch (err) {
+        setStatus("#providerChainStatus", `Provider checks failed: ${err.message}`, "err");
+      }
+      await Promise.all([loadProviders(), loadProviderChain()]);
+      return;
+    }
+
     if (action === "toggle-provider") {
       const id = target.dataset.id;
       await patchJson(`/api/providers/${id}`, { enabled: target.checked });
-      await loadProviders();
+      await Promise.all([loadProviders(), loadProviderChain()]);
       return;
     }
 
     if (action === "set-provider-priority") {
       const id = target.dataset.id;
       await patchJson(`/api/providers/${id}`, { priority: Number(target.value) || 0 });
-      await loadProviders();
+      await Promise.all([loadProviders(), loadProviderChain()]);
+      return;
+    }
+
+    if (action === "set-provider-model") {
+      const id = target.dataset.id;
+      await patchJson(`/api/providers/${id}`, { model: target.value.trim() });
+      await Promise.all([loadProviders(), loadProviderChain()]);
+      return;
+    }
+
+    if (action === "apply-discovered-model") {
+      const id = target.dataset.id;
+      const model = target.dataset.model || "";
+      await patchJson(`/api/providers/${id}`, { model });
+      await Promise.all([loadProviders(), loadProviderChain()]);
+      return;
+    }
+
+    if (action === "discover-provider-models") {
+      const id = target.dataset.id;
+      const endpointInput = qs(`input[data-action="provider-discovery-endpoint"][data-id="${id}"]`);
+      const keyInput = qs(`input[data-action="provider-discovery-key"][data-id="${id}"]`);
+      const discoveryPayload = {};
+      if (endpointInput?.value?.trim()) {
+        discoveryPayload.endpoint = endpointInput.value.trim();
+      }
+      if (keyInput?.value?.trim()) {
+        discoveryPayload.api_key = keyInput.value.trim();
+      }
+      setStatus("#healthState", "discovering models...", "");
+      try {
+        const result = await postJson(`/api/providers/${id}/discover-models`, discoveryPayload);
+        if (keyInput) {
+          keyInput.value = "";
+        }
+        if (Array.isArray(result?.discovered_models) && result.discovered_models.length > 0) {
+          setStatus("#healthState", `Discovered ${result.discovered_models.length} model(s)`, "ok");
+        } else if (result?.message) {
+          setStatus("#healthState", result.message, "err");
+        } else {
+          setStatus("#healthState", "Discovery returned no models. Enter model manually.", "err");
+        }
+      } catch (err) {
+        setStatus("#healthState", `Discovery failed: ${err.message}`, "err");
+      }
+      await Promise.all([loadProviders(), loadProviderChain()]);
+      return;
+    }
+
+    if (action === "test-provider-models") {
+      const id = target.dataset.id;
+      setStatus("#healthState", "testing provider...", "");
+      try {
+        const result = await postJson(`/api/providers/${id}/test`, {});
+        if (result?.status === "pass") {
+          setStatus("#healthState", `Provider test passed in ${result.latency_ms}ms`, "ok");
+        } else {
+          setStatus("#healthState", `Provider test failed: ${result.error || "see provider card"}`, "err");
+        }
+      } catch (err) {
+        setStatus("#healthState", `Provider test failed: ${err.message}`, "err");
+      }
+      await Promise.all([loadProviders(), loadProviderChain()]);
+      return;
+    }
+
+    if (action === "set-provider-secret") {
+      const id = target.dataset.id;
+      const mode = target.dataset.mode || "set";
+      const keyInput = qs(`input[data-action="provider-secret-key"][data-id="${id}"]`);
+      const value = keyInput?.value?.trim() || "";
+      if (!value) {
+        setStatus("#healthState", "provider secret requires a key", "err");
+        return;
+      }
+      setStatus("#healthState", "updating provider secret...", "");
+      try {
+        const result = await postJson(`/api/providers/${id}/secret`, {
+          action: mode,
+          api_key: value,
+        });
+        if (keyInput) {
+          keyInput.value = "";
+        }
+        const secret = result?.provider?.metadata?.secret_present;
+        setStatus("#healthState", secret ? "Provider secret set" : "Provider secret updated", "ok");
+      } catch (err) {
+        setStatus("#healthState", `Secret update failed: ${err.message}`, "err");
+      }
+      await Promise.all([loadProviders(), loadProviderChain()]);
+      return;
+    }
+
+    if (action === "clear-provider-secret") {
+      const id = target.dataset.id;
+      setStatus("#healthState", "clearing provider secret...", "");
+      try {
+        const result = await postJson(`/api/providers/${id}/secret`, { action: "clear" });
+        const secret = result?.provider?.metadata?.secret_present;
+        setStatus("#healthState", secret ? "Provider secret still present" : "Provider secret cleared", secret ? "err" : "ok");
+      } catch (err) {
+        setStatus("#healthState", `Secret clear failed: ${err.message}`, "err");
+      }
+      await Promise.all([loadProviders(), loadProviderChain()]);
       return;
     }
 
@@ -475,6 +839,7 @@ async function boot() {
     await Promise.all([
       loadHealth(),
       loadProviders(),
+      loadProviderChain(),
       loadAgents(),
       loadEvents(),
       loadMemory(),
@@ -483,7 +848,7 @@ async function boot() {
     ]);
     connectEvents();
   } catch (err) {
-      if (err?.status === 401) {
+    if (err?.status === 401) {
       updateRoleBadge("unauthorized", "invalid-or-missing-token");
     } else if (err?.status === 403) {
       updateRoleBadge("viewer", "read-token");
@@ -498,12 +863,21 @@ qs("#saveToken")?.addEventListener("click", saveToken);
 qs("#settingsForm")?.addEventListener("submit", saveSettings);
 qs("#memoryForm")?.addEventListener("submit", submitMemory);
 qs("#chatForm")?.addEventListener("submit", submitChat);
+qs("#providerCreateForm")?.addEventListener("submit", submitProvider);
 document.body.addEventListener("change", onTableChange);
-
 document.body.addEventListener("click", (event) => {
   const target = event.target;
   const action = target?.dataset?.action;
-  if (!action || !action.startsWith("runtime-")) {
+  if (!action || (
+    !action.startsWith("runtime-")
+    && action !== "discover-provider-models"
+    && action !== "apply-discovered-model"
+    && action !== "test-provider-models"
+    && action !== "test-all-providers"
+    && action !== "set-provider-secret"
+    && action !== "clear-provider-secret"
+    && action !== "show-provider-diagnostics"
+  )) {
     return;
   }
   onTableChange(event);

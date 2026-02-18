@@ -64,6 +64,13 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `GET /api/settings`
 - `PATCH /api/settings`
 - `GET /api/providers`
+- `POST /api/providers`
+- `POST /api/providers/{provider_id}/discover-models`
+- `POST /api/providers/{provider_id}/test`
+- `POST /api/providers/test-all`
+- `GET /api/providers/routing-chain`
+- `GET /api/providers/{provider_id}/history`
+- `GET /api/providers/{provider_id}/metrics`
 - `PATCH /api/providers/{provider_id}`
 - `GET /api/agents`
 - `PATCH /api/agents/{agent_id}`

@@ -62,7 +62,53 @@
       </section>
 
       <section class="panel">
+        <h2>Provider routing chain</h2>
+        <div id="providerChain" class="chain"></div>
+        <p>
+          <button type="button" data-action="test-all-providers">Run all provider checks</button>
+        </p>
+        <p id="providerChainStatus" class="status"></p>
+      </section>
+
+      <section class="panel">
+        <h2>Provider diagnostics</h2>
+        <div id="providerDiagnostics"><p>Select a provider to load diagnostics.</p></div>
+      </section>
+
+      <section class="panel">
         <h2>Providers</h2>
+        <form id="providerCreateForm">
+          <label>
+            Provider ID
+            <input name="providerId" type="text" placeholder="openai-backup" />
+          </label>
+          <label>
+            Display name
+            <input name="providerName" type="text" placeholder="OpenAI Backup" />
+          </label>
+          <label>
+            Endpoint
+            <input name="providerEndpoint" type="text" placeholder="https://api.openai.com/v1" />
+          </label>
+          <label>
+            Default model
+            <input name="providerModel" type="text" placeholder="gpt-4o-mini" />
+          </label>
+          <label>
+            Kind
+            <input name="providerKind" type="text" placeholder="openai_compatible" />
+          </label>
+          <label>
+            Priority
+            <input name="providerPriority" type="number" min="0" />
+          </label>
+          <label>
+            Enabled
+            <input name="providerEnabled" type="checkbox" checked />
+          </label>
+          <button type="submit">Create provider</button>
+          <p id="providerCreateStatus" class="status"></p>
+        </form>
         <div id="providers"></div>
       </section>
 
