@@ -12,9 +12,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import (
-    Depends,
     FastAPI,
     HTTPException,
+    Request,
     Query,
     UploadFile,
     File,
@@ -23,7 +23,6 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 from .import_adapters import get_import_adapter
 from .import_contract import checksum_payload
@@ -214,19 +213,18 @@ def _redact_metadata(metadata: Optional[str] | Dict[str, Any] | list, role: str)
     return "***redacted***"
 
 
-def _require_role(required: str = "viewer"):
-    def _checker(
-        auth: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
-        token: Optional[str] = Query(default=None, alias="token"),
-    ) -> str:
-        role = _role_from_token(auth.credentials if auth else None, token)
-        if not role:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-        if required == "admin" and role != "admin":
-            raise HTTPException(status_code=403, detail="Admin token required for this action.")
-        return role
-
-    return _checker
+def _require_role(
+    request: Request,
+    required: str = "viewer",
+    token: Optional[str] = None,
+) -> str:
+    auth_token = request.headers.get("Authorization")
+    role = _role_from_token(auth_token, token)
+    if not role:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if required == "admin" and role != "admin":
+        raise HTTPException(status_code=403, detail="Admin token required for this action.")
+    return role
 
 
 def _event_for(
@@ -717,7 +715,7 @@ def _run_provider_test(
 
 
 @app.get("/api/health")
-def health() -> Dict[str, Any]:
+async def health() -> Dict[str, Any]:
     runtime_status = runtime.get_status()
     return {
         "status": "ok",
@@ -728,23 +726,25 @@ def health() -> Dict[str, Any]:
 
 
 @app.get("/api/settings")
-def get_settings(
-    role: str = Depends(_require_role("viewer")),
-    auth: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+async def get_settings(
+    request: Request,
     token: Optional[str] = Query(default=None, alias="token"),
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer", token=token)
     settings = storage.get_settings()
     settings["auto_restart"] = bool(settings["auto_restart"])
+    auth_header = request.headers.get("Authorization") if request else None
     return {
         "settings": settings,
         "updated_at": settings["updated_at"],
         "role": role,
-        "role_source": _token_source(auth.credentials if auth else None, token),
+        "role_source": _token_source(auth_header, token),
     }
 
 
 @app.patch("/api/settings")
-def update_settings(update: SettingsUpdate, role: str = Depends(_require_role("admin"))) -> Dict[str, Any]:
+async def update_settings(request: Request, update: SettingsUpdate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
     if not payload:
         raise HTTPException(status_code=400, detail="No setting fields provided")
@@ -755,14 +755,15 @@ def update_settings(update: SettingsUpdate, role: str = Depends(_require_role("a
 
 
 @app.get("/api/providers")
-def get_providers(
-    role: str = Depends(_require_role("viewer")),
+async def get_providers(
+    request: Request,
     kind: Optional[str] = None,
     status: Optional[str] = None,
     secret_status: Optional[str] = None,
     sort_by: str = "priority",
     sort_desc: bool = False,
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     providers = storage.list_providers()
     if kind:
         kind_query = kind.strip().lower()
@@ -794,7 +795,8 @@ def get_providers(
 
 
 @app.post("/api/providers")
-def create_provider(provider: ProviderCreate, role: str = Depends(_require_role("admin"))) -> Dict[str, Any]:
+async def create_provider(request: Request, provider: ProviderCreate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     payload = provider.model_dump()
     payload["id"] = str(payload["id"]).strip()
     payload["name"] = str(payload["name"]).strip()
@@ -843,17 +845,19 @@ def create_provider(provider: ProviderCreate, role: str = Depends(_require_role(
 
 
 @app.get("/api/providers/routing-chain")
-def get_provider_chain(role: str = Depends(_require_role("viewer"))) -> Dict[str, Any]:
+async def get_provider_chain(request: Request) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     chain = _provider_routing_chain()
     return {"chain": chain, "updated_at": _now_iso()}
 
 
 @app.get("/api/providers/{provider_id}/history")
-def get_provider_history(
+async def get_provider_history(
     provider_id: str,
+    request: Request,
     limit: int = Query(default=25, ge=1, le=500),
-    role: str = Depends(_require_role("viewer")),
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     provider = storage.get_provider(provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail=f"provider '{provider_id}' not found")
@@ -873,10 +877,11 @@ def get_provider_history(
 
 
 @app.get("/api/providers/{provider_id}/metrics")
-def get_provider_metrics(
+async def get_provider_metrics(
     provider_id: str,
-    role: str = Depends(_require_role("viewer")),
+    request: Request,
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     provider = storage.get_provider(provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail=f"provider '{provider_id}' not found")
@@ -893,11 +898,12 @@ def get_provider_metrics(
 
 
 @app.patch("/api/providers/{provider_id}")
-def patch_provider(
+async def patch_provider(
     provider_id: str,
     update: ProviderUpdate,
-    role: str = Depends(_require_role("admin")),
+    request: Request,
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
     if not payload:
         raise HTTPException(status_code=400, detail="No provider fields provided")
@@ -929,11 +935,12 @@ def patch_provider(
 
 
 @app.post("/api/providers/{provider_id}/discover-models")
-def discover_provider_models(
+async def discover_provider_models(
     provider_id: str,
     request: ProviderModelDiscovery,
-    role: str = Depends(_require_role("admin")),
+    request_context: Request,
 ) -> Dict[str, Any]:
+    role = _require_role(request_context, required="admin")
     provider = storage.get_provider(provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail=f"provider '{provider_id}' not found")
@@ -993,11 +1000,12 @@ def discover_provider_models(
 
 
 @app.post("/api/providers/{provider_id}/test")
-def test_provider_models(
+async def test_provider_models(
     provider_id: str,
     request: ProviderModelTest,
-    role: str = Depends(_require_role("admin")),
+    request_context: Request,
 ) -> Dict[str, Any]:
+    role = _require_role(request_context, required="admin")
     provider = storage.get_provider(provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail=f"provider '{provider_id}' not found")
@@ -1017,10 +1025,11 @@ def test_provider_models(
 
 
 @app.post("/api/providers/test-all")
-def test_providers_all(
+async def test_providers_all(
     request: ProviderTestAllRequest,
-    role: str = Depends(_require_role("admin")),
+    request_context: Request,
 ) -> Dict[str, Any]:
+    role = _require_role(request_context, required="admin")
     providers = storage.list_providers()
     candidates = [p for p in providers if request.include_disabled or bool(p.get("enabled"))]
     if request.provider_ids:
@@ -1050,11 +1059,12 @@ def test_providers_all(
 
 
 @app.post("/api/providers/{provider_id}/secret")
-def update_provider_secret(
+async def update_provider_secret(
     provider_id: str,
     request: ProviderSecretAction,
-    role: str = Depends(_require_role("admin")),
+    request_context: Request,
 ) -> Dict[str, Any]:
+    role = _require_role(request_context, required="admin")
     provider = storage.get_provider(provider_id)
     if not provider:
         raise HTTPException(status_code=404, detail=f"provider '{provider_id}' not found")
@@ -1116,13 +1126,15 @@ def update_provider_secret(
 
 
 @app.get("/api/agents")
-def get_agents(role: str = Depends(_require_role("viewer"))) -> Dict[str, Any]:
+async def get_agents(request: Request) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     agents = storage.list_agents()
     return {"agents": agents, "updated_at": _now_iso()}
 
 
 @app.patch("/api/agents/{agent_id}")
-def patch_agent(agent_id: str, update: AgentUpdate, role: str = Depends(_require_role("admin"))) -> Dict[str, Any]:
+async def patch_agent(request: Request, agent_id: str, update: AgentUpdate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
     if not payload:
         raise HTTPException(status_code=400, detail="No agent fields provided")
@@ -1148,11 +1160,12 @@ def _coerce_import_payload(raw: bytes | str) -> bytes:
 
 @app.post("/api/agents/import")
 async def create_import_job(
+    request: Request,
     source_type: str = Form(...),
     source_file: UploadFile = File(...),
     append_to_latest: bool = Form(default=False),
-    role: str = Depends(_require_role("admin")),
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     source_type_key = _normalise_source_type(source_type)
     adapter = get_import_adapter(source_type_key)
     if adapter is None:
@@ -1296,12 +1309,13 @@ def _summarize_import_items(items: List[Dict[str, Any]]) -> Dict[str, int]:
 
 
 @app.get("/api/agents/imports")
-def list_import_jobs(
-    role: str = Depends(_require_role("viewer")),
+async def list_import_jobs(
+    request: Request,
     limit: int = 25,
     source_type: Optional[str] = None,
     status: Optional[str] = None,
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     jobs = storage.list_import_jobs(limit=limit)
     if source_type:
         normalized_source = source_type.strip().lower()
@@ -1319,11 +1333,12 @@ def list_import_jobs(
 
 
 @app.get("/api/agents/import/{import_id}")
-def get_import_job(
+async def get_import_job(
     import_id: str,
+    request: Request,
     review_state: Optional[str] = Query(default=None),
-    role: str = Depends(_require_role("viewer")),
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     job = storage.get_import_job(import_id)
     if not job:
         raise HTTPException(status_code=404, detail=f"import '{import_id}' not found")
@@ -1337,11 +1352,12 @@ def get_import_job(
 
 
 @app.post("/api/agents/import/{import_id}/decision")
-def set_import_item_decisions(
+async def set_import_item_decisions(
     import_id: str,
     payload: ImportDecisionRequest,
-    role: str = Depends(_require_role("admin")),
+    request: Request,
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     try:
         updated = storage.update_import_items_review_state(
             import_item_ids=payload.import_item_ids,
@@ -1367,7 +1383,8 @@ def set_import_item_decisions(
 
 
 @app.get("/api/events")
-def get_events(limit: int = 25, role: str = Depends(_require_role("viewer"))) -> Dict[str, Any]:
+async def get_events(request: Request, limit: int = 25) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     events = storage.list_events(limit)
     return {"events": events, "updated_at": _now_iso()}
 
@@ -1418,59 +1435,68 @@ async def events_ws(ws: WebSocket) -> None:
 
 
 @app.get("/api/memory")
-def get_memory(
+async def get_memory(
+    request: Request,
     scope: Optional[str] = None,
     item_type: Optional[str] = Query(default=None, alias="type"),
-    role: str = Depends(_require_role("viewer")),
 ) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     rows = storage.list_memory(scope=scope, item_type=item_type)
     return {"memory": rows, "updated_at": _now_iso()}
 
 
 @app.post("/api/memory")
-def add_memory_entry(payload: MemoryCreate, role: str = Depends(_require_role("admin"))) -> Dict[str, Any]:
+async def add_memory_entry(request: Request, payload: MemoryCreate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     memory = storage.add_memory(scope=payload.scope, memory_type=payload.type, content=payload.content)
     _event_for(role, "memory", f"Memory item added: {memory['id']}", "info")
     return {"memory": memory}
 
 
 @app.get("/api/chat_history")
-def get_chat_history(agent_id: Optional[str] = None, role: str = Depends(_require_role("viewer"))) -> Dict[str, Any]:
+async def get_chat_history(request: Request, agent_id: Optional[str] = None) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     rows = storage.list_chat_history(agent_id=agent_id)
     return {"chat_history": rows, "updated_at": _now_iso()}
 
 
 @app.post("/api/chat_history")
-def add_chat_entry(payload: ChatHistoryCreate, role: str = Depends(_require_role("admin"))) -> Dict[str, Any]:
+async def add_chat_entry(request: Request, payload: ChatHistoryCreate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     row = storage.add_chat_entry(agent_id=payload.agent_id, summary=payload.summary)
     _event_for(role, "chat", f"Chat history entry added for {payload.agent_id}", "info")
     return {"chat": row}
 
 
 @app.get("/api/runtime/status")
-def get_runtime_status(role: str = Depends(_require_role("viewer"))) -> Dict[str, Any]:
+async def get_runtime_status(request: Request) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     return {"runtime": runtime.get_status(), "updated_at": _now_iso()}
 
 
 @app.get("/api/runtime/services")
-def list_runtime_services(role: str = Depends(_require_role("viewer"))) -> Dict[str, Any]:
+async def list_runtime_services(request: Request) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
     return {**runtime.get_services(), "updated_at": _now_iso()}
 
 
 @app.post("/api/runtime/services/{service_name}/start")
-def start_runtime_service(service_name: str, role: str = Depends(_require_role("admin"))) -> Dict[str, Any]:
+async def start_runtime_service(request: Request, service_name: str) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     result = _run_runtime_action("start", service_name, role=role)
     return {"updated_at": _now_iso(), **result}
 
 
 @app.post("/api/runtime/services/{service_name}/stop")
-def stop_runtime_service(service_name: str, role: str = Depends(_require_role("admin"))) -> Dict[str, Any]:
+async def stop_runtime_service(request: Request, service_name: str) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     result = _run_runtime_action("stop", service_name, role=role)
     return {"updated_at": _now_iso(), **result}
 
 
 @app.post("/api/runtime/services/{service_name}/restart")
-def restart_runtime_service(service_name: str, role: str = Depends(_require_role("admin"))) -> Dict[str, Any]:
+async def restart_runtime_service(request: Request, service_name: str) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
     result = _run_runtime_action("restart", service_name, role=role)
     return {"updated_at": _now_iso(), **result}
 
