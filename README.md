@@ -54,7 +54,7 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 
 ## Current behavior
 
-- Mock data is used to boot quickly and prove flow.
+- Seeded defaults are loaded on first run and persisted in local SQLite storage.
 - Persistence is now backed by SQLite in `backend/data/management.db` (auto-created).
 - API is versioned by endpoint conventions and can be swapped behind a proxy later.
 
@@ -68,10 +68,14 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `POST /api/providers/{provider_id}/discover-models`
 - `POST /api/providers/{provider_id}/test`
 - `POST /api/providers/test-all`
+- `POST /api/providers/{provider_id}/secret`
 - `GET /api/providers/routing-chain`
 - `GET /api/providers/{provider_id}/history`
 - `GET /api/providers/{provider_id}/metrics`
 - `PATCH /api/providers/{provider_id}`
+- `POST /api/agents/import`
+- `GET /api/agents/import/{import_id}`
+- `POST /api/agents/import/{import_id}/decision`
 - `GET /api/agents`
 - `PATCH /api/agents/{agent_id}`
 - `GET /api/events` for latest event list
@@ -99,7 +103,7 @@ The badge tooltip displays the token source currently in use (for example `admin
 ```bash
 python3 -m py_compile backend/app/main.py backend/app/runtime.py
 node -c web/app.js
-python3 -m unittest discover -s tests
+PYTHONPATH=. .venv/bin/pytest tests
 ```
 
 ## License
