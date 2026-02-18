@@ -1283,6 +1283,41 @@ async def create_import_job(
     }
 
 
+def _summarize_import_items(items: List[Dict[str, Any]]) -> Dict[str, int]:
+    summary = {"total": 0, "pending": 0, "approved": 0, "quarantined": 0, "rejected": 0}
+    for item in items:
+        summary["total"] += 1
+        state = str(item.get("review_state", "pending")).lower()
+        if state in summary:
+            summary[state] += 1
+        else:
+            summary["pending"] += 1
+    return summary
+
+
+@app.get("/api/agents/imports")
+def list_import_jobs(
+    role: str = Depends(_require_role("viewer")),
+    limit: int = 25,
+    source_type: Optional[str] = None,
+    status: Optional[str] = None,
+) -> Dict[str, Any]:
+    jobs = storage.list_import_jobs(limit=limit)
+    if source_type:
+        normalized_source = source_type.strip().lower()
+        jobs = [job for job in jobs if str(job.get("source_type", "")).lower() == normalized_source]
+    if status:
+        normalized_status = status.strip().lower()
+        jobs = [job for job in jobs if str(job.get("status", "")).lower() == normalized_status]
+    enriched_jobs = []
+    for job in jobs:
+        import_items = storage.list_import_items(import_id=job["id"])
+        job_payload = dict(job)
+        job_payload["item_counts"] = _summarize_import_items(import_items)
+        enriched_jobs.append(job_payload)
+    return {"imports": enriched_jobs, "updated_at": _now_iso(), "role": role}
+
+
 @app.get("/api/agents/import/{import_id}")
 def get_import_job(
     import_id: str,

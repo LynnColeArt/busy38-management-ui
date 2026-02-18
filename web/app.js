@@ -14,6 +14,9 @@ const state = {
   roleSource: "unknown",
   providerChain: [],
   providerDiagnostics: null,
+  importJobs: [],
+  importItems: [],
+  selectedImportId: "",
 };
 let eventSocket = null;
 
@@ -53,9 +56,13 @@ function setStatus(id, text, kind = "") {
 }
 
 function apiBaseForWs() {
-  return API_BASE.startsWith("https://")
-    ? API_BASE.replace(/^https:/, "wss:")
-    : API_BASE.replace(/^http:/, "ws:");
+  if (API_BASE.startsWith("https://")) {
+    return API_BASE.replace(/^https:/, "wss:");
+  }
+  if (API_BASE.startsWith("http://")) {
+    return API_BASE.replace(/^http:/, "ws:");
+  }
+  return API_BASE.replace(/^ws:/, "ws:").replace(/^wss:/, "wss:");
 }
 
 function authHeaders(overrides = {}) {
@@ -101,6 +108,14 @@ async function fetchJson(path) {
   return apiRequest(path);
 }
 
+async function postForm(path, formData) {
+  return apiRequest(authQuery(path), {
+    method: "POST",
+    headers: {},
+    body: formData,
+  });
+}
+
 async function postJson(path, body) {
   return apiRequest(authQuery(path), {
     method: "POST",
@@ -122,6 +137,97 @@ function renderCards(targetId, items, renderRow) {
   }
   const cards = (items || []).map(renderRow).join("");
   container.innerHTML = `<div class="card-list">${cards || "<p>No data</p>"}</div>`;
+}
+
+function formatImportStateCountLabel(counts) {
+  const safe = counts || {};
+  const total = Number(safe.total || 0);
+  const pending = Number(safe.pending || 0);
+  const approved = Number(safe.approved || 0);
+  const quarantined = Number(safe.quarantined || 0);
+  const rejected = Number(safe.rejected || 0);
+  return `${total} total • ${pending} pending • ${approved} approved • ${quarantined} quarantined • ${rejected} rejected`;
+}
+
+function renderImportJobs(jobs) {
+  const root = qs("#importJobs");
+  if (!root) {
+    return;
+  }
+  if (!Array.isArray(jobs) || jobs.length === 0) {
+    root.innerHTML = "<p>No import jobs.</p>";
+    return;
+  }
+  const cards = jobs
+    .map((job) => {
+      const counts = formatImportStateCountLabel(job.item_counts || {});
+      const status = escapeHtml(job.status || "unknown");
+      const source = escapeHtml(job.source_type || "unknown");
+      const selected = state.selectedImportId === job.id;
+      return `
+        <div class="card${selected ? " selected" : ""}">
+          <h3>Source ${source}</h3>
+          <p><strong>Job:</strong> ${escapeHtml(job.id)}</p>
+          <p><strong>Status:</strong> ${status}</p>
+          <p><strong>Items:</strong> ${counts}</p>
+          <p>
+            <button type="button" data-action="open-import" data-id="${job.id}">
+              Open review
+            </button>
+          </p>
+        </div>
+      `;
+    })
+    .join("");
+  root.innerHTML = `<div class="card-list">${cards}</div>`;
+}
+
+function renderImportItems(items) {
+  const root = qs("#importItems");
+  if (!root) {
+    return;
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    root.innerHTML = "<p>No items for this import.</p>";
+    return;
+  }
+  const cards = items
+    .map((item) => {
+      const metadata = item.metadata || {};
+      const metadataLabel = metadata.summary || metadata.title || metadata.name || "";
+      const reviewState = escapeHtml(item.review_state || "pending");
+      const content = escapeHtml(String(item.content || "").slice(0, 600));
+      const kind = escapeHtml(item.kind || "memory");
+      const scope = escapeHtml(item.agent_scope || "global");
+      const note = escapeHtml(item.note || "");
+      return `
+        <div class="card">
+          <h3>${kind} — ${scope}</h3>
+          <p><strong>State:</strong> ${reviewState}</p>
+          <p><strong>Thread:</strong> ${escapeHtml(item.thread_id || "-")}</p>
+          <p>${content}${item.content && item.content.length > 600 ? "…" : ""}</p>
+          ${metadataLabel ? `<p><strong>Metadata:</strong> ${escapeHtml(metadataLabel)}</p>` : ""}
+          ${note ? `<p><strong>Note:</strong> ${note}</p>` : ""}
+          <p>
+            <button type="button" data-action="import-item-decision" data-id="${item.id}" data-state="approved">Approve</button>
+            <button type="button" data-action="import-item-decision" data-id="${item.id}" data-state="quarantined">Quarantine</button>
+            <button type="button" data-action="import-item-decision" data-id="${item.id}" data-state="rejected">Reject</button>
+          </p>
+        </div>
+      `;
+    })
+    .join("");
+  root.innerHTML = `<div class="card-list">${cards}</div>`;
+}
+
+function getProviderFilterState() {
+  return {
+    kind: qs("#providerFilterKind")?.value || "",
+    status: qs("#providerFilterStatus")?.value || "",
+    secretStatus: qs("#providerFilterSecret")?.value || "",
+    sortBy: qs("#providerSortBy")?.value || "priority",
+    sortDesc: Boolean(qs("#providerSortDesc")?.checked),
+  };
 }
 
 function renderProviderChain(chain) {
@@ -397,7 +503,7 @@ function connectEvents() {
 
   const token = getToken();
   const query = token ? `?token=${encodeURIComponent(token)}` : "";
-  const ws = new WebSocket(`${apiBaseForWs()}${API_BASE.includes("://") ? "" : "ws://"}${API_BASE.replace(/^https?:\/\//, "")}/api/events/ws${query}`);
+  const ws = new WebSocket(`${apiBaseForWs()}/api/events/ws${query}`);
   eventSocket = ws;
   setStatus("#eventStreamState", "Event stream: connecting", "");
 
@@ -452,7 +558,25 @@ async function loadSettings() {
 }
 
 async function loadProviders() {
-  const payload = await fetchJson("/api/providers");
+  const filters = getProviderFilterState();
+  const params = new URLSearchParams();
+  if (filters.kind) {
+    params.set("kind", filters.kind);
+  }
+  if (filters.status) {
+    params.set("status", filters.status);
+  }
+  if (filters.secretStatus) {
+    params.set("secret_status", filters.secretStatus);
+  }
+  if (filters.sortBy) {
+    params.set("sort_by", filters.sortBy);
+  }
+  if (filters.sortDesc) {
+    params.set("sort_desc", "true");
+  }
+  const query = params.toString();
+  const payload = await fetchJson(`/api/providers${query ? `?${query}` : ""}`);
   state.providers = payload.providers || [];
   renderCards("#providers", state.providers, buildProviderCard);
 }
@@ -519,6 +643,38 @@ async function loadChatHistory() {
   renderChat(payload.chat_history || []);
 }
 
+async function loadImportJobs() {
+  const payload = await fetchJson("/api/agents/imports");
+  state.importJobs = payload.imports || [];
+  if (state.selectedImportId && !state.importJobs.some((job) => job.id === state.selectedImportId)) {
+    state.selectedImportId = "";
+  }
+  renderImportJobs(state.importJobs);
+  if (!state.selectedImportId) {
+    const header = qs("#importReviewHeader");
+    if (header) {
+      header.textContent = "Select an import job to review";
+    }
+  }
+}
+
+async function loadImportItems(importId, reviewState = "") {
+  if (!importId) {
+    state.importItems = [];
+    renderImportItems(state.importItems);
+    return;
+  }
+  const query = reviewState ? `?review_state=${encodeURIComponent(reviewState)}` : "";
+  const payload = await fetchJson(`/api/agents/import/${encodeURIComponent(importId)}${query}`);
+  state.importItems = payload.items || [];
+  renderImportItems(state.importItems);
+  const header = qs("#importReviewHeader");
+  if (header) {
+    const sourceType = payload.job?.source_type ? ` (${payload.job.source_type})` : "";
+    header.textContent = `Reviewing import ${importId}${sourceType}`;
+  }
+}
+
 async function saveSettings(event) {
   event.preventDefault();
   const autoRestart = qs('input[name="auto_restart"]').checked;
@@ -576,6 +732,72 @@ async function submitChat(event) {
     await loadChatHistory();
   } catch (err) {
     setStatus("#chatStatus", `save failed: ${err.message}`, "err");
+  }
+}
+
+async function submitImport(event) {
+  event.preventDefault();
+  const sourceType = qs('select[name="sourceType"]')?.value || "openai";
+  const fileInput = qs('input[name="sourceFile"]');
+  const appendToLatest = Boolean(qs('input[name="appendToLatest"]')?.checked);
+
+  if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+    setStatus("#importSubmitStatus", "source file is required", "err");
+    return;
+  }
+  const sourceFile = fileInput.files[0];
+  if (!sourceFile) {
+    setStatus("#importSubmitStatus", "source file is required", "err");
+    return;
+  }
+  const form = new FormData();
+  form.append("source_type", sourceType);
+  form.append("append_to_latest", String(appendToLatest));
+  form.append("source_file", sourceFile);
+
+  setStatus("#importSubmitStatus", "uploading...", "");
+  try {
+    const payload = await postForm("/api/agents/import", form);
+    setStatus("#importSubmitStatus", `import queued: ${payload.import_id}`, "ok");
+    await loadImportJobs();
+    await loadImportItems(payload.import_id);
+  } catch (err) {
+    setStatus("#importSubmitStatus", `import failed: ${err.message}`, "err");
+  }
+}
+
+async function setImportItemState(itemId, stateValue) {
+  if (!state.selectedImportId) {
+    setStatus("#importSubmitStatus", "select an import job before reviewing", "err");
+    return;
+  }
+  const itemPayload = state.importItems.find((item) => item.id === itemId) || {};
+  const metadata = itemPayload.metadata || {};
+  const requiresReviewNote = stateValue !== "quarantined" && (metadata.sensitive || metadata.requires_review || itemPayload.review_state === "sensitive");
+  let note = "";
+  if (requiresReviewNote) {
+    note = window.prompt("Review note required for sensitive item:") || "";
+    if (!note.trim()) {
+      setStatus("#importSubmitStatus", "review note required for sensitive item", "err");
+      return;
+    }
+  } else {
+    note = window.prompt("Optional note for this decision:") || "";
+  }
+
+  setStatus("#importSubmitStatus", "updating import decision", "");
+  try {
+    await postJson(`/api/agents/import/${encodeURIComponent(state.selectedImportId)}/decision`, {
+      import_item_ids: [itemId],
+      review_state: stateValue,
+      note: note || undefined,
+      actor: state.role,
+    });
+    setStatus("#importSubmitStatus", `item ${itemId} marked ${stateValue}`, "ok");
+    await loadImportItems(state.selectedImportId);
+    await loadImportJobs();
+  } catch (err) {
+    setStatus("#importSubmitStatus", `decision update failed: ${err.message}`, "err");
   }
 }
 
@@ -677,6 +899,28 @@ async function onTableChange(event) {
       }
       setStatus("#providerChainStatus", `Could not load diagnostics: ${err.message}`, "err");
     }
+    return;
+  }
+
+  if (action === "open-import") {
+    const importId = target.dataset.id;
+    if (!importId) {
+      setStatus("#importSubmitStatus", "import id missing", "err");
+      return;
+    }
+    state.selectedImportId = importId;
+    await loadImportItems(importId);
+    return;
+  }
+
+  if (action === "import-item-decision") {
+    const itemId = target.dataset.id;
+    const decision = target.dataset.state || "approved";
+    if (!itemId) {
+      setStatus("#importSubmitStatus", "import item id missing", "err");
+      return;
+    }
+    await setImportItemState(itemId, decision);
     return;
   }
 
@@ -840,6 +1084,7 @@ async function boot() {
       loadHealth(),
       loadProviders(),
       loadProviderChain(),
+      loadImportJobs(),
       loadAgents(),
       loadEvents(),
       loadMemory(),
@@ -863,7 +1108,13 @@ qs("#saveToken")?.addEventListener("click", saveToken);
 qs("#settingsForm")?.addEventListener("submit", saveSettings);
 qs("#memoryForm")?.addEventListener("submit", submitMemory);
 qs("#chatForm")?.addEventListener("submit", submitChat);
+qs("#importForm")?.addEventListener("submit", submitImport);
 qs("#providerCreateForm")?.addEventListener("submit", submitProvider);
+qs("#providerFilterKind")?.addEventListener("change", loadProviders);
+qs("#providerFilterStatus")?.addEventListener("change", loadProviders);
+qs("#providerFilterSecret")?.addEventListener("change", loadProviders);
+qs("#providerSortBy")?.addEventListener("change", loadProviders);
+qs("#providerSortDesc")?.addEventListener("change", loadProviders);
 document.body.addEventListener("change", onTableChange);
 document.body.addEventListener("click", (event) => {
   const target = event.target;
@@ -871,11 +1122,13 @@ document.body.addEventListener("click", (event) => {
   if (!action || (
     !action.startsWith("runtime-")
     && action !== "discover-provider-models"
+    && action !== "open-import"
     && action !== "apply-discovered-model"
     && action !== "test-provider-models"
     && action !== "test-all-providers"
     && action !== "set-provider-secret"
     && action !== "clear-provider-secret"
+    && action !== "import-item-decision"
     && action !== "show-provider-diagnostics"
   )) {
     return;

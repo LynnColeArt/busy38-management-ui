@@ -538,6 +538,39 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         )
         self.assertEqual(viewer_blocked.status_code, 403)
 
+    def test_import_jobs_list_includes_counts(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        export = {
+            "conversations": [
+                {
+                    "id": "thread-1",
+                    "title": "Momentum planning",
+                    "messages": [
+                        {"id": "m1", "author": {"role": "user"}, "create_time": "2026-01-01T12:00:00Z", "content": "Let's test count behavior."},
+                    ],
+                },
+            ]
+        }
+        upload = ("openai-counts.json", json.dumps(export), "application/json")
+        response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        import_id = response.json()["import_id"]
+
+        import_list = self.client.get("/api/agents/imports", headers=admin_headers)
+        self.assertEqual(import_list.status_code, 200, import_list.text)
+        payload = import_list.json()
+        self.assertIn("imports", payload)
+        found = next((item for item in payload["imports"] if item["id"] == import_id), None)
+        self.assertIsNotNone(found, "import job should appear in list")
+        counts = found["item_counts"]
+        self.assertEqual(counts["total"], 1)
+        self.assertEqual(counts["pending"], 1)
+
     def test_import_rejects_unsupported_source(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         payload = {"foo": "bar"}

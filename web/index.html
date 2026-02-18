@@ -77,6 +77,52 @@
 
       <section class="panel">
         <h2>Providers</h2>
+        <div class="control-row">
+          <label>
+            Kind
+            <select id="providerFilterKind">
+              <option value="">all</option>
+              <option value="openai_compatible">openai compatible</option>
+              <option value="ollama">ollama</option>
+              <option value="llama_cpp">llama cpp</option>
+              <option value="other">other</option>
+            </select>
+          </label>
+          <label>
+            Status
+            <select id="providerFilterStatus">
+              <option value="">all</option>
+              <option value="active">active</option>
+              <option value="standby">standby</option>
+              <option value="degraded">degraded</option>
+              <option value="unreachable">unreachable</option>
+              <option value="configured">configured</option>
+            </select>
+          </label>
+          <label>
+            Secret status
+            <select id="providerFilterSecret">
+              <option value="">all</option>
+              <option value="required">required</option>
+              <option value="present">present</option>
+              <option value="missing">missing</option>
+              <option value="none">none</option>
+            </select>
+          </label>
+          <label>
+            Sort by
+            <select id="providerSortBy">
+              <option value="priority">priority</option>
+              <option value="last_checked">last checked</option>
+              <option value="latency_5m">latency 5m</option>
+              <option value="failures">failures</option>
+            </select>
+          </label>
+          <label>
+            Descending
+            <input id="providerSortDesc" type="checkbox" />
+          </label>
+        </div>
         <form id="providerCreateForm">
           <label>
             Provider ID
@@ -110,6 +156,44 @@
           <p id="providerCreateStatus" class="status"></p>
         </form>
         <div id="providers"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Intake imports</h2>
+        <form id="importForm">
+          <label>
+            Source type
+            <select name="sourceType">
+              <option value="openai">openai</option>
+              <option value="openai_codex">openai_codex</option>
+              <option value="codex">codex</option>
+              <option value="gemini">gemini</option>
+              <option value="twitter">twitter</option>
+              <option value="gemini_cli">gemini_cli</option>
+              <option value="copilot">copilot</option>
+              <option value="busy">busy</option>
+              <option value="busy_local">busy_local</option>
+              <option value="openclaw">openclaw</option>
+            </select>
+          </label>
+          <label>
+            Source export
+            <input name="sourceFile" type="file" accept="application/json,application/javascript,text/*" />
+          </label>
+          <label>
+            <input name="appendToLatest" type="checkbox" />
+            Append to latest job for this source
+          </label>
+          <button type="submit">Upload and parse</button>
+          <p id="importSubmitStatus" class="status"></p>
+        </form>
+        <div id="importJobs"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Import review</h2>
+        <p id="importReviewHeader" class="meta">Select an import job to review</p>
+        <div id="importItems"></div>
       </section>
 
       <section class="panel">
