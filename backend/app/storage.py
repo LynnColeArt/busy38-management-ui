@@ -150,6 +150,42 @@ def _ensure_import_tables(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_settings_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(settings)")}
+    if "proxy_http" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN proxy_http TEXT")
+    if "proxy_https" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN proxy_https TEXT")
+    if "proxy_no_proxy" not in columns:
+        conn.execute("ALTER TABLE settings ADD COLUMN proxy_no_proxy TEXT")
+
+
+def _ensure_plugin_table(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS plugins (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            enabled INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            source TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            command TEXT,
+            config TEXT,
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+
+
+def _coerce_proxy_value(value: Any | None) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
 @contextmanager
 def get_connection():
     path = _resolve_db_path()
@@ -171,6 +207,9 @@ def ensure_schema() -> None:
                 heartbeat_interval INTEGER NOT NULL,
                 fallback_budget_per_hour INTEGER NOT NULL,
                 auto_restart INTEGER NOT NULL,
+                proxy_http TEXT NOT NULL DEFAULT '',
+                proxy_https TEXT NOT NULL DEFAULT '',
+                proxy_no_proxy TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL
             );
 
@@ -224,6 +263,8 @@ def ensure_schema() -> None:
         )
         _ensure_events_payload_column(conn)
         _ensure_import_tables(conn)
+        _ensure_settings_columns(conn)
+        _ensure_plugin_table(conn)
         conn.commit()
 
         row = conn.execute("SELECT 1 FROM settings WHERE id='singleton'").fetchone()
@@ -231,8 +272,8 @@ def ensure_schema() -> None:
             now = _now_iso()
             conn.execute(
                 """
-                INSERT INTO settings(id, heartbeat_interval, fallback_budget_per_hour, auto_restart, updated_at)
-                VALUES ('singleton', 30, 420, 1, ?)
+                INSERT INTO settings(id, heartbeat_interval, fallback_budget_per_hour, auto_restart, proxy_http, proxy_https, proxy_no_proxy, updated_at)
+                VALUES ('singleton', 30, 420, 1, '', '', '', ?)
                 """,
                 (now,),
             )
@@ -329,26 +370,171 @@ def get_settings() -> Dict:
             row = conn.execute("SELECT * FROM settings WHERE id='singleton'").fetchone()
         payload = _dict_from_row(row)
         payload["auto_restart"] = bool(payload["auto_restart"])
+        payload["proxy_http"] = payload.get("proxy_http") or ""
+        payload["proxy_https"] = payload.get("proxy_https") or ""
+        payload["proxy_no_proxy"] = payload.get("proxy_no_proxy") or ""
         return payload
 
 
 def set_settings(settings: Dict) -> Dict:
     with get_connection() as conn:
+        _ensure_settings_columns(conn)
         payload = get_settings()
         payload.update(settings)
         now = _now_iso()
         conn.execute(
-            "UPDATE settings SET heartbeat_interval=?, fallback_budget_per_hour=?, auto_restart=?, updated_at=? WHERE id='singleton'",
+            """
+            UPDATE settings
+            SET heartbeat_interval=?, fallback_budget_per_hour=?, auto_restart=?, proxy_http=?, proxy_https=?, proxy_no_proxy=?, updated_at=?
+            WHERE id='singleton'
+            """,
             (
                 int(payload["heartbeat_interval"]),
                 int(payload["fallback_budget_per_hour"]),
                 _coerce_bool(payload["auto_restart"]),
+                _coerce_proxy_value(payload.get("proxy_http")),
+                _coerce_proxy_value(payload.get("proxy_https")),
+                _coerce_proxy_value(payload.get("proxy_no_proxy")),
                 now,
             ),
         )
         conn.commit()
         payload["updated_at"] = now
         payload["auto_restart"] = bool(payload["auto_restart"])
+        payload["proxy_http"] = _coerce_proxy_value(payload.get("proxy_http"))
+        payload["proxy_https"] = _coerce_proxy_value(payload.get("proxy_https"))
+        payload["proxy_no_proxy"] = _coerce_proxy_value(payload.get("proxy_no_proxy"))
+        return payload
+
+
+def list_plugins() -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM plugins ORDER BY datetime(updated_at) DESC").fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = _dict_from_row(row)
+            payload["enabled"] = bool(payload["enabled"])
+            payload["config"] = _coerce_json_payload(payload.get("config"))
+            payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
+            out.append(payload)
+        return out
+
+
+def get_plugin(plugin_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM plugins WHERE id = ?", (plugin_id,)).fetchone()
+        if not row:
+            return None
+        payload = _dict_from_row(row)
+        payload["enabled"] = bool(payload["enabled"])
+        payload["config"] = _coerce_json_payload(payload.get("config"))
+        payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
+        return payload
+
+
+def create_plugin(values: Dict[str, Any]) -> Dict[str, Any]:
+    if not values.get("id"):
+        raise ValueError("plugin id is required")
+    if not values.get("name"):
+        raise ValueError("plugin name is required")
+    if not values.get("source"):
+        raise ValueError("plugin source is required")
+    if not values.get("kind"):
+        raise ValueError("plugin kind is required")
+
+    with get_connection() as conn:
+        existing = conn.execute("SELECT 1 FROM plugins WHERE id = ?", (values["id"],)).fetchone()
+        if existing:
+            raise ValueError(f"plugin '{values['id']}' already exists")
+
+        now = _now_iso()
+        payload = {
+            "id": values["id"],
+            "name": values["name"],
+            "enabled": int(bool(values.get("enabled", True))),
+            "status": values.get("status", "configured"),
+            "source": values["source"],
+            "kind": values["kind"],
+            "command": values.get("command"),
+            "config": _coerce_metadata_for_storage(values.get("config")),
+            "metadata": _coerce_metadata_for_storage(values.get("metadata")),
+            "created_at": now,
+            "updated_at": now,
+        }
+        if not payload["enabled"]:
+            payload["status"] = "disabled"
+
+        conn.execute(
+            """
+            INSERT INTO plugins(
+              id, name, enabled, status, source, kind, command, config, metadata, created_at, updated_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["id"],
+                payload["name"],
+                payload["enabled"],
+                payload["status"],
+                payload["source"],
+                payload["kind"],
+                payload["command"],
+                payload["config"],
+                payload["metadata"],
+                payload["created_at"],
+                payload["updated_at"],
+            ),
+        )
+        conn.commit()
+        payload["enabled"] = bool(payload["enabled"])
+        payload["config"] = _coerce_json_payload(payload.get("config"))
+        payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
+        return payload
+
+
+def update_plugin(plugin_id: str, values: Dict[str, Any]) -> Dict[str, Any]:
+    with get_connection() as conn:
+        existing = conn.execute("SELECT * FROM plugins WHERE id = ?", (plugin_id,)).fetchone()
+        if not existing:
+            raise KeyError(f"plugin '{plugin_id}' not found")
+
+        row = _dict_from_row(existing)
+        payload = dict(row) | values
+        payload["enabled"] = int(bool(payload.get("enabled", row["enabled"])))
+        payload["config"] = _coerce_metadata_for_storage(payload.get("config"))
+        payload["metadata"] = _coerce_metadata_for_storage(payload.get("metadata"))
+        if not payload["enabled"] and not str(payload.get("status")).strip():
+            payload["status"] = row["status"] if row["status"] else "disabled"
+        if not payload["enabled"]:
+            payload["status"] = "disabled"
+        elif not payload["status"]:
+            payload["status"] = row["status"] if row["status"] else "configured"
+
+        now = _now_iso()
+        payload["updated_at"] = now
+        conn.execute(
+            """
+            UPDATE plugins
+            SET name=?, enabled=?, status=?, source=?, kind=?, command=?, config=?, metadata=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                payload["name"],
+                payload["enabled"],
+                payload["status"],
+                payload["source"],
+                payload["kind"],
+                payload.get("command"),
+                payload["config"],
+                payload["metadata"],
+                payload["updated_at"],
+                plugin_id,
+            ),
+        )
+        conn.commit()
+        payload["enabled"] = bool(payload["enabled"])
+        payload["config"] = _coerce_json_payload(payload.get("config"))
+        payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
         return payload
 
 

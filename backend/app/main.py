@@ -46,6 +46,32 @@ class SettingsUpdate(BaseModel):
     heartbeat_interval: Optional[int] = None
     fallback_budget_per_hour: Optional[int] = None
     auto_restart: Optional[bool] = None
+    proxy_http: Optional[str] = None
+    proxy_https: Optional[str] = None
+    proxy_no_proxy: Optional[str] = None
+
+
+class PluginUpdate(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    status: Optional[str] = None
+    source: Optional[str] = None
+    kind: Optional[str] = None
+    command: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class PluginCreate(BaseModel):
+    id: str
+    name: str
+    source: str
+    kind: str
+    status: str = "configured"
+    enabled: bool = True
+    command: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 class ProviderUpdate(BaseModel):
@@ -316,6 +342,12 @@ def _coerce_iso_datetime(value: Optional[str]) -> Optional[datetime]:
 
 def _sanitize_provider(provider: Dict[str, Any], role: str) -> Dict[str, Any]:
     payload = dict(provider)
+    payload["metadata"] = _redact_metadata(payload.get("metadata"), role)
+    return payload
+
+
+def _sanitize_plugin(plugin: Dict[str, Any], role: str) -> Dict[str, Any]:
+    payload = dict(plugin)
     payload["metadata"] = _redact_metadata(payload.get("metadata"), role)
     return payload
 
@@ -1270,6 +1302,56 @@ async def update_provider_secret(
     )
 
     return {"provider": _sanitize_provider(provider_payload, role), "updated_at": _now_iso()}
+
+
+@app.get("/api/plugins")
+async def list_plugins(request: Request) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    plugins = storage.list_plugins()
+    plugins = [_sanitize_plugin(plugin, role) for plugin in plugins]
+    return {"plugins": plugins, "updated_at": _now_iso()}
+
+
+@app.post("/api/plugins")
+async def create_plugin(request: Request, plugin: PluginCreate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    payload = plugin.model_dump()
+    payload["id"] = str(payload["id"]).strip()
+    payload["name"] = str(payload["name"]).strip()
+    payload["source"] = str(payload["source"]).strip()
+    payload["kind"] = str(payload["kind"]).strip()
+    if not payload["id"]:
+        raise HTTPException(status_code=400, detail="plugin id is required")
+    if not payload["name"]:
+        raise HTTPException(status_code=400, detail="plugin name is required")
+    if not payload["source"]:
+        raise HTTPException(status_code=400, detail="plugin source is required")
+    if not payload["kind"]:
+        raise HTTPException(status_code=400, detail="plugin kind is required")
+
+    try:
+        plugin_payload = storage.create_plugin(values=payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409 if "already exists" in str(exc) else 400, detail=str(exc))
+
+    _event_for(role, "plugin.created", f"Plugin created: {payload['id']}", "info", {"plugin_id": payload["id"]})
+    return {"plugin": _sanitize_plugin(plugin_payload, role), "updated_at": _now_iso()}
+
+
+@app.patch("/api/plugins/{plugin_id}")
+async def patch_plugin(request: Request, plugin_id: str, update: PluginUpdate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
+    if not payload:
+        raise HTTPException(status_code=400, detail="No plugin fields provided")
+
+    try:
+        plugin = storage.update_plugin(plugin_id=plugin_id, values=payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"plugin '{plugin_id}' not found")
+
+    _event_for(role, "plugin.updated", f"Plugin updated: {plugin_id}", "info", {"plugin_id": plugin_id})
+    return {"plugin": _sanitize_plugin(plugin, role), "updated_at": _now_iso()}
 
 
 @app.get("/api/agents")

@@ -7,6 +7,7 @@ const TOKEN_KEY = "busy38-management-token";
 const state = {
   settings: {},
   providers: [],
+  plugins: [],
   agents: [],
   events: [],
   runtimeServices: [],
@@ -479,6 +480,44 @@ function buildAgentCard(agent) {
   `;
 }
 
+function buildPluginCard(plugin) {
+  const isViewer = state.role === "viewer";
+  const isLocked = isViewer ? "disabled" : "";
+  const metadata = plugin.metadata || {};
+  const metadataLabel = Object.keys(metadata).length
+    ? `<p><strong>Metadata:</strong> ${escapeHtml(JSON.stringify(metadata))}</p>`
+    : "";
+  return `
+    <div class="card">
+      <h3>${escapeHtml(plugin.name || plugin.id)}</h3>
+      <p><strong>Plugin ID:</strong> ${escapeHtml(plugin.id)}</p>
+      <p><strong>Source:</strong> ${escapeHtml(plugin.source || "n/a")}</p>
+      <p><strong>Kind:</strong> ${escapeHtml(plugin.kind || "n/a")}</p>
+      <p><strong>Status:</strong> ${escapeHtml(plugin.status || "configured")}</p>
+      <p><strong>Command:</strong> ${escapeHtml(plugin.command || "n/a")}</p>
+      ${metadataLabel}
+      <p>
+        <label>
+          Enabled:
+          <input type="checkbox" data-action="toggle-plugin" data-id="${plugin.id}" ${plugin.enabled ? "checked" : ""} ${isLocked} />
+        </label>
+      </p>
+      <p>
+        <label>
+          Status:
+          <input type="text" data-action="set-plugin-status" data-id="${plugin.id}" value="${escapeHtml(plugin.status || "configured")}" ${isLocked} />
+        </label>
+      </p>
+      <p>
+        <label>
+          Command:
+          <input type="text" data-action="set-plugin-command" data-id="${plugin.id}" value="${escapeHtml(plugin.command || "")}" placeholder="plugin command" ${isLocked} />
+        </label>
+      </p>
+    </div>
+  `;
+}
+
 function renderRuntimeServices(services) {
   const hasServices = Array.isArray(services) && services.length > 0;
   const options = hasServices
@@ -595,6 +634,9 @@ async function loadSettings() {
   qs('input[name="heartbeat_interval"]').value = state.settings.heartbeat_interval || "";
   qs('input[name="fallback_budget_per_hour"]').value = state.settings.fallback_budget_per_hour || "";
   qs('input[name="auto_restart"]').checked = Boolean(state.settings.auto_restart);
+  qs('input[name="proxy_http"]').value = state.settings.proxy_http || "";
+  qs('input[name="proxy_https"]').value = state.settings.proxy_https || "";
+  qs('input[name="proxy_no_proxy"]').value = state.settings.proxy_no_proxy || "";
   updateRoleBadge(payload.role, payload.role_source);
   return payload;
 }
@@ -621,6 +663,12 @@ async function loadProviders() {
   const payload = await fetchJson(`/api/providers${query ? `?${query}` : ""}`);
   state.providers = payload.providers || [];
   renderCards("#providers", state.providers, buildProviderCard);
+}
+
+async function loadPlugins() {
+  const payload = await fetchJson("/api/plugins");
+  state.plugins = payload.plugins || [];
+  renderCards("#plugins", state.plugins, buildPluginCard);
 }
 
 async function loadProviderChain() {
@@ -726,6 +774,9 @@ async function saveSettings(event) {
     heartbeat_interval: heartbeat || state.settings.heartbeat_interval,
     fallback_budget_per_hour: fallback || state.settings.fallback_budget_per_hour,
     auto_restart: autoRestart,
+    proxy_http: qs('input[name="proxy_http"]').value.trim(),
+    proxy_https: qs('input[name="proxy_https"]').value.trim(),
+    proxy_no_proxy: qs('input[name="proxy_no_proxy"]').value.trim(),
   };
 
   setStatus("#settingsStatus", "saving", "");
@@ -909,6 +960,51 @@ async function submitProvider(event) {
     await Promise.all([loadProviders(), loadProviderChain()]);
   } catch (err) {
     setStatus("#providerCreateStatus", `create failed: ${err.message}`, "err");
+  }
+}
+
+async function submitPlugin(event) {
+  event.preventDefault();
+  const pluginId = qs('input[name="pluginId"]').value.trim();
+  const pluginName = qs('input[name="pluginName"]').value.trim();
+  const pluginSource = qs('input[name="pluginSource"]').value.trim();
+  const pluginKind = qs('input[name="pluginKind"]').value.trim();
+  const pluginCommand = qs('input[name="pluginCommand"]').value.trim();
+  const pluginStatus = qs('input[name="pluginStatus"]').value.trim() || "configured";
+  const pluginEnabled = qs('input[name="pluginEnabled"]').checked;
+
+  if (!pluginId || !pluginName || !pluginSource || !pluginKind) {
+    setStatus("#pluginCreateStatus", "Plugin id, name, source, and kind are required", "err");
+    return;
+  }
+
+  const payload = {
+    id: pluginId,
+    name: pluginName,
+    source: pluginSource,
+    kind: pluginKind,
+    command: pluginCommand || undefined,
+    status: pluginStatus,
+    enabled: pluginEnabled,
+  };
+
+  setStatus("#pluginCreateStatus", "creating plugin...", "");
+  try {
+    const response = await postJson("/api/plugins", payload);
+    if (!response?.plugin) {
+      throw new Error("Unexpected response from plugin create endpoint");
+    }
+    setStatus("#pluginCreateStatus", `created ${pluginId}`, "ok");
+    qs('input[name="pluginId"]').value = "";
+    qs('input[name="pluginName"]').value = "";
+    qs('input[name="pluginSource"]').value = "";
+    qs('input[name="pluginKind"]').value = "";
+    qs('input[name="pluginCommand"]').value = "";
+    qs('input[name="pluginStatus"]').value = "";
+    qs('input[name="pluginEnabled"]').checked = true;
+    await loadPlugins();
+  } catch (err) {
+    setStatus("#pluginCreateStatus", `create failed: ${err.message}`, "err");
   }
 }
 
@@ -1132,6 +1228,29 @@ async function onTableChange(event) {
       await loadAgents();
       return;
     }
+
+    if (action === "toggle-plugin") {
+      const id = target.dataset.id;
+      await patchJson(`/api/plugins/${id}`, { enabled: target.checked });
+      await loadPlugins();
+      return;
+    }
+
+    if (action === "set-plugin-status") {
+      const id = target.dataset.id;
+      await patchJson(`/api/plugins/${id}`, { status: target.value.trim() || "configured" });
+      await loadPlugins();
+      return;
+    }
+
+    if (action === "set-plugin-command") {
+      const id = target.dataset.id;
+      const command = target.value.trim();
+      const payload = command ? { command } : { command: null };
+      await patchJson(`/api/plugins/${id}`, payload);
+      await loadPlugins();
+      return;
+    }
   } catch (err) {
     setStatus("#healthState", `update failed: ${err.message}`, "err");
   }
@@ -1150,6 +1269,7 @@ async function boot() {
       loadHealth(),
       loadProviders(),
       loadProviderChain(),
+      loadPlugins(),
       loadImportJobs(),
       loadAgents(),
       loadEvents(),
@@ -1176,6 +1296,7 @@ qs("#memoryForm")?.addEventListener("submit", submitMemory);
 qs("#chatForm")?.addEventListener("submit", submitChat);
 qs("#importForm")?.addEventListener("submit", submitImport);
 qs("#providerCreateForm")?.addEventListener("submit", submitProvider);
+qs("#pluginCreateForm")?.addEventListener("submit", submitPlugin);
 qs("#providerFilterKind")?.addEventListener("change", loadProviders);
 qs("#providerFilterStatus")?.addEventListener("change", loadProviders);
 qs("#providerFilterSecret")?.addEventListener("change", loadProviders);
@@ -1196,6 +1317,9 @@ document.body.addEventListener("click", (event) => {
     && action !== "clear-provider-secret"
     && action !== "import-item-decision"
     && action !== "show-provider-diagnostics"
+    && action !== "toggle-plugin"
+    && action !== "set-plugin-status"
+    && action !== "set-plugin-command"
   )) {
     return;
   }

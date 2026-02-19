@@ -38,6 +38,18 @@
             Auto-restart
             <input name="auto_restart" type="checkbox" />
           </label>
+          <label>
+            Proxy (HTTP)
+            <input name="proxy_http" type="text" placeholder="http://proxy.example.com:8080" />
+          </label>
+          <label>
+            Proxy (HTTPS)
+            <input name="proxy_https" type="text" placeholder="https://proxy.example.com:8080" />
+          </label>
+          <label>
+            No proxy
+            <input name="proxy_no_proxy" type="text" placeholder="localhost,127.0.0.1,.local" />
+          </label>
           <button type="submit">Save settings</button>
           <p id="settingsStatus" class="status"></p>
         </form>
@@ -174,6 +186,43 @@
           <p id="providerCreateStatus" class="status"></p>
         </form>
         <div id="providers"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Plugins</h2>
+        <form id="pluginCreateForm">
+          <label>
+            Plugin ID
+            <input name="pluginId" type="text" placeholder="pmwiki" />
+          </label>
+          <label>
+            Plugin name
+            <input name="pluginName" type="text" placeholder="PmWiki Adapter" />
+          </label>
+          <label>
+            Source
+            <input name="pluginSource" type="text" placeholder="busy38 builtin" />
+          </label>
+          <label>
+            Kind
+            <input name="pluginKind" type="text" placeholder="knowledge" />
+          </label>
+          <label>
+            Command
+            <input name="pluginCommand" type="text" placeholder="pmwiki sync" />
+          </label>
+          <label>
+            Status
+            <input name="pluginStatus" type="text" placeholder="configured" />
+          </label>
+          <label>
+            Enabled
+            <input name="pluginEnabled" type="checkbox" checked />
+          </label>
+          <button type="submit">Create plugin</button>
+          <p id="pluginCreateStatus" class="status"></p>
+        </form>
+        <div id="plugins"></div>
       </section>
 
       <section class="panel">

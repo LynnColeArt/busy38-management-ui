@@ -142,6 +142,78 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         unauthorized = self.client.get("/api/settings")
         self.assertEqual(unauthorized.status_code, 401)
 
+    def test_settings_include_proxy_fields(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        update_payload = {
+            "proxy_http": "http://proxy.example.local:3128",
+            "proxy_https": "https://proxy.example.local:8443",
+            "proxy_no_proxy": "localhost,127.0.0.1,.local",
+        }
+        updated = self.client.patch("/api/settings", headers=admin_headers, json=update_payload)
+        self.assertEqual(updated.status_code, 200, updated.text)
+        settings = updated.json()["settings"]
+        self.assertEqual(settings["proxy_http"], update_payload["proxy_http"])
+        self.assertEqual(settings["proxy_https"], update_payload["proxy_https"])
+        self.assertEqual(settings["proxy_no_proxy"], update_payload["proxy_no_proxy"])
+
+        reader_view = self.client.get("/api/settings", headers=read_headers)
+        self.assertEqual(reader_view.status_code, 200)
+        reader_settings = reader_view.json()["settings"]
+        self.assertEqual(reader_settings["proxy_http"], update_payload["proxy_http"])
+        self.assertEqual(reader_settings["proxy_https"], update_payload["proxy_https"])
+        self.assertEqual(reader_settings["proxy_no_proxy"], update_payload["proxy_no_proxy"])
+
+    def test_plugin_management_crud_and_viewer_redaction(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "pmwiki",
+            "name": "PmWiki Adapter",
+            "source": "busy38 builtin",
+            "kind": "knowledge",
+            "status": "configured",
+            "enabled": True,
+            "command": "pmwiki sync",
+            "metadata": {
+                "provider": "docs",
+                "api_key": "super-secret",
+            },
+        }
+
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+        created_plugin = created.json()["plugin"]
+        self.assertEqual(created_plugin["id"], "pmwiki")
+        self.assertEqual(created_plugin["metadata"]["api_key"], "super-secret")
+
+        duplicate = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(duplicate.status_code, 409)
+
+        plugin_list_admin = self.client.get("/api/plugins", headers=admin_headers).json()["plugins"]
+        plugin = next(item for item in plugin_list_admin if item["id"] == "pmwiki")
+        self.assertEqual(plugin["status"], "configured")
+
+        viewer_plugins = self.client.get("/api/plugins", headers=read_headers).json()["plugins"]
+        viewer_plugin = next(item for item in viewer_plugins if item["id"] == "pmwiki")
+        self.assertEqual(viewer_plugin["metadata"]["api_key"], "***redacted***")
+
+        blocked_update = self.client.patch(
+            "/api/plugins/pmwiki",
+            headers=read_headers,
+            json={"status": "disabled"},
+        )
+        self.assertEqual(blocked_update.status_code, 403)
+
+        updated = self.client.patch("/api/plugins/pmwiki", headers=admin_headers, json={"enabled": False, "status": "disabled", "command": "pmwiki sync --watch"})
+        self.assertEqual(updated.status_code, 200, updated.text)
+        updated_plugin = updated.json()["plugin"]
+        self.assertFalse(updated_plugin["enabled"])
+        self.assertEqual(updated_plugin["status"], "disabled")
+        self.assertEqual(updated_plugin["command"], "pmwiki sync --watch")
+
     def test_runtime_actions_require_admin(self):
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
