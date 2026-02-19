@@ -668,6 +668,8 @@ def _provider_routing_chain() -> Dict[str, Any]:
             "active_provider_id": None,
             "enabled_count": 0,
             "total_count": len(providers),
+            "routing_intent": "no-providers",
+            "routing_path": "no providers available",
             "chain": [],
         }
 
@@ -708,6 +710,8 @@ def _provider_routing_chain() -> Dict[str, Any]:
             "model": provider.get("model"),
             "position": index,
             "active": index == 0,
+            "routing_intent": "primary" if index == 0 else "fallback",
+            "fallback_position": 0 if index == 0 else index,
             "routing_reason": routing_reason,
             "routing_behavior": routing_behavior,
             "health": {
@@ -730,6 +734,13 @@ def _provider_routing_chain() -> Dict[str, Any]:
         "active_provider_id": sorted_enabled[0]["id"],
         "enabled_count": len(sorted_enabled),
         "total_count": len(providers),
+        "routing_intent": "primary then fallback",
+        "routing_path": " -> ".join(
+            [
+                f"{item['id']} ({'primary' if item['active'] else 'fallback'})"
+                for item in chain
+            ]
+        ),
         "chain": chain,
     }
 
@@ -974,6 +985,8 @@ async def get_provider_chain(request: Request) -> Dict[str, Any]:
         "active_provider_id": payload.get("active_provider_id"),
         "enabled_count": payload.get("enabled_count", len(chain)),
         "total_count": payload.get("total_count", len(chain)),
+        "routing_intent": payload.get("routing_intent", "primary then fallback"),
+        "routing_path": payload.get("routing_path"),
     }
     return {"chain": chain, **payload_without_chain, "updated_at": _now_iso()}
 

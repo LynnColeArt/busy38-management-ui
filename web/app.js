@@ -233,22 +233,28 @@ function getProviderFilterState() {
 function renderProviderChain(chain) {
   const container = qs("#providerChain");
   const summary = qs("#providerChainSummary");
+  const routingPath = qs("#providerRoutingPath");
   if (!container) {
     return;
   }
   const metadata = chain?.selection_strategy
     ? chain
     : {
-        chain: chain || [],
-        selection_strategy: "Loading provider routing strategy…",
-        selection_rationale: "No chain metadata available yet.",
-        active_provider_id: null,
-      };
+      chain: chain || [],
+      selection_strategy: "Loading provider routing strategy…",
+      selection_rationale: "No chain metadata available yet.",
+      active_provider_id: null,
+      routing_intent: "loading",
+      routing_path: "",
+    };
   const nodes = Array.isArray(metadata.chain) ? metadata.chain : [];
   if (!Array.isArray(nodes) || nodes.length === 0) {
     container.innerHTML = "<p>No enabled providers in chain.</p>";
     if (summary) {
       summary.textContent = metadata.selection_strategy || "No enabled providers in chain.";
+    }
+    if (routingPath) {
+      routingPath.textContent = "No routing path configured.";
     }
     return;
   }
@@ -256,7 +262,12 @@ function renderProviderChain(chain) {
     const rationale = metadata.selection_rationale || "Fallback routing is based on priority order.";
     const activeProvider = metadata.active_provider_id || nodes[0]?.id || "none";
     const totals = `${metadata.enabled_count ?? nodes.length}/${metadata.total_count ?? nodes.length}`;
-    summary.textContent = `${metadata.selection_strategy}. Active provider: ${activeProvider}. Active/total: ${totals}. ${rationale}`;
+    const intent = metadata.routing_intent || "primary then fallback";
+    summary.textContent = `${metadata.selection_strategy}. Active provider: ${activeProvider}. Active/total: ${totals}. Intent: ${intent}. ${rationale}`;
+  }
+  if (routingPath) {
+    const pathValue = metadata.routing_path || `${nodes.map((provider) => `${provider.id}`).join(" -> ")} (${nodes.length} nodes)`;
+    routingPath.textContent = `Routing path: ${pathValue}`;
   }
   container.innerHTML = nodes
     .map(

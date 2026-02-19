@@ -438,12 +438,20 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertIn("selection_strategy", payload)
         self.assertIn("selection_rationale", payload)
         self.assertIn("active_provider_id", payload)
+        self.assertIn("routing_intent", payload)
+        self.assertIn("routing_path", payload)
         self.assertGreater(len(chain), 0)
+        self.assertIsInstance(payload["routing_path"], str)
+        self.assertTrue(payload["routing_path"])
         first = chain[0]
         self.assertEqual(first["id"], payload["active_provider_id"])
+        self.assertEqual(first["routing_intent"], "primary")
         self.assertIn("routing_reason", first)
         self.assertIn("routing_behavior", first)
         self.assertIn("health", first)
+        fallback_nodes = [node for node in chain if node["routing_intent"] == "fallback"]
+        if fallback_nodes:
+            self.assertIn("fallback", payload["routing_intent"])
 
     def test_provider_patch_updates_routing_metadata(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
