@@ -63,6 +63,9 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `GET /api/health`
 - `GET /api/settings`
 - `PATCH /api/settings`
+- `GET /api/plugins`
+- `POST /api/plugins`
+- `PATCH /api/plugins/{plugin_id}`
 - `GET /api/providers`
 - `POST /api/providers`
 - `POST /api/providers/{provider_id}/discover-models`
@@ -90,6 +93,15 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `POST /api/runtime/services/{service_name}/start`
 - `POST /api/runtime/services/{service_name}/stop`
 - `POST /api/runtime/services/{service_name}/restart`
+
+### Notable settings fields
+
+- `heartbeat_interval`
+- `fallback_budget_per_hour`
+- `auto_restart`
+- `proxy_http`
+- `proxy_https`
+- `proxy_no_proxy`
 
 The web UI now shows a role badge at the top of the page:
 
