@@ -323,6 +323,12 @@ function buildProviderCard(provider) {
   const metadata = parseProviderMetadata(provider.metadata);
   const discoveredModels = Array.isArray(metadata.discovered_models) ? metadata.discovered_models : [];
   const discovery = metadata.model_discovery || {};
+  const displayName = metadata.display_name || provider.name || "Unnamed provider";
+  const kind = metadata.kind || "other";
+  const fallbackModels = Array.isArray(metadata.fallback_models) ? metadata.fallback_models : [];
+  const retries = metadata.retries == null ? "default" : String(metadata.retries);
+  const timeout = metadata.timeout_ms == null ? "default" : `${metadata.timeout_ms}ms`;
+  const toolTimeout = metadata.tool_timeout_ms == null ? "default" : `${metadata.tool_timeout_ms}ms`;
   const discoveredEndpoint = escapeHtml(provider.endpoint || "");
   const lastTest = metadata.last_test || {};
   const secretPolicy = metadata.secret_policy || "required";
@@ -345,10 +351,14 @@ function buildProviderCard(provider) {
 
   return `
     <div class="card">
-      <h3>${provider.name}</h3>
+      <h3>${escapeHtml(displayName)}</h3>
+      <p><strong>Kind:</strong> ${escapeHtml(kind)}</p>
       <p><strong>Status:</strong> ${formatProviderStatusChip(provider.status)} priority ${provider.priority}</p>
       <p><strong>Model:</strong> ${provider.model}</p>
       <p><strong>Endpoint:</strong> ${provider.endpoint || "n/a"}</p>
+      <p><strong>Fallback models:</strong> ${fallbackModels.length ? fallbackModels.map((item) => escapeHtml(item)).join(", ") : "none"}</p>
+      <p><strong>Retries:</strong> ${escapeHtml(retries)}</p>
+      <p><strong>Timeouts:</strong> request ${escapeHtml(timeout)} • tool ${escapeHtml(toolTimeout)}</p>
       <p><strong>Secret policy:</strong> ${escapeHtml(secretPolicy)}${secretPresent ? " (present)" : " (missing)"}</p>
       ${isViewer ? "<p><strong>Secret:</strong> read-only role</p>" : secretPolicy !== "none" ? `<p><strong>Secret action:</strong>
         <input type="password" data-action="provider-secret-key" data-id="${provider.id}" placeholder="api key" ${isLocked}/>
@@ -808,6 +818,10 @@ async function submitProvider(event) {
   const endpoint = qs('input[name="providerEndpoint"]').value.trim();
   const model = qs('input[name="providerModel"]').value.trim();
   const kind = qs('input[name="providerKind"]').value.trim();
+  const fallbackModels = qs('input[name="providerFallbackModels"]').value.trim();
+  const retries = qs('input[name="providerRetries"]').value.trim();
+  const timeoutMs = qs('input[name="providerTimeoutMs"]').value.trim();
+  const toolTimeoutMs = qs('input[name="providerToolTimeoutMs"]').value.trim();
   const priority = Number(qs('input[name="providerPriority"]').value || "100");
   const enabled = qs('input[name="providerEnabled"]').checked;
 
@@ -821,12 +835,28 @@ async function submitProvider(event) {
     name,
     endpoint,
     model,
+    kind: kind || undefined,
+    fallback_models: fallbackModels
+      ? fallbackModels
+          .split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : [],
     priority,
     enabled,
     metadata: {},
   };
-  if (kind) {
-    payload.metadata.kind = kind;
+  if (retries) {
+    payload.retries = Number(retries);
+  }
+  if (timeoutMs) {
+    payload.timeout_ms = Number(timeoutMs);
+  }
+  if (toolTimeoutMs) {
+    payload.tool_timeout_ms = Number(toolTimeoutMs);
+  }
+  if (fallbackModels === "") {
+    payload.fallback_models = [];
   }
 
   setStatus("#providerCreateStatus", "creating provider...", "");
@@ -837,6 +867,10 @@ async function submitProvider(event) {
     qs('input[name="providerName"]').value = "";
     qs('input[name="providerEndpoint"]').value = "";
     qs('input[name="providerModel"]').value = "";
+    qs('input[name="providerFallbackModels"]').value = "";
+    qs('input[name="providerRetries"]').value = "";
+    qs('input[name="providerTimeoutMs"]').value = "";
+    qs('input[name="providerToolTimeoutMs"]').value = "";
     qs('input[name="providerKind"]').value = "";
     qs('input[name="providerPriority"]').value = "";
     qs('input[name="providerEnabled"]').checked = true;

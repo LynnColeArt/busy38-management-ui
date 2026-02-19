@@ -237,6 +237,36 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(len(providers), 1)
         self.assertEqual(providers[0]["id"], "openai-secondary")
 
+    def test_provider_create_with_routing_metadata(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        response = self.client.post(
+            "/api/providers",
+            headers=admin_headers,
+            json={
+                "id": "anthropic-primary",
+                "name": "Anthropic Primary",
+                "endpoint": "https://api.anthropic.com/v1",
+                "model": "claude-3-7-sonnet",
+                "priority": 5,
+                "enabled": True,
+                "kind": "openai_compatible",
+                "fallback_models": ["claude-3-opus", "claude-3-haiku"],
+                "retries": 4,
+                "timeout_ms": 7000,
+                "tool_timeout_ms": 12000,
+                "display_name": "Anthropic Prime",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        created = response.json()["provider"]
+        metadata = created["metadata"] or {}
+        self.assertEqual(metadata["kind"], "openai_compatible")
+        self.assertEqual(metadata["fallback_models"], ["claude-3-opus", "claude-3-haiku"])
+        self.assertEqual(metadata["retries"], 4)
+        self.assertEqual(metadata["timeout_ms"], 7000)
+        self.assertEqual(metadata["tool_timeout_ms"], 12000)
+        self.assertEqual(metadata["display_name"], "Anthropic Prime")
+
     def test_provider_create_requires_admin(self):
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
         response = self.client.post(
@@ -397,6 +427,28 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(chain[0]["active"], True)
         self.assertIn(chain[1]["id"], {"ollama-secondary"})
         self.assertFalse(chain[1]["active"])
+
+    def test_provider_patch_updates_routing_metadata(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        response = self.client.patch(
+            "/api/providers/openai-primary",
+            headers=admin_headers,
+            json={
+                "kind": "openai_compatible",
+                "fallback_models": ["gpt-5", "gpt-4o"],
+                "retries": 2,
+                "timeout_ms": 4000,
+                "tool_timeout_ms": 9000,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        provider = response.json()["provider"]
+        metadata = provider["metadata"] or {}
+        self.assertEqual(metadata["kind"], "openai_compatible")
+        self.assertEqual(metadata["fallback_models"], ["gpt-5", "gpt-4o"])
+        self.assertEqual(metadata["retries"], 2)
+        self.assertEqual(metadata["timeout_ms"], 4000)
+        self.assertEqual(metadata["tool_timeout_ms"], 9000)
 
     def test_provider_history_and_metrics_endpoints(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}

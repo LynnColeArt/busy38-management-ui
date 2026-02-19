@@ -145,6 +145,22 @@
             <input name="providerKind" type="text" placeholder="openai_compatible" />
           </label>
           <label>
+            Fallback models
+            <input name="providerFallbackModels" type="text" placeholder="gpt-4o,gpt-4o-mini" />
+          </label>
+          <label>
+            Retries
+            <input name="providerRetries" type="number" min="0" />
+          </label>
+          <label>
+            Timeout (ms)
+            <input name="providerTimeoutMs" type="number" min="0" />
+          </label>
+          <label>
+            Tool timeout (ms)
+            <input name="providerToolTimeoutMs" type="number" min="0" />
+          </label>
+          <label>
             Priority
             <input name="providerPriority" type="number" min="0" />
           </label>

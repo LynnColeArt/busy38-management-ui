@@ -54,6 +54,12 @@ class ProviderUpdate(BaseModel):
     endpoint: Optional[str] = None
     priority: Optional[int] = None
     status: Optional[str] = None
+    display_name: Optional[str] = None
+    kind: Optional[str] = None
+    fallback_models: Optional[List[str]] = None
+    retries: Optional[int] = None
+    timeout_ms: Optional[int] = None
+    tool_timeout_ms: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -85,6 +91,12 @@ class ProviderCreate(BaseModel):
     status: str = "configured"
     priority: int = 100
     enabled: bool = True
+    display_name: Optional[str] = None
+    kind: Optional[str] = None
+    fallback_models: Optional[List[str]] = None
+    retries: Optional[int] = None
+    timeout_ms: Optional[int] = None
+    tool_timeout_ms: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -211,6 +223,58 @@ def _redact_metadata(metadata: Optional[str] | Dict[str, Any] | list, role: str)
         return {k: "***redacted***" if _is_sensitive_key(k) else v for k, v in parsed.items()}
 
     return "***redacted***"
+
+
+def _normalize_provider_metadata_fields(
+    payload: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    merged = {}
+    if isinstance(metadata, dict):
+        merged = dict(metadata)
+    provided_metadata = payload.get("metadata")
+    if isinstance(provided_metadata, dict):
+        merged.update(provided_metadata)
+
+    value = payload.get("display_name")
+    if value is not None:
+        display_name = str(value).strip()
+        if display_name:
+            merged["display_name"] = display_name
+        else:
+            merged.pop("display_name", None)
+
+    value = payload.get("kind")
+    if value is not None:
+        normalized_kind = str(value).strip().lower()
+        if normalized_kind:
+            merged["kind"] = normalized_kind
+        else:
+            merged.pop("kind", None)
+
+    value = payload.get("fallback_models")
+    if value is not None:
+        if isinstance(value, str):
+            candidate_models = value.split(",")
+        elif isinstance(value, list):
+            candidate_models = value
+        else:
+            candidate_models = []
+        merged["fallback_models"] = [str(item).strip() for item in candidate_models if str(item).strip()]
+
+    value = payload.get("retries")
+    if value is not None:
+        merged["retries"] = int(value)
+
+    value = payload.get("timeout_ms")
+    if value is not None:
+        merged["timeout_ms"] = int(value)
+
+    value = payload.get("tool_timeout_ms")
+    if value is not None:
+        merged["tool_timeout_ms"] = int(value)
+
+    return merged
 
 
 def _require_role(
@@ -819,7 +883,10 @@ async def create_provider(request: Request, provider: ProviderCreate) -> Dict[st
         "priority": int(payload["priority"]),
         "enabled": bool(payload["enabled"]),
         "status": payload.get("status") or "configured",
-        "metadata": payload.get("metadata") or {},
+        "metadata": _normalize_provider_metadata_fields(
+            payload=payload,
+            metadata=payload.get("metadata") or {},
+        ),
     }
     provider_payload["metadata"] = _normalize_secret_metadata(
         metadata=dict(provider_payload["metadata"]),
@@ -911,6 +978,13 @@ async def patch_provider(
     before_provider = storage.get_provider(provider_id)
     if not before_provider:
         raise HTTPException(status_code=404, detail=f"provider '{provider_id}' not found")
+    provider_metadata = before_provider.get("metadata")
+    if not isinstance(provider_metadata, dict):
+        provider_metadata = {}
+    payload["metadata"] = _normalize_provider_metadata_fields(
+        payload=payload,
+        metadata=provider_metadata,
+    )
 
     try:
         provider = storage.update_provider(provider_id, payload)
