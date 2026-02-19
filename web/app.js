@@ -232,19 +232,40 @@ function getProviderFilterState() {
 
 function renderProviderChain(chain) {
   const container = qs("#providerChain");
+  const summary = qs("#providerChainSummary");
   if (!container) {
     return;
   }
-  if (!Array.isArray(chain) || chain.length === 0) {
+  const metadata = chain?.selection_strategy
+    ? chain
+    : {
+        chain: chain || [],
+        selection_strategy: "Loading provider routing strategy…",
+        selection_rationale: "No chain metadata available yet.",
+        active_provider_id: null,
+      };
+  const nodes = Array.isArray(metadata.chain) ? metadata.chain : [];
+  if (!Array.isArray(nodes) || nodes.length === 0) {
     container.innerHTML = "<p>No enabled providers in chain.</p>";
+    if (summary) {
+      summary.textContent = metadata.selection_strategy || "No enabled providers in chain.";
+    }
     return;
   }
-  container.innerHTML = chain
+  if (summary) {
+    const rationale = metadata.selection_rationale || "Fallback routing is based on priority order.";
+    const activeProvider = metadata.active_provider_id || nodes[0]?.id || "none";
+    const totals = `${metadata.enabled_count ?? nodes.length}/${metadata.total_count ?? nodes.length}`;
+    summary.textContent = `${metadata.selection_strategy}. Active provider: ${activeProvider}. Active/total: ${totals}. ${rationale}`;
+  }
+  container.innerHTML = nodes
     .map(
       (provider) => `
         <button class="chain-node ${provider.active ? "is-active" : ""}" type="button" data-action="show-provider-diagnostics" data-id="${provider.id}">
           <span>${escapeHtml(provider.name)} (${escapeHtml(provider.id)})</span>
           <span>${provider.active ? "active" : "fallback"}</span>
+          <small>${escapeHtml(provider.routing_reason || "fallback candidate")}</small>
+          <small>${escapeHtml(provider.routing_behavior || "normal route")}</small>
         </button>
       `
     )
@@ -594,7 +615,7 @@ async function loadProviders() {
 async function loadProviderChain() {
   const payload = await fetchJson("/api/providers/routing-chain");
   state.providerChain = payload.chain || [];
-  renderProviderChain(state.providerChain);
+  renderProviderChain(payload);
 }
 
 async function loadProviderDiagnostics(providerId) {

@@ -658,11 +658,19 @@ def _maybe_emit_provider_state_event(
         )
 
 
-def _provider_routing_chain() -> List[Dict[str, Any]]:
+def _provider_routing_chain() -> Dict[str, Any]:
     providers = storage.list_providers()
     enabled = [p for p in providers if bool(p.get("enabled"))]
     if not enabled:
-        return []
+        return {
+            "selection_strategy": "enabled providers sorted by ascending priority",
+            "selection_rationale": "No enabled providers are currently available for routing.",
+            "active_provider_id": None,
+            "enabled_count": 0,
+            "total_count": len(providers),
+            "chain": [],
+        }
+
     sorted_enabled = sorted(
         enabled,
         key=lambda item: (
@@ -672,17 +680,58 @@ def _provider_routing_chain() -> List[Dict[str, Any]]:
     )
     chain: List[Dict[str, Any]] = []
     for index, provider in enumerate(sorted_enabled):
+        provider_status = str(provider.get("status") or "configured").lower()
+        metadata = provider.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        last_test = metadata.get("last_test") if isinstance(metadata.get("last_test"), dict) else {}
+        health_metrics = metadata.get("health_metrics") if isinstance(metadata.get("health_metrics"), dict) else {}
+
+        if index == 0:
+            routing_reason = "Primary route candidate from enabled provider list."
+            routing_behavior = "Used first for normal routing."
+        else:
+            routing_reason = "Fallback route candidate."
+            routing_behavior = f"Used if all {index} higher-priority provider(s) fail or are unavailable."
+
+        if provider_status != "active":
+            routing_reason = f"{routing_reason} Provider status is currently {provider_status}."
+            if provider_status == "unreachable":
+                routing_behavior = "Avoided until provider recovers."
+
         chain.append({
             "id": provider["id"],
             "name": provider["name"],
-            "status": provider["status"],
+            "status": provider_status,
             "enabled": bool(provider.get("enabled")),
             "priority": provider.get("priority", 0),
             "model": provider.get("model"),
             "position": index,
             "active": index == 0,
+            "routing_reason": routing_reason,
+            "routing_behavior": routing_behavior,
+            "health": {
+                "last_test_status": last_test.get("status") if isinstance(last_test, dict) else None,
+                "last_tested_at": last_test.get("tested_at") if isinstance(last_test, dict) else None,
+                "latency_ms_last": health_metrics.get("latency_ms_last") if isinstance(health_metrics, dict) else None,
+                "last_error": health_metrics.get("last_error_message") if isinstance(health_metrics, dict) else None,
+            },
+            "selection_strategy": "enabled providers sorted by priority, then active status",
         })
-    return chain
+    strategy_summary = "Enabled providers sorted by priority, with active state-first ordering."
+    if all(item.get("status") == "standby" for item in sorted_enabled):
+        strategy_summary = "All enabled providers are in standby mode; fallback ordering still preserved."
+    return {
+        "selection_strategy": strategy_summary,
+        "selection_rationale": (
+            "Providers are ordered deterministically by active state and configured priority. "
+            "The first active entry is the primary route and each subsequent entry is fallback."
+        ),
+        "active_provider_id": sorted_enabled[0]["id"],
+        "enabled_count": len(sorted_enabled),
+        "total_count": len(providers),
+        "chain": chain,
+    }
 
 
 def _run_provider_test(
@@ -914,8 +963,19 @@ async def create_provider(request: Request, provider: ProviderCreate) -> Dict[st
 @app.get("/api/providers/routing-chain")
 async def get_provider_chain(request: Request) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
-    chain = _provider_routing_chain()
-    return {"chain": chain, "updated_at": _now_iso()}
+    payload = _provider_routing_chain()
+    chain = payload["chain"] if isinstance(payload, dict) else []
+    payload_without_chain = {
+        "selection_strategy": payload.get("selection_strategy", "enabled providers sorted by priority"),
+        "selection_rationale": payload.get(
+            "selection_rationale",
+            "Enabled providers are ordered deterministically for fallback planning.",
+        ),
+        "active_provider_id": payload.get("active_provider_id"),
+        "enabled_count": payload.get("enabled_count", len(chain)),
+        "total_count": payload.get("total_count", len(chain)),
+    }
+    return {"chain": chain, **payload_without_chain, "updated_at": _now_iso()}
 
 
 @app.get("/api/providers/{provider_id}/history")

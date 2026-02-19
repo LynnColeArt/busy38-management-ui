@@ -428,6 +428,23 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertIn(chain[1]["id"], {"ollama-secondary"})
         self.assertFalse(chain[1]["active"])
 
+    def test_provider_routing_chain_exposes_routing_reasoning(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        response = self.client.get("/api/providers/routing-chain", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+
+        payload = response.json()
+        chain = payload["chain"]
+        self.assertIn("selection_strategy", payload)
+        self.assertIn("selection_rationale", payload)
+        self.assertIn("active_provider_id", payload)
+        self.assertGreater(len(chain), 0)
+        first = chain[0]
+        self.assertEqual(first["id"], payload["active_provider_id"])
+        self.assertIn("routing_reason", first)
+        self.assertIn("routing_behavior", first)
+        self.assertIn("health", first)
+
     def test_provider_patch_updates_routing_metadata(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         response = self.client.patch(

@@ -118,10 +118,18 @@ button:hover {
   border: 1px solid #223355;
   padding: 8px 10px;
   border-radius: 6px;
+  display: grid;
+  gap: 4px;
+  text-align: left;
 }
 
 .chain-node.is-active {
   border-color: #34d399;
+}
+
+.chain-node small {
+  color: #9bb4d8;
+  font-size: 0.8rem;
 }
 
 .status-badge {
