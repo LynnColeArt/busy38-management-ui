@@ -113,7 +113,7 @@ class ProviderCreate(BaseModel):
     id: str
     name: str
     endpoint: str
-    model: str
+    model: Optional[str] = None
     status: str = "configured"
     priority: int = 100
     enabled: bool = True
@@ -576,6 +576,21 @@ def _record_provider_test_metadata(
     return payload
 
 
+def _build_model_discovery_metadata(
+    discovery: Dict[str, Any],
+    status: str,
+) -> Dict[str, Any]:
+    return {
+        "discovered_at": _now_iso(),
+        "status": status,
+        "source": discovery.get("source", "manual"),
+        "endpoint": discovery.get("endpoint"),
+        "attempts": discovery.get("attempts", []),
+        "count": len(discovery.get("models") or []),
+        "error": discovery.get("error"),
+    }
+
+
 def _coerce_secret_policy(provider: Dict[str, Any], metadata: Dict[str, Any]) -> str:
     policy = metadata.get("secret_policy")
     if policy in {"required", "optional", "none"}:
@@ -957,16 +972,15 @@ async def create_provider(request: Request, provider: ProviderCreate) -> Dict[st
     payload["id"] = str(payload["id"]).strip()
     payload["name"] = str(payload["name"]).strip()
     payload["endpoint"] = str(payload["endpoint"]).strip()
-    payload["model"] = str(payload["model"]).strip()
+    payload["model"] = (
+        str(payload["model"]).strip() if payload.get("model") is not None else ""
+    )
     if not payload["id"]:
         raise HTTPException(status_code=400, detail="provider id is required")
     if not payload["name"]:
         raise HTTPException(status_code=400, detail="provider name is required")
     if not payload["endpoint"]:
         raise HTTPException(status_code=400, detail="provider endpoint is required")
-    if not payload["model"]:
-        raise HTTPException(status_code=400, detail="provider model is required")
-
     provider_payload = {
         "id": payload["id"],
         "name": payload["name"],
@@ -986,6 +1000,22 @@ async def create_provider(request: Request, provider: ProviderCreate) -> Dict[st
         actor=role,
         has_secret=bool(provider_payload["metadata"].get("api_key")),
     )
+
+    if not provider_payload["model"]:
+        discovery = _discover_provider_models(provider=provider_payload, api_key=None)
+        provider_payload["metadata"]["model_discovery"] = _build_model_discovery_metadata(
+            discovery=discovery,
+            status="complete" if discovery["models"] else "manual",
+        )
+        if discovery["models"]:
+            provider_payload["model"] = discovery["models"][0]
+            provider_payload["metadata"]["discovered_models"] = discovery["models"]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="provider model is required unless discovery returns at least one model; run discovery first or provide model manually",
+            )
+
     if not bool(provider_payload["enabled"]):
         provider_payload["status"] = "standby"
     try:
@@ -1135,15 +1165,10 @@ async def discover_provider_models(
         metadata = {}
     metadata = dict(metadata)
     metadata.pop("discovered_models", None)
-    metadata["model_discovery"] = {
-        "discovered_at": _now_iso(),
-        "status": "complete" if discovery["models"] else "manual",
-        "source": discovery.get("source"),
-        "endpoint": discovery.get("endpoint"),
-        "attempts": discovery.get("attempts"),
-        "count": len(discovery.get("models") or []),
-        "error": discovery.get("error"),
-    }
+    metadata["model_discovery"] = _build_model_discovery_metadata(
+        discovery=discovery,
+        status="complete" if discovery["models"] else "manual",
+    )
     if request.endpoint:
         metadata["model_discovery"]["requested_endpoint"] = request.endpoint
     if discovery["models"]:

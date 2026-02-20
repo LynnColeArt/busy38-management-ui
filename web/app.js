@@ -908,8 +908,8 @@ async function submitProvider(event) {
   const priority = Number(qs('input[name="providerPriority"]').value || "100");
   const enabled = qs('input[name="providerEnabled"]').checked;
 
-  if (!provider_id || !name || !endpoint || !model) {
-    setStatus("#providerCreateStatus", "provider id, name, endpoint, and model are required", "err");
+  if (!provider_id || !name || !endpoint) {
+    setStatus("#providerCreateStatus", "provider id, name, and endpoint are required", "err");
     return;
   }
 
@@ -917,7 +917,7 @@ async function submitProvider(event) {
     id: provider_id,
     name,
     endpoint,
-    model,
+    model: model || undefined,
     kind: kind || undefined,
     fallback_models: fallbackModels
       ? fallbackModels

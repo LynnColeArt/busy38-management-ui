@@ -339,6 +339,47 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(metadata["tool_timeout_ms"], 12000)
         self.assertEqual(metadata["display_name"], "Anthropic Prime")
 
+    def test_provider_create_without_model_discovers_one(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        def fake_fetch(url: str, headers: dict | None = None):
+            return {"data": [{"id": "gpt-4o-mini"}, {"id": "gpt-4"}]}
+
+        with patch.object(self.main, "_safe_http_fetch", side_effect=fake_fetch):
+            response = self.client.post(
+                "/api/providers",
+                headers=admin_headers,
+                json={
+                    "id": "openai-auto",
+                    "name": "OpenAI Auto",
+                    "endpoint": "https://api.openai.com/v1",
+                    "kind": "openai_compatible",
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        created = response.json()["provider"]
+        self.assertEqual(created["id"], "openai-auto")
+        self.assertEqual(created["model"], "gpt-4o-mini")
+        metadata = created["metadata"] or {}
+        self.assertEqual(metadata.get("model_discovery", {}).get("status"), "complete")
+        self.assertEqual(metadata.get("discovered_models"), ["gpt-4o-mini", "gpt-4"])
+
+    def test_provider_create_without_model_fails_without_discovery(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        with patch.object(self.main, "_safe_http_fetch", side_effect=HTTPException(status_code=502, detail="No model list endpoint matched this provider.")):
+            response = self.client.post(
+                "/api/providers",
+                headers=admin_headers,
+                json={
+                    "id": "openai-auto-fail",
+                    "name": "OpenAI Auto Fail",
+                    "endpoint": "https://api.openai.com/v1",
+                    "kind": "openai_compatible",
+                },
+            )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("model is required", response.json()["detail"])
+
     def test_provider_create_requires_admin(self):
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
         response = self.client.post(
