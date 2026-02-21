@@ -339,6 +339,82 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(metadata["tool_timeout_ms"], 12000)
         self.assertEqual(metadata["display_name"], "Anthropic Prime")
 
+    def test_provider_discovery_applies_catalog_filter(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with patch.object(
+            self.main,
+            "_filter_models_from_catalog",
+            lambda provider, models, base_url=None: (["gpt-4.1-mini"], True, None),
+        ):
+            def fake_fetch(url: str, headers: dict | None = None):
+                return {"data": [{"id": "gpt-4.1-mini"}, {"id": "disallowed-model"}]}
+
+            with patch.object(self.main, "_safe_http_fetch", side_effect=fake_fetch):
+                response = self.client.post(
+                    "/api/providers/openai-primary/discover-models",
+                    headers=admin_headers,
+                    json={"api_key": "sk-test", "endpoint": "https://api.openai.com/v1/models"},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["discovered_models"], ["gpt-4.1-mini"])
+        self.assertEqual(payload["count"], 1)
+
+    def test_provider_discovery_filters_to_empty_and_uses_manual_path(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        def fake_fetch(url: str, headers: dict | None = None):
+            return {"data": [{"id": "blocked-1"}, {"id": "blocked-2"}]}
+
+        with patch.object(
+            self.main,
+            "_filter_models_from_catalog",
+            lambda provider, models, base_url=None: ([], True, "model blocked by catalog"),
+        ):
+            with patch.object(self.main, "_safe_http_fetch", side_effect=fake_fetch):
+                response = self.client.post(
+                    "/api/providers/openai-primary/discover-models",
+                    headers=admin_headers,
+                    json={"api_key": "sk-test", "endpoint": "https://api.openai.com/v1/models"},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["discovered_models"], [])
+        self.assertEqual(payload["count"], 0)
+        self.assertEqual(payload["source"], "manual")
+        self.assertIn("error", payload)
+        self.assertTrue(
+            "No model list endpoint matched this provider." in payload["error"]
+            or "model blocked by catalog" in payload["error"],
+            payload["error"],
+        )
+        providers = self.client.get("/api/providers", headers=admin_headers).json()["providers"]
+        provider = next(item for item in providers if item["id"] == "openai-primary")
+        metadata = provider.get("metadata") or {}
+        discovery = metadata.get("model_discovery") or {}
+        self.assertEqual(discovery.get("status"), "manual")
+        self.assertEqual(discovery.get("count"), 0)
+
+    def test_provider_patch_rejects_catalog_blocked_model(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with patch.object(
+            self.main,
+            "_filter_models_from_catalog",
+            lambda provider, models, base_url=None: ([], True, "model blocked by catalog"),
+        ):
+            response = self.client.patch(
+                "/api/providers/openai-primary",
+                headers=admin_headers,
+                json={"model": "gpt-4o"},
+            )
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("model blocked by catalog", response.json()["detail"])
+
     def test_provider_create_without_model_discovers_one(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
 
@@ -379,6 +455,34 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 400, response.text)
         self.assertIn("model is required", response.json()["detail"])
+
+    def test_provider_create_rejects_disallowed_catalog_model(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        with patch.object(
+            self.main,
+            "_filter_models_from_catalog",
+            lambda provider, models, base_url=None: ([], False, "model blocked by catalog"),
+        ):
+            response = self.client.post(
+                "/api/providers",
+                headers=admin_headers,
+                json={
+                    "id": "openai-blocked",
+                    "name": "OpenAI Blocked",
+                    "endpoint": "https://api.openai.com/v1",
+                    "model": "gpt-4o",
+                    "priority": 10,
+                    "enabled": True,
+                    "metadata": {"kind": "openai_compatible"},
+                },
+            )
+        self.assertEqual(response.status_code, 400, response.text)
+        detail = response.json()["detail"]
+        self.assertTrue(
+            "not permitted by provider catalog" in detail
+            or "model blocked by catalog" in detail,
+            detail,
+        )
 
     def test_provider_create_requires_admin(self):
         read_headers = {"Authorization": f"Bearer {self.read_token}"}

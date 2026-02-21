@@ -24,6 +24,12 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+try:
+    from core.inference.provider_catalog import filter_catalog_models as _filter_models_from_catalog
+except Exception:  # pragma: no cover
+    _filter_models_from_catalog = None
+
 from .import_adapters import get_import_adapter
 from .import_contract import checksum_payload
 
@@ -392,6 +398,39 @@ def _safe_http_fetch(url: str, headers: Optional[Dict[str, str]] = None, timeout
         )
 
 
+def _provider_catalog_key(provider: Dict[str, Any]) -> str:
+    metadata = provider.get("metadata")
+    if isinstance(metadata, dict):
+        kind = str(metadata.get("kind") or "").strip().lower()
+        if kind:
+            return kind
+    return str(provider.get("kind") or provider.get("id") or provider.get("name") or "").strip().lower()
+
+
+def _apply_catalog_filter(
+    provider: Dict[str, Any],
+    models: list[str],
+) -> tuple[list[str], bool, Optional[str]]:
+    if not models:
+        return [], False, None
+
+    raw_models = [str(model).strip() for model in models if str(model).strip()]
+    if not raw_models:
+        return [], False, None
+
+    if _filter_models_from_catalog is None:
+        return raw_models, False, None
+
+    try:
+        return _filter_models_from_catalog(
+            provider=_provider_catalog_key(provider),
+            models=raw_models,
+            base_url=provider.get("endpoint"),
+        )
+    except Exception:
+        return raw_models, False, None
+
+
 def _extract_models_from_payload(payload: Any) -> List[str]:
     models: List[str] = []
     if isinstance(payload, dict):
@@ -471,14 +510,25 @@ def _discover_provider_models(
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     attempts: List[Dict[str, Any]] = []
+    catalog_filter_error: Optional[str] = None
 
     for candidate in _provider_model_endpoints(provider, endpoint_override):
         try:
             payload = _safe_http_fetch(candidate["url"], headers=headers)
             models = _extract_models_from_payload(payload)
             if models:
+                filtered, _was_filtered, catalog_error = _apply_catalog_filter(provider, models)
+                if catalog_error:
+                    catalog_filter_error = catalog_error
+                if not filtered:
+                    attempts.append({
+                        "url": candidate["url"],
+                        "result": "catalog-filtered-empty",
+                        "error": catalog_error or "No discovered model passed catalog validation.",
+                    })
+                    continue
                 return {
-                    "models": models,
+                    "models": filtered,
                     "endpoint": candidate["url"],
                     "source": _maybe_strip_api_path(candidate["url"]),
                     "attempts": attempts,
@@ -488,12 +538,17 @@ def _discover_provider_models(
             attempts.append({"url": candidate["url"], "error": exc.detail})
         except Exception as exc:
             attempts.append({"url": candidate["url"], "error": str(exc)})
+
+    terminal_error = "No model list endpoint matched this provider."
+    if catalog_filter_error:
+        terminal_error = catalog_filter_error
+
     return {
         "models": [],
         "endpoint": endpoint_override or provider.get("endpoint") or "",
         "source": "unresolved",
         "attempts": attempts,
-        "error": "No model list endpoint matched this provider.",
+        "error": terminal_error,
     }
 
 
@@ -654,6 +709,30 @@ def _provider_secret_status(provider: Dict[str, Any]) -> str:
     if secret_present:
         return "optional_present"
     return "optional_missing"
+
+
+def _assert_catalog_models_allowed(
+    *,
+    provider: Dict[str, Any],
+    primary_model: Optional[str],
+    fallback_models: Optional[List[str]] = None,
+) -> None:
+    candidates = []
+    if primary_model:
+        candidates.append(primary_model)
+    if fallback_models:
+        candidates.extend(fallback_models)
+
+    for model in candidates:
+        normalized = str(model).strip()
+        if not normalized:
+            continue
+        filtered, _, catalog_error = _apply_catalog_filter(provider, [normalized])
+        if not filtered:
+            raise HTTPException(
+                status_code=400,
+                detail=catalog_error or f"model '{normalized}' is not permitted by provider catalog.",
+            )
 
 
 def _provider_sort_key(provider: Dict[str, Any], sort_by: str):
@@ -1016,6 +1095,12 @@ async def create_provider(request: Request, provider: ProviderCreate) -> Dict[st
                 detail="provider model is required unless discovery returns at least one model; run discovery first or provide model manually",
             )
 
+    _assert_catalog_models_allowed(
+        provider=provider_payload,
+        primary_model=provider_payload.get("model"),
+        fallback_models=provider_payload.get("metadata", {}).get("fallback_models"),
+    )
+
     if not bool(provider_payload["enabled"]):
         provider_payload["status"] = "standby"
     try:
@@ -1119,6 +1204,17 @@ async def patch_provider(
     payload["metadata"] = _normalize_provider_metadata_fields(
         payload=payload,
         metadata=provider_metadata,
+    )
+
+    merged_provider = dict(before_provider)
+    merged_provider.update(payload)
+    merged_metadata = dict(before_provider.get("metadata") or {})
+    merged_metadata.update(payload.get("metadata") or {})
+    merged_provider["metadata"] = merged_metadata
+    _assert_catalog_models_allowed(
+        provider=merged_provider,
+        primary_model=merged_provider.get("model") if "model" in payload else before_provider.get("model"),
+        fallback_models=merged_provider.get("metadata", {}).get("fallback_models"),
     )
 
     try:
