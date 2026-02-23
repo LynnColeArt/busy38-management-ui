@@ -18,6 +18,7 @@ const state = {
   importJobs: [],
   importItems: [],
   agentDirectory: [],
+  agentDirectoryArtifact: null,
   selectedImportId: "",
 };
 let eventSocket = null;
@@ -505,7 +506,46 @@ function buildAgentDirectoryCard(directoryEntry) {
 }
 
 function renderAgentDirectory() {
-  renderCards("#agentDirectory", state.agentDirectory, buildAgentDirectoryCard);
+  const root = qs("#agentDirectory");
+  if (!root) {
+    return;
+  }
+
+  const cards = [];
+  if (state.agentDirectoryArtifact) {
+    cards.push(buildDirectoryArtifactCard(state.agentDirectoryArtifact));
+  }
+
+  const directories = (state.agentDirectory || []).map((entry) => buildAgentDirectoryCard(entry));
+  if (directories.length > 0) {
+    cards.push(...directories);
+  } else {
+    cards.push("<p>No approved agent responsibilities yet.</p>");
+  }
+  root.innerHTML = cards.join("");
+}
+
+function buildDirectoryArtifactCard(artifact) {
+  const schemaVersion = escapeHtml(artifact.context_schema_version || "unset");
+  const sourceType = escapeHtml(artifact.source_type || "unknown");
+  const artifactId = escapeHtml(artifact.artifact_id || "unavailable");
+  const importId = escapeHtml(artifact.generated_from_import_id || "-");
+  const itemCount = Number(artifact.imported_item_count || 0);
+  const sourceStatus = escapeHtml(artifact.import_status || "n/a");
+  const metadata = artifact.source_metadata || {};
+  const metadataText = Object.keys(metadata).length ? escapeHtml(JSON.stringify(metadata)) : "none";
+
+  return `
+    <div class="card">
+      <h3>Company Directory Artifact</h3>
+      <p><strong>Artifact:</strong> ${artifactId}</p>
+      <p><strong>Source:</strong> ${sourceType} (${sourceStatus})</p>
+      <p><strong>Generated from:</strong> ${importId}</p>
+      <p><strong>Approved entries:</strong> ${itemCount}</p>
+      <p><strong>Context schema:</strong> ${schemaVersion}</p>
+      <p><strong>Metadata:</strong> ${metadataText}</p>
+    </div>
+  `;
 }
 
 function buildPluginCard(plugin) {
@@ -730,6 +770,7 @@ async function loadAgents() {
 async function loadAgentDirectory() {
   const payload = await fetchJson("/api/agents/directory");
   state.agentDirectory = payload.directory || [];
+  state.agentDirectoryArtifact = payload.directory_artifact || null;
   renderAgentDirectory();
 }
 

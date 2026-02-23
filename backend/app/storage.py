@@ -1189,10 +1189,25 @@ def list_agent_directory() -> List[Dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, kind, agent_scope, content, visibility, source, thread_id, message_id, created_at, metadata
-            FROM import_items
+            SELECT
+                ii.id,
+                ii.kind,
+                ii.agent_scope,
+                ii.content,
+                ii.visibility,
+                ii.source,
+                ii.thread_id,
+                ii.message_id,
+                ii.created_at,
+                ii.metadata,
+                ii.import_id,
+                ij.source_type AS import_source_type,
+                ij.created_at AS import_created_at
+            FROM import_items ii
+            LEFT JOIN import_jobs ij
+                ON ij.id = ii.import_id
             WHERE review_state = 'approved'
-            ORDER BY agent_scope, import_index, datetime(created_at) DESC
+            ORDER BY agent_scope, import_index, datetime(ii.created_at) DESC
             """
         ).fetchall()
         groups: Dict[str, Dict[str, Any]] = {}
@@ -1221,11 +1236,68 @@ def list_agent_directory() -> List[Dict[str, Any]]:
                     "thread_id": row_data.get("thread_id"),
                     "message_id": row_data.get("message_id"),
                     "created_at": row_data.get("created_at"),
+                    "import_id": row_data.get("import_id"),
+                    "import_source_type": row_data.get("import_source_type"),
+                    "import_created_at": row_data.get("import_created_at"),
                 }
             )
 
         directory = [groups[scope] for scope in sorted(groups)]
         return directory
+
+
+def get_agent_directory_artifact() -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                ii.import_id AS import_id,
+                ij.source_type AS source_type,
+                ij.created_at AS import_created_at,
+                ij.updated_at AS import_updated_at,
+                ij.status AS import_status,
+                ij.source_metadata AS source_metadata,
+                ij.checksum AS import_checksum
+            FROM import_items ii
+            LEFT JOIN import_jobs ij
+                ON ij.id = ii.import_id
+            WHERE ii.review_state = 'approved'
+            ORDER BY datetime(ii.created_at) DESC, datetime(ij.updated_at) DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        row_data = _dict_from_row(row)
+        source_metadata = _coerce_json_payload(row_data.get("source_metadata"))
+        if not isinstance(source_metadata, dict):
+            source_metadata = {}
+
+        approved_item_count = conn.execute(
+            "SELECT COUNT(*) AS total FROM import_items WHERE import_id = ? AND review_state = 'approved'",
+            (row_data.get("import_id"),),
+        ).fetchone()["total"]
+
+        context_schema_version = (
+            source_metadata.get("context_schema_version")
+            or source_metadata.get("schema_version")
+            or source_metadata.get("context_schema")
+        )
+
+        return {
+            "artifact_id": f"directory:{row_data.get('import_id')}",
+            "generated_from_import_id": row_data.get("import_id"),
+            "source_type": row_data.get("source_type"),
+            "import_status": row_data.get("import_status"),
+            "source_metadata": source_metadata,
+            "imported_item_count": approved_item_count,
+            "context_schema_version": context_schema_version,
+            "generated_at": row_data.get("import_created_at"),
+            "updated_at": row_data.get("import_updated_at"),
+            "source_checksum": row_data.get("import_checksum"),
+        }
 
 
 def list_import_jobs(limit: int = 50) -> List[Dict[str, Any]]:

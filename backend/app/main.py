@@ -1501,7 +1501,18 @@ async def get_agents(request: Request) -> Dict[str, Any]:
 async def get_agent_directory(request: Request) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
     directory = storage.list_agent_directory()
-    return {"directory": directory, "updated_at": _now_iso(), "role": role}
+    directory_artifact = storage.get_agent_directory_artifact()
+    if isinstance(directory_artifact, dict):
+        directory_artifact["source_metadata"] = _redact_metadata(
+            directory_artifact.get("source_metadata"),
+            role,
+        )
+    return {
+        "directory": directory,
+        "directory_artifact": directory_artifact,
+        "updated_at": _now_iso(),
+        "role": role,
+    }
 
 
 @app.patch("/api/agents/{agent_id}")

@@ -984,13 +984,22 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         )
         self.assertEqual(decision.status_code, 200, decision.text)
 
-        directory = self.client.get("/api/agents/directory", headers=read_headers).json()["directory"]
+        directory_payload = self.client.get("/api/agents/directory", headers=read_headers).json()
+        directory = directory_payload["directory"]
+        artifact = directory_payload.get("directory_artifact")
         self.assertEqual(len(directory), 1)
         entry = directory[0]
         self.assertEqual(entry["item_count"], 1)
         responsibilities = entry.get("responsibilities", [])
         self.assertEqual(len(responsibilities), 1)
         self.assertEqual(responsibilities[0]["id"], items[0]["id"])
+
+        self.assertIsNotNone(artifact)
+        self.assertEqual(artifact["generated_from_import_id"], import_id)
+        self.assertEqual(artifact["source_type"], "openai")
+        self.assertEqual(artifact["import_status"], "awaiting_review")
+        self.assertGreaterEqual(int(artifact.get("imported_item_count", 0)), 1)
+        self.assertEqual(artifact["artifact_id"], f"directory:{import_id}")
 
     def test_import_rejects_unsupported_source(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
