@@ -26,6 +26,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 try:
+    from core.cognition.attachment_intake import (
+        ATTACHMENT_DECISION_ACCEPT,
+        ATTACHMENT_DECISION_BLOCK,
+        ATTACHMENT_DECISION_QUARANTINE,
+        make_intake_decision as _make_import_intake_decision,
+    )
+except Exception:  # pragma: no cover
+    from core.attachments.intake import (
+        ATTACHMENT_DECISION_ACCEPT,
+        ATTACHMENT_DECISION_BLOCK,
+        ATTACHMENT_DECISION_QUARANTINE,
+        assess_attachment_intake as _make_import_intake_decision,
+    )
+
+try:
     from core.inference.provider_catalog import filter_catalog_models as _filter_models_from_catalog
 except Exception:  # pragma: no cover
     _filter_models_from_catalog = None
@@ -1508,6 +1523,71 @@ def _coerce_import_payload(raw: bytes | str) -> bytes:
     return raw.encode("utf-8")
 
 
+def _normalise_intake_reason(value: str) -> str:
+    value = str(value or "").strip()
+    mapping = {
+        "redaction_required": "redacted_sensitive_patterns",
+        "blocked_attachment_type": "blocked_by_intake_policy",
+    }
+    return mapping.get(value, value)
+
+
+def _coerce_import_item_intake(
+    item: Dict[str, Any],
+    *,
+    source_type: str,
+    source_index: int = 0,
+) -> tuple[Dict[str, Any], list[str]]:
+    content = str(item.get("content") or "").strip()
+    thread_ref = str(item.get("thread_id") or f"thread-{source_index}").strip()
+    message_ref = str(item.get("message_id") or f"message-{source_index}").strip()
+
+    file_name = f"{source_type}_{thread_ref}_{message_ref}.txt"
+    file_name = file_name.replace("/", "_").replace("\\", "_")
+
+    entry = {
+        "filename": file_name,
+        "mime_type": "text/plain",
+        "size": len(content.encode("utf-8")),
+        "source": f"management-import/{source_type}",
+        "text_preview": content,
+        "id": f"import:{source_type}:{thread_ref}:{message_ref}",
+        "source_type": source_type,
+    }
+
+    decision = _make_import_intake_decision(entry)  # type: ignore[arg-type]
+    reasons = [_normalise_intake_reason(str(reason)) for reason in list(entry.get("intake_reasons") or [])]
+    reasons = list(dict.fromkeys([reason for reason in reasons if str(reason).strip()]))
+
+    if decision == ATTACHMENT_DECISION_BLOCK and "blocked_by_intake_policy" not in reasons:
+        reasons.append("blocked_by_intake_policy")
+
+    metadata = dict(item.get("metadata") or {})
+    metadata.update(
+        {
+            "requires_review": decision != ATTACHMENT_DECISION_ACCEPT,
+            "intake_decision": decision,
+            "intake_reasons": reasons,
+            "intake_policy_version": entry.get("intake_policy_version"),
+            "intake_source": entry.get("source"),
+            "intake_warnings": reasons,
+            "intake_text_preview_present": bool(content),
+        }
+    )
+
+    item_payload = dict(item)
+    item_payload["metadata"] = metadata
+
+    if decision == ATTACHMENT_DECISION_BLOCK:
+        item_payload["visibility"] = "quarantined"
+        item_payload["review_state"] = "rejected"
+    elif decision == ATTACHMENT_DECISION_QUARANTINE:
+        item_payload["visibility"] = "quarantined"
+        item_payload["review_state"] = "quarantined"
+
+    return item_payload, reasons
+
+
 @app.post("/api/agents/import")
 async def create_import_job(
     request: Request,
@@ -1569,7 +1649,7 @@ async def create_import_job(
 
     attempted_count = len(parse_result.items)
     if parse_result.items:
-        items = [
+        raw_items = [
             {
                 "kind": item.kind,
                 "agent_scope": item.agent_scope,
@@ -1586,6 +1666,18 @@ async def create_import_job(
             }
             for item in parse_result.items
         ]
+
+        warnings = list(parse_result.warnings)
+        items = []
+        for index, raw_item in enumerate(raw_items):
+            prepared, intake_warnings = _coerce_import_item_intake(
+                raw_item,
+                source_type=source_type_key,
+                source_index=index,
+            )
+            items.append(prepared)
+            warnings.extend(intake_warnings)
+        warnings = list(dict.fromkeys([w for w in warnings if str(w).strip()]))
         if append_to_latest:
             existing_checksums = {
                 stored["checksum"]
@@ -1597,7 +1689,7 @@ async def create_import_job(
                 storage.append_import_progress_event(
                     import_id=job["id"],
                     phase="parsed",
-                    details={"warning_count": len(parse_result.warnings), "new_item_count": 0},
+                    details={"warning_count": len(warnings), "new_item_count": 0},
                 )
                 storage.update_import_job_status(job["id"], "awaiting_review")
                 return {
@@ -1606,7 +1698,7 @@ async def create_import_job(
                     "created": created,
                     "counts": parse_result.counts,
                     "items": [],
-                    "warnings": list(parse_result.warnings),
+                    "warnings": warnings,
                     "errors": list(parse_result.errors),
                     "redaction_hints": adapter.redaction_hints(),
                     "dedupe": {
@@ -1622,11 +1714,11 @@ async def create_import_job(
         inserted = []
 
     storage.update_import_job_status(job["id"], "awaiting_review")
-    if parse_result.warnings:
+    if warnings:
         storage.append_import_progress_event(
             import_id=job["id"],
             phase="parsed",
-            details={"warning_count": len(parse_result.warnings), "errors": parse_result.errors},
+            details={"warning_count": len(warnings), "errors": parse_result.errors},
         )
 
     return {
@@ -1635,7 +1727,7 @@ async def create_import_job(
         "created": created,
         "counts": parse_result.counts,
         "items": inserted if parse_result.items else [],
-        "warnings": list(parse_result.warnings),
+        "warnings": warnings,
         "errors": list(parse_result.errors),
         "redaction_hints": adapter.redaction_hints(),
         "dedupe": {
