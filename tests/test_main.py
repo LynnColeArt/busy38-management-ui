@@ -1001,6 +1001,91 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertGreaterEqual(int(artifact.get("imported_item_count", 0)), 1)
         self.assertEqual(artifact["artifact_id"], f"directory:{import_id}")
 
+    def test_agent_directory_snapshot_is_reconciled_and_persisted_on_decision(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        payload = {
+            "conversations": [
+                {
+                    "id": "thread-1",
+                    "title": "Directory persistence",
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:00:00Z",
+                            "content": "I need a launch plan.",
+                        },
+                        {
+                            "id": "m2",
+                            "author": {"role": "assistant"},
+                            "create_time": "2026-01-01T12:00:10Z",
+                            "content": "Let's split by owner, scope, and timing.",
+                        },
+                    ],
+                },
+            ]
+        }
+        upload = ("openai-directory-persisted.json", json.dumps(payload), "application/json")
+        response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        import_id = response.json()["import_id"]
+        items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
+        self.assertEqual(len(items), 2)
+
+        first_decision = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={
+                "import_item_ids": [items[0]["id"]],
+                "review_state": "approved",
+                "note": "approved first ownership item",
+            },
+        )
+        self.assertEqual(first_decision.status_code, 200, first_decision.text)
+
+        job_after_first = self.client.get(f"/api/agents/import/{import_id}", headers=admin_headers).json()["job"]
+        metadata_after_first = job_after_first.get("source_metadata") or {}
+        snapshot_after_first = metadata_after_first.get("directory_snapshot")
+        self.assertIsInstance(snapshot_after_first, dict)
+        self.assertEqual(snapshot_after_first.get("generated_from_import_id"), import_id)
+        self.assertEqual(snapshot_after_first.get("imported_item_count"), 1)
+
+        directory_payload = self.client.get("/api/agents/directory", headers=read_headers).json()
+        artifact = directory_payload.get("directory_artifact")
+        self.assertIsNotNone(artifact)
+        self.assertEqual(int(artifact.get("imported_item_count", 0)), 1)
+        self.assertEqual(artifact.get("artifact_id"), f"directory:{import_id}")
+
+        second_decision = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={
+                "import_item_ids": [items[1]["id"]],
+                "review_state": "approved",
+                "note": "approved second ownership item",
+            },
+        )
+        self.assertEqual(second_decision.status_code, 200, second_decision.text)
+
+        job_after_second = self.client.get(f"/api/agents/import/{import_id}", headers=admin_headers).json()["job"]
+        metadata_after_second = job_after_second.get("source_metadata") or {}
+        snapshot_after_second = metadata_after_second.get("directory_snapshot")
+        self.assertIsInstance(snapshot_after_second, dict)
+        self.assertEqual(snapshot_after_second.get("imported_item_count"), 2)
+        self.assertGreaterEqual(len(snapshot_after_second.get("entries", [])), 1)
+
+        directory_payload = self.client.get("/api/agents/directory", headers=read_headers).json()
+        artifact = directory_payload.get("directory_artifact")
+        self.assertIsNotNone(artifact)
+        self.assertEqual(int(artifact.get("imported_item_count", 0)), 2)
+
     def test_import_rejects_unsupported_source(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         payload = {"foo": "bar"}

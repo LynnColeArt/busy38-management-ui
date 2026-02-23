@@ -734,7 +734,43 @@ def append_event(event_type: str, message: str, level: str = "info", payload: Op
     return event_payload
 
 
-def append_import_progress_event(import_id: str, phase: str, details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def append_import_progress_event(
+    import_id: str,
+    phase: str,
+    details: Optional[Dict[str, Any]] = None,
+    db_connection: Optional[sqlite3.Connection] = None,
+) -> Dict[str, Any]:
+    def _write_event(conn: sqlite3.Connection) -> Dict[str, Any]:
+        event_id = f"evt-{uuid.uuid4().hex[:12]}"
+        now = _now_iso()
+        event_payload = {
+            "import_id": import_id,
+            "phase": phase,
+            **(details or {}),
+        }
+        conn.execute(
+            "INSERT INTO events(id, type, message, created_at, level, payload) VALUES(?, ?, ?, ?, ?, ?)",
+            (
+                event_id,
+                "import.progress",
+                f"{import_id}: {phase}",
+                now,
+                "info",
+                json.dumps(event_payload),
+            ),
+        )
+        return {
+            "id": event_id,
+            "type": "import.progress",
+            "message": f"{import_id}: {phase}",
+            "created_at": now,
+            "level": "info",
+            "payload": event_payload,
+        }
+
+    if db_connection is not None:
+        return _write_event(db_connection)
+
     return append_event(
         event_type="import.progress",
         message=f"{import_id}: {phase}",
@@ -847,6 +883,130 @@ def get_import_job(import_id: str) -> Optional[Dict[str, Any]]:
         payload = _dict_from_row(row)
         payload["source_metadata"] = _coerce_json_payload(payload.get("source_metadata")) or {}
         return payload
+
+
+def _build_directory_snapshot_for_import(conn: sqlite3.Connection, import_id: str) -> Optional[Dict[str, Any]]:
+    job_row = conn.execute("SELECT * FROM import_jobs WHERE id = ?", (import_id,)).fetchone()
+    if not job_row:
+        return None
+
+    job = _dict_from_row(job_row)
+    source_metadata = _coerce_json_payload(job.get("source_metadata"))
+    if not isinstance(source_metadata, dict):
+        source_metadata = {}
+
+    approved_rows = conn.execute(
+        """
+        SELECT
+            ii.id, ii.agent_scope, ii.kind, ii.content, ii.visibility, ii.source,
+            ii.thread_id, ii.message_id, ii.created_at, ii.metadata
+        FROM import_items ii
+        WHERE ii.import_id = ? AND ii.review_state = 'approved'
+        ORDER BY ii.agent_scope, ii.import_index, datetime(ii.created_at) DESC
+        """,
+        (import_id,),
+    ).fetchall()
+
+    scope_groups: Dict[str, Dict[str, Any]] = {}
+    for item_row in approved_rows:
+        item = _dict_from_row(item_row)
+        metadata = _coerce_json_payload(item.get("metadata"))
+        if not isinstance(metadata, dict):
+            metadata = {}
+        scope = str(item.get("agent_scope") or "global").strip() or "global"
+        normalized_title = str(
+            metadata.get("agent_name")
+            or metadata.get("name")
+            or metadata.get("title")
+            or metadata.get("display_name")
+            or scope
+        ).strip() or scope
+        responsibility = str(metadata.get("summary") or metadata.get("description") or item.get("content") or "").strip()
+        responsibility = " ".join(responsibility.split())
+        if len(responsibility) > 180:
+            responsibility = f"{responsibility[:177]}…"
+
+        scope_entry = scope_groups.setdefault(
+            scope,
+            {
+                "scope": scope,
+                "agent_id": scope,
+                "current_owner_role": normalized_title,
+                "escalation_target": metadata.get("escalation_target"),
+                "responsibilities": [],
+            },
+        )
+        scope_entry["responsibilities"].append(
+            {
+                "import_item_id": item.get("id"),
+                "responsibility_domain": responsibility,
+                "visibility": item.get("visibility"),
+                "source": item.get("source"),
+                "thread_id": item.get("thread_id"),
+                "message_id": item.get("message_id"),
+                "created_at": item.get("created_at"),
+            }
+        )
+
+    entries = [scope_groups[scope] for scope in sorted(scope_groups)]
+    for entry in entries:
+        entry["item_count"] = len(entry.get("responsibilities", []))
+
+    return {
+        "artifact_id": f"directory:{import_id}",
+        "generated_from_import_id": import_id,
+        "source_type": job.get("source_type"),
+        "import_status": job.get("status"),
+        "context_schema_version": (
+            source_metadata.get("context_schema_version")
+            or source_metadata.get("schema_version")
+            or source_metadata.get("context_schema")
+            or "2"
+        ),
+        "directory_version": "1.0",
+        "imported_item_count": len(approved_rows),
+        "agent_count": len(entries),
+        "entries": entries,
+        "scope_distribution": {entry["scope"]: entry["item_count"] for entry in entries},
+        "generated_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "source_checksum": job.get("checksum"),
+    }
+
+
+def reconcile_agent_directory_snapshot(import_id: str) -> Dict[str, Any]:
+    now = _now_iso()
+    with get_connection() as conn:
+        snapshot = _build_directory_snapshot_for_import(conn, import_id)
+        if snapshot is None:
+            raise KeyError(f"import '{import_id}' not found")
+
+        row = conn.execute("SELECT source_metadata FROM import_jobs WHERE id = ?", (import_id,)).fetchone()
+        metadata = _coerce_json_payload(row["source_metadata"] if row else None) if row else {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata = dict(metadata)
+        metadata["directory_snapshot"] = snapshot
+        conn.execute(
+            """
+            UPDATE import_jobs
+            SET source_metadata = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (_coerce_metadata_for_storage(metadata), now, import_id),
+        )
+        append_import_progress_event(
+            import_id=import_id,
+            phase="directory.snapshot.reconciled",
+            details={
+                "artifact_id": snapshot.get("artifact_id"),
+                "agent_count": snapshot.get("agent_count"),
+                "imported_item_count": snapshot.get("imported_item_count"),
+            },
+            db_connection=conn,
+        )
+        conn.commit()
+        return snapshot
 
 
 def update_import_job_status(import_id: str, status: str) -> Dict[str, Any]:
@@ -1274,6 +1434,29 @@ def get_agent_directory_artifact() -> Optional[Dict[str, Any]]:
         source_metadata = _coerce_json_payload(row_data.get("source_metadata"))
         if not isinstance(source_metadata, dict):
             source_metadata = {}
+        directory_snapshot = source_metadata.get("directory_snapshot")
+
+        if isinstance(directory_snapshot, dict):
+            artifact_payload = dict(directory_snapshot)
+            artifact_payload["source_type"] = row_data.get("source_type")
+            artifact_payload["source_metadata"] = source_metadata
+            artifact_payload["generated_at"] = artifact_payload.get(
+                "generated_at",
+                row_data.get("import_created_at"),
+            )
+            artifact_payload["updated_at"] = artifact_payload.get(
+                "updated_at",
+                row_data.get("import_updated_at"),
+            )
+            artifact_payload["import_status"] = row_data.get("import_status")
+            artifact_payload["source_checksum"] = row_data.get("import_checksum")
+            artifact_payload["context_schema_version"] = (
+                artifact_payload.get("context_schema_version")
+                or source_metadata.get("context_schema_version")
+                or source_metadata.get("schema_version")
+                or source_metadata.get("context_schema")
+            )
+            return artifact_payload
 
         approved_item_count = conn.execute(
             "SELECT COUNT(*) AS total FROM import_items WHERE import_id = ? AND review_state = 'approved'",

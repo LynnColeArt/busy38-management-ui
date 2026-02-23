@@ -1710,6 +1710,16 @@ async def create_import_job(
                     details={"warning_count": len(warnings), "new_item_count": 0},
                 )
                 storage.update_import_job_status(job["id"], "awaiting_review")
+                try:
+                    storage.reconcile_agent_directory_snapshot(job["id"])
+                except Exception as exc:  # pragma: no cover - defensive telemetry path
+                    _event_for(
+                        role,
+                        "import",
+                        f"Failed to reconcile directory snapshot for '{job['id']}': {exc}",
+                        "error",
+                    )
+                    raise HTTPException(status_code=500, detail=str(exc))
                 return {
                     "import_id": job["id"],
                     "job": job,
@@ -1732,6 +1742,18 @@ async def create_import_job(
         inserted = []
 
     storage.update_import_job_status(job["id"], "awaiting_review")
+    try:
+        storage.reconcile_agent_directory_snapshot(job["id"])
+    except Exception as exc:  # pragma: no cover - defensive telemetry path
+        _event_for(
+            role,
+            "import",
+            f"Failed to reconcile directory snapshot for '{job['id']}': {exc}",
+            "error",
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
+    job = storage.get_import_job(job["id"])  # type: ignore[assignment]
+
     if warnings:
         storage.append_import_progress_event(
             import_id=job["id"],
@@ -1833,6 +1855,16 @@ async def set_import_item_decisions(
 
     if not updated:
         raise HTTPException(status_code=404, detail="No matching import items found")
+    try:
+        storage.reconcile_agent_directory_snapshot(import_id)
+    except Exception as exc:  # pragma: no cover - defensive telemetry path
+        _event_for(
+            role,
+            "import",
+            f"Failed to reconcile directory snapshot for '{import_id}': {exc}",
+            "error",
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
 
     return {
         "import_id": import_id,
