@@ -16,6 +16,7 @@ from fastapi import HTTPException
 
 from backend.app.runtime import RuntimeActionResult
 from backend.app import storage
+from backend.app.import_contract import CanonicalImportItem, ImportParseResult
 import httpx
 
 
@@ -1503,3 +1504,66 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             },
         )
         self.assertEqual(blocked.status_code, 400)
+
+    def test_import_warning_deduplicates_adapter_and_intake_reasons(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        class _FakeAdapter:
+            def parse(self, _payload) -> ImportParseResult:
+                item = CanonicalImportItem(
+                    kind="memory",
+                    content="Let's test dedupe behavior for warnings.",
+                    agent_scope="openai:thread-dedupe",
+                    visibility="pending",
+                    source="openai_manual_upload",
+                    thread_id="thread-dedupe",
+                    message_id="msg-dedupe",
+                    created_at="2026-01-11T13:30:00Z",
+                    author_key="user",
+                    review_state="pending",
+                    metadata={},
+                    checksum="",
+                )
+                return ImportParseResult(
+                    import_id="import-dedupe",
+                    source_type="openai",
+                    source_metadata={"source_type": "openai"},
+                    items=(item,),
+                    warnings=("prompt_injection_override", "prompt_injection_override"),
+                    errors=(),
+                    counts={"messages": 1},
+                )
+
+            def redaction_hints(self):
+                return {}
+
+        def _fake_make_intake_decision(entry):
+            entry["intake_reasons"] = [
+                "prompt_injection_override",
+                "prompt_injection_command_style",
+            ]
+            entry["intake_policy_version"] = "test-intake-policy-v1"
+            return self.main.ATTACHMENT_DECISION_QUARANTINE
+
+        upload = ("openai-dedupe.json", json.dumps({"conversations": []}), "application/json")
+        with patch.object(self.main, "get_import_adapter", return_value=_FakeAdapter()):
+            with patch.object(self.main, "_make_import_intake_decision", side_effect=_fake_make_intake_decision):
+                response = self.client.post(
+                    "/api/agents/import",
+                    headers=admin_headers,
+                    data={"source_type": "openai"},
+                    files={"source_file": upload},
+                )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        warnings = payload.get("warnings") or []
+        self.assertEqual(warnings.count("prompt_injection_override"), 1)
+        self.assertIn("prompt_injection_command_style", warnings)
+        self.assertEqual(len(warnings), 2)
+
+        import_id = payload["import_id"]
+        items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["review_state"], "quarantined")
