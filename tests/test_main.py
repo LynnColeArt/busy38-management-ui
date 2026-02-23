@@ -1148,7 +1148,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         ops_scope_entry = next(entry for entry in entries if entry.get("agent_scope") == "ops-notify")
         self.assertEqual(ops_scope_entry.get("item_count"), 1)
 
-        item_ids = {responsibility.get("import_item_id") for responsibility in ops_scope_entry.get("responsibilities", [])}
+        item_ids = {responsibility.get("id") for responsibility in ops_scope_entry.get("responsibilities", [])}
         self.assertIn(item_id, item_ids)
 
     def test_import_rejects_unsupported_source(self):

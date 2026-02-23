@@ -10,6 +10,9 @@ def _ensure_busy_ongoing_on_path() -> None:
     """Add the local busy-38-ongoing project root to import resolution."""
 
     repo_root = Path(__file__).resolve().parents[1]
+    repo_root_str = str(repo_root)
+    if repo_root_str not in sys.path:
+        sys.path.insert(0, repo_root_str)
     candidate_roots = [
         repo_root.parent / "busy-38-ongoing",
         repo_root / "busy-38-ongoing",
