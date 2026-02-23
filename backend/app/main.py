@@ -1497,6 +1497,13 @@ async def get_agents(request: Request) -> Dict[str, Any]:
     return {"agents": agents, "updated_at": _now_iso()}
 
 
+@app.get("/api/agents/directory")
+async def get_agent_directory(request: Request) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    directory = storage.list_agent_directory()
+    return {"directory": directory, "updated_at": _now_iso(), "role": role}
+
+
 @app.patch("/api/agents/{agent_id}")
 async def patch_agent(request: Request, agent_id: str, update: AgentUpdate) -> Dict[str, Any]:
     role = _require_role(request, required="admin")

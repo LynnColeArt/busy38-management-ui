@@ -1168,6 +1168,66 @@ def list_import_items(import_id: Optional[str] = None, review_state: Optional[st
         return out
 
 
+def list_agent_directory() -> List[Dict[str, Any]]:
+    def _normalize_title(item_metadata: Dict[str, Any], scope: str) -> str:
+        title_fields = ("agent_name", "name", "title", "display_name", "owner")
+        for key in title_fields:
+            value = item_metadata.get(key)
+            if value:
+                return str(value).strip() or scope
+        return scope
+
+    def _normalize_summary(item_metadata: Dict[str, Any], content: str) -> str:
+        summary = str(item_metadata.get("summary") or item_metadata.get("description") or "").strip()
+        if not summary:
+            summary = str(content or "").strip()
+        summary = " ".join(summary.split())
+        if len(summary) <= 180:
+            return summary
+        return f"{summary[:177]}…"
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, kind, agent_scope, content, visibility, source, thread_id, message_id, created_at, metadata
+            FROM import_items
+            WHERE review_state = 'approved'
+            ORDER BY agent_scope, import_index, datetime(created_at) DESC
+            """
+        ).fetchall()
+        groups: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            row_data = _dict_from_row(row)
+            scope = str(row_data.get("agent_scope") or "global").strip() or "global"
+            metadata = _coerce_json_payload(row_data.get("metadata"))
+            item_metadata = metadata if isinstance(metadata, dict) else {}
+            group = groups.setdefault(
+                scope,
+                {
+                    "agent_scope": scope,
+                    "item_count": 0,
+                    "responsibilities": [],
+                },
+            )
+            group["item_count"] += 1
+            group["responsibilities"].append(
+                {
+                    "id": row_data.get("id"),
+                    "kind": row_data.get("kind"),
+                    "title": _normalize_title(item_metadata, scope),
+                    "summary": _normalize_summary(item_metadata, str(row_data.get("content", ""))),
+                    "source": row_data.get("source"),
+                    "visibility": row_data.get("visibility"),
+                    "thread_id": row_data.get("thread_id"),
+                    "message_id": row_data.get("message_id"),
+                    "created_at": row_data.get("created_at"),
+                }
+            )
+
+        directory = [groups[scope] for scope in sorted(groups)]
+        return directory
+
+
 def list_import_jobs(limit: int = 50) -> List[Dict[str, Any]]:
     with get_connection() as conn:
         rows = conn.execute(

@@ -886,6 +886,112 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(counts["total"], 1)
         self.assertEqual(counts["pending"], 1)
 
+    def test_agent_directory_is_viewable_but_empty_without_approved_items(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+        payload = {
+            "conversations": [
+                {
+                    "id": "thread-1",
+                    "title": "Directory preview",
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:00:00Z",
+                            "content": "What should my first build be?",
+                        },
+                    ],
+                },
+            ]
+        }
+        upload = ("openai-directory.json", json.dumps(payload), "application/json")
+        response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        directory_before = self.client.get("/api/agents/directory", headers=read_headers)
+        self.assertEqual(directory_before.status_code, 200, directory_before.text)
+        self.assertEqual(directory_before.json()["directory"], [])
+
+        directory_admin = self.client.get("/api/agents/directory", headers=admin_headers)
+        self.assertEqual(directory_admin.status_code, 200, directory_admin.text)
+        self.assertIn("directory", directory_admin.json())
+
+        unauthorized = self.client.get("/api/agents/directory")
+        self.assertEqual(unauthorized.status_code, 401)
+
+    def test_agent_directory_shows_only_approved_import_items(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+        payload = {
+            "conversations": [
+                {
+                    "id": "thread-1",
+                    "title": "Directory accepted items",
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:00:00Z",
+                            "content": "Draft the first sprint plan.",
+                        },
+                        {
+                            "id": "m2",
+                            "author": {"role": "assistant"},
+                            "create_time": "2026-01-01T12:00:10Z",
+                            "content": "Track scope, timeline, and owners.",
+                        },
+                    ],
+                },
+            ]
+        }
+        upload = ("openai-directory-approved.json", json.dumps(payload), "application/json")
+        response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        import_id = response.json()["import_id"]
+        items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
+        self.assertEqual(len(items), 2)
+
+        decision = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={
+                "import_item_ids": [items[0]["id"]],
+                "review_state": "approved",
+                "note": "approved for role directory mapping",
+            },
+        )
+        self.assertEqual(decision.status_code, 200, decision.text)
+
+        decision = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={
+                "import_item_ids": [items[1]["id"]],
+                "review_state": "rejected",
+                "note": "not relevant",
+            },
+        )
+        self.assertEqual(decision.status_code, 200, decision.text)
+
+        directory = self.client.get("/api/agents/directory", headers=read_headers).json()["directory"]
+        self.assertEqual(len(directory), 1)
+        entry = directory[0]
+        self.assertEqual(entry["item_count"], 1)
+        responsibilities = entry.get("responsibilities", [])
+        self.assertEqual(len(responsibilities), 1)
+        self.assertEqual(responsibilities[0]["id"], items[0]["id"])
+
     def test_import_rejects_unsupported_source(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         payload = {"foo": "bar"}

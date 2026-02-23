@@ -17,6 +17,7 @@ const state = {
   providerDiagnostics: null,
   importJobs: [],
   importItems: [],
+  agentDirectory: [],
   selectedImportId: "",
 };
 let eventSocket = null;
@@ -480,6 +481,33 @@ function buildAgentCard(agent) {
   `;
 }
 
+function buildAgentDirectoryCard(directoryEntry) {
+  const scope = escapeHtml(directoryEntry.agent_scope || "global");
+  const responsibilityCount = Number(directoryEntry.item_count || 0);
+  const responsibilities = Array.isArray(directoryEntry.responsibilities) ? directoryEntry.responsibilities : [];
+  const responsibilityHtml = responsibilities
+    .map((responsibility) => {
+      const title = escapeHtml(responsibility.title || "Responsibility");
+      const kind = escapeHtml(responsibility.kind || "memory");
+      const summary = escapeHtml(responsibility.summary || "");
+      const details = summary ? ` — ${summary}` : "";
+      return `<li><strong>${title}</strong> (${kind})${details}</li>`;
+    })
+    .join("");
+
+  return `
+    <div class="card">
+      <h3>${scope}</h3>
+      <p><strong>Responsibility entries:</strong> ${responsibilityCount}</p>
+      <ul>${responsibilityHtml || "<li>No approved items</li>"}</ul>
+    </div>
+  `;
+}
+
+function renderAgentDirectory() {
+  renderCards("#agentDirectory", state.agentDirectory, buildAgentDirectoryCard);
+}
+
 function buildPluginCard(plugin) {
   const isViewer = state.role === "viewer";
   const isLocked = isViewer ? "disabled" : "";
@@ -699,6 +727,12 @@ async function loadAgents() {
   renderCards("#agents", state.agents, buildAgentCard);
 }
 
+async function loadAgentDirectory() {
+  const payload = await fetchJson("/api/agents/directory");
+  state.agentDirectory = payload.directory || [];
+  renderAgentDirectory();
+}
+
 async function loadEvents() {
   const payload = await fetchJson("/api/events");
   state.events = payload.events || [];
@@ -854,6 +888,7 @@ async function submitImport(event) {
     setStatus("#importSubmitStatus", `import queued: ${payload.import_id}`, "ok");
     await loadImportJobs();
     await loadImportItems(payload.import_id);
+    await loadAgentDirectory();
   } catch (err) {
     setStatus("#importSubmitStatus", `import failed: ${err.message}`, "err");
   }
@@ -889,6 +924,7 @@ async function setImportItemState(itemId, stateValue) {
     setStatus("#importSubmitStatus", `item ${itemId} marked ${stateValue}`, "ok");
     await loadImportItems(state.selectedImportId);
     await loadImportJobs();
+    await loadAgentDirectory();
   } catch (err) {
     setStatus("#importSubmitStatus", `decision update failed: ${err.message}`, "err");
   }
@@ -1272,6 +1308,7 @@ async function boot() {
       loadPlugins(),
       loadImportJobs(),
       loadAgents(),
+      loadAgentDirectory(),
       loadEvents(),
       loadMemory(),
       loadChatHistory(),
