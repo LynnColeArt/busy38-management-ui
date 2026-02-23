@@ -1086,6 +1086,71 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertIsNotNone(artifact)
         self.assertEqual(int(artifact.get("imported_item_count", 0)), 2)
 
+    def test_import_decision_can_reassign_agent_scope(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        payload = {
+            "conversations": [
+                {
+                    "id": "thread-1",
+                    "title": "Scope reassignment",
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:00:00Z",
+                            "content": "Who should own the launch plan?",
+                        },
+                        {
+                            "id": "m2",
+                            "author": {"role": "assistant"},
+                            "create_time": "2026-01-01T12:00:10Z",
+                            "content": "Create separate ownership entries for coordination and execution.",
+                        },
+                    ],
+                },
+            ]
+        }
+        upload = ("openai-scope-reassign.json", json.dumps(payload), "application/json")
+        response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        import_id = response.json()["import_id"]
+
+        items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
+        self.assertEqual(len(items), 2)
+        item_id = items[0]["id"]
+
+        decision = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={
+                "import_item_ids": [item_id],
+                "review_state": "approved",
+                "note": "routing to notification agent for ownership",
+                "agent_scope": "ops-notify",
+            },
+        )
+        self.assertEqual(decision.status_code, 200, decision.text)
+        updated = decision.json().get("updated", [])
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(updated[0]["agent_scope"], "ops-notify")
+
+        directory_payload = self.client.get("/api/agents/directory", headers=read_headers).json()
+        entries = directory_payload.get("directory", [])
+        scopes = [entry.get("agent_scope") for entry in entries]
+        self.assertIn("ops-notify", scopes)
+        ops_scope_entry = next(entry for entry in entries if entry.get("agent_scope") == "ops-notify")
+        self.assertEqual(ops_scope_entry.get("item_count"), 1)
+
+        item_ids = {responsibility.get("import_item_id") for responsibility in ops_scope_entry.get("responsibilities", [])}
+        self.assertIn(item_id, item_ids)
+
     def test_import_rejects_unsupported_source(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         payload = {"foo": "bar"}

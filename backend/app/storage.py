@@ -1027,10 +1027,17 @@ def update_import_items_review_state(
     actor: Optional[str] = None,
     note: Optional[str] = None,
     import_id: Optional[str] = None,
+    agent_scope: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     valid_states = {"pending", "approved", "quarantined", "rejected"}
     if review_state not in valid_states:
         raise ValueError(f"unsupported review state: {review_state}")
+
+    normalized_agent_scope: Optional[str] = None
+    if agent_scope is not None:
+        normalized_agent_scope = str(agent_scope).strip()
+        if not normalized_agent_scope:
+            raise ValueError("agent_scope cannot be empty when provided")
 
     if not import_item_ids:
         raise ValueError("import_item_ids cannot be empty")
@@ -1057,20 +1064,34 @@ def update_import_items_review_state(
             item_id = item["id"]
             if item["id"] in updated_ids:
                 continue
-            conn.execute("UPDATE import_items SET review_state = ? WHERE id = ?", (review_state, item_id))
+            scope_before = str(item.get("agent_scope") or "").strip()
+            scope_after = normalized_agent_scope if normalized_agent_scope is not None else scope_before
+
+            if normalized_agent_scope is None:
+                conn.execute("UPDATE import_items SET review_state = ? WHERE id = ?", (review_state, item_id))
+            else:
+                conn.execute(
+                    "UPDATE import_items SET review_state = ?, agent_scope = ? WHERE id = ?",
+                    (review_state, scope_after, item_id),
+                )
             appended = append_import_item_review_event(
                 import_item_id=item_id,
                 event_type="import.item.reviewed",
                 review_state=review_state,
                 actor=actor,
                 note=note,
-                payload={"job_id": item["import_id"]},
+                payload={
+                    "job_id": item["import_id"],
+                    "agent_scope_before": scope_before,
+                    "agent_scope_after": scope_after,
+                },
                 db_connection=conn,
             )
             updated.append(
                 {
                     **item,
                     "review_state": review_state,
+                    "agent_scope": scope_after,
                     "metadata": _coerce_json_payload(item.get("metadata")) or {},
                     "event": appended,
                 }

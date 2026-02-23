@@ -170,6 +170,7 @@ class ImportDecisionRequest(BaseModel):
     review_state: str
     actor: Optional[str] = None
     note: Optional[str] = None
+    agent_scope: Optional[str] = None
 
 
 @app.on_event("startup")
@@ -1847,6 +1848,7 @@ async def set_import_item_decisions(
             actor=payload.actor or role,
             note=payload.note,
             import_id=import_id,
+            agent_scope=payload.agent_scope,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))

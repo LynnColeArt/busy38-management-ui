@@ -212,6 +212,12 @@ function renderImportItems(items) {
           ${metadataLabel ? `<p><strong>Metadata:</strong> ${escapeHtml(metadataLabel)}</p>` : ""}
           ${note ? `<p><strong>Note:</strong> ${note}</p>` : ""}
           <p>
+            <label>
+              Reassign scope:
+              <input type="text" class="import-item-scope" data-id="${item.id}" value="${scope}" />
+            </label>
+          </p>
+          <p>
             <button type="button" data-action="import-item-decision" data-id="${item.id}" data-state="approved">Approve</button>
             <button type="button" data-action="import-item-decision" data-id="${item.id}" data-state="quarantined">Quarantine</button>
             <button type="button" data-action="import-item-decision" data-id="${item.id}" data-state="rejected">Reject</button>
@@ -944,6 +950,9 @@ async function setImportItemState(itemId, stateValue) {
   const metadata = itemPayload.metadata || {};
   const requiresReviewNote = stateValue !== "quarantined" && (metadata.sensitive || metadata.requires_review || itemPayload.review_state === "sensitive");
   let note = "";
+  const scopeInput = document.querySelector(`.import-item-scope[data-id="${itemId}"]`);
+  const desiredScope = scopeInput?.value?.trim() || "";
+
   if (requiresReviewNote) {
     note = window.prompt("Review note required for sensitive item:") || "";
     if (!note.trim()) {
@@ -961,6 +970,7 @@ async function setImportItemState(itemId, stateValue) {
       review_state: stateValue,
       note: note || undefined,
       actor: state.role,
+      agent_scope: desiredScope || undefined,
     });
     setStatus("#importSubmitStatus", `item ${itemId} marked ${stateValue}`, "ok");
     await loadImportItems(state.selectedImportId);
