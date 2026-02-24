@@ -1615,6 +1615,25 @@ async def create_import_job(
     append_to_latest: bool = Form(default=False),
 ) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
+    return await _process_import_upload(
+        role=role,
+        source_type=source_type,
+        source_file=source_file,
+        append_to_latest=append_to_latest,
+        source_type_source="request",
+    )
+
+
+async def _process_import_upload(
+    *,
+    role: str,
+    source_type: str,
+    source_file: UploadFile,
+    append_to_latest: bool = False,
+    allow_duplicate_checksum: bool = False,
+    rerun_of_import_id: Optional[str] = None,
+    source_type_source: str = "request",
+) -> Dict[str, Any]:
     source_type_key = _normalise_source_type(source_type)
     adapter = get_import_adapter(source_type_key)
     if adapter is None:
@@ -1644,6 +1663,12 @@ async def create_import_job(
     if parse_result.errors:
         _event_for(role, "import", f"Import warnings for {source_type_key}", "info")
 
+    source_metadata = dict(parse_result.source_metadata or {})
+    if rerun_of_import_id:
+        source_metadata["rerun_of_import_id"] = rerun_of_import_id
+    if source_type_source == "rerun":
+        source_metadata["source_type_source"] = "rerun"
+
     created = False
     if append_to_latest:
         existing_job = storage.get_latest_import_job_for_source(source_type_key)
@@ -1654,16 +1679,18 @@ async def create_import_job(
         else:
             job, created = storage.create_import_job(
                 source_type=source_type_key,
-                source_metadata=parse_result.source_metadata,
+                source_metadata=source_metadata,
                 checksum=checksum,
                 status="parsed",
+                allow_duplicate_checksum=allow_duplicate_checksum,
             )
     else:
         job, created = storage.create_import_job(
             source_type=source_type_key,
-            source_metadata=parse_result.source_metadata,
+            source_metadata=source_metadata,
             checksum=checksum,
             status="parsed",
+            allow_duplicate_checksum=allow_duplicate_checksum,
         )
 
     attempted_count = len(parse_result.items)
@@ -1741,6 +1768,7 @@ async def create_import_job(
             inserted = storage.add_import_items(job["id"], items)
     else:
         inserted = []
+        warnings = list(parse_result.warnings)
 
     storage.update_import_job_status(job["id"], "awaiting_review")
     try:
@@ -1777,6 +1805,30 @@ async def create_import_job(
             "skipped": max(0, attempted_count - len(inserted)),
         } if append_to_latest else None,
     }
+
+
+@app.post("/api/agents/import/{import_id}/rerun")
+async def rerun_import_job(
+    request: Request,
+    import_id: str,
+    source_file: UploadFile = File(...),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    prior = storage.get_import_job(import_id)
+    if not prior:
+        raise HTTPException(status_code=404, detail=f"import '{import_id}' not found")
+    source_type = str(prior.get("source_type") or "").strip()
+    if not source_type:
+        raise HTTPException(status_code=400, detail="Import source type missing for rerun")
+
+    return await _process_import_upload(
+        role=role,
+        source_type=source_type,
+        source_file=source_file,
+        allow_duplicate_checksum=True,
+        rerun_of_import_id=import_id,
+        source_type_source="rerun",
+    )
 
 
 def _summarize_import_items(items: List[Dict[str, Any]]) -> Dict[str, int]:

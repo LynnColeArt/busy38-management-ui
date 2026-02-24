@@ -1377,6 +1377,52 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         dup_dedupe = duplicate_payload["dedupe"]
         self.assertEqual(dup_dedupe["inserted"], 0)
 
+    def test_import_rerun_creates_new_job_and_links_parent(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        export = {
+            "conversations": [
+                {
+                    "id": "thread-rerun",
+                    "title": "Rerun import",
+                    "messages": [
+                        {"id": "msg-1", "author": {"role": "user"}, "create_time": "2026-01-12T09:00:00Z", "content": "Rerun me"},
+                    ],
+                },
+            ]
+        }
+        upload = ("openai-rerun.json", json.dumps(export), "application/json")
+        initial = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(initial.status_code, 200, initial.text)
+        initial_payload = initial.json()
+        initial_id = initial_payload["import_id"]
+        self.assertEqual(initial_payload["counts"].get("messages"), 1)
+        self.assertEqual(initial_payload["created"], True)
+
+        rerun = self.client.post(
+            f"/api/agents/import/{initial_id}/rerun",
+            headers=admin_headers,
+            files={"source_file": upload},
+        )
+        self.assertEqual(rerun.status_code, 200, rerun.text)
+        rerun_payload = rerun.json()
+        rerun_id = rerun_payload["import_id"]
+        rerun_job = rerun_payload["job"]
+
+        self.assertNotEqual(rerun_id, initial_id)
+        self.assertEqual(rerun_job["source_type"], "openai")
+        self.assertIn("rerun_of_import_id", rerun_job.get("source_metadata", {}))
+        self.assertEqual(rerun_job["source_metadata"]["rerun_of_import_id"], initial_id)
+
+        rerun_items = self.client.get(f"/api/agents/import/{rerun_id}", headers=read_headers).json()["items"]
+        self.assertGreaterEqual(len(rerun_items), 1)
+
     def test_import_codex_upload_and_review_flow(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}

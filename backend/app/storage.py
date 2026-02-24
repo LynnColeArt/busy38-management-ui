@@ -1105,18 +1105,28 @@ def create_import_job(
     source_metadata: Optional[Dict[str, Any]],
     checksum: str,
     status: str = "pending",
+    allow_duplicate_checksum: bool = False,
 ) -> tuple[Dict[str, Any], bool]:
     now = _now_iso()
     metadata = source_metadata or {}
+    persist_checksum: Optional[str] = checksum
+    if allow_duplicate_checksum:
+        metadata = dict(metadata)
+        if checksum and "source_checksum" not in metadata:
+            metadata["source_checksum"] = checksum
+        # Allow intentional reruns by keeping checksum nullable in this path while
+        # preserving the original checksum in metadata for traceability.
+        persist_checksum = None
     with get_connection() as conn:
-        existing = conn.execute(
-            "SELECT * FROM import_jobs WHERE source_type = ? AND checksum = ?",
-            (source_type, checksum),
-        ).fetchone()
-        if existing:
-            payload = _dict_from_row(existing)
-            payload["source_metadata"] = _coerce_json_payload(payload.get("source_metadata")) or {}
-            return payload, False
+        if not allow_duplicate_checksum:
+            existing = conn.execute(
+                "SELECT * FROM import_jobs WHERE source_type = ? AND checksum = ?",
+                (source_type, checksum),
+            ).fetchone()
+            if existing:
+                payload = _dict_from_row(existing)
+                payload["source_metadata"] = _coerce_json_payload(payload.get("source_metadata")) or {}
+                return payload, False
 
         job_id = f"import-{uuid.uuid4().hex[:12]}"
         conn.execute(
@@ -1132,7 +1142,7 @@ def create_import_job(
             )
             VALUES(?, ?, ?, ?, ?, ?, ?)
             """,
-            (job_id, source_type, status, checksum, json.dumps(metadata), now, now),
+            (job_id, source_type, status, persist_checksum, json.dumps(metadata), now, now),
         )
         conn.commit()
     append_import_progress_event(import_id=job_id, phase="created", details={"status": status})

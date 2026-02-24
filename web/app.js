@@ -20,6 +20,7 @@ const state = {
   agentDirectory: [],
   agentDirectoryArtifact: null,
   selectedImportId: "",
+  rerunImportId: "",
 };
 let eventSocket = null;
 
@@ -172,10 +173,13 @@ function renderImportJobs(jobs) {
           <h3>Source ${source}</h3>
           <p><strong>Job:</strong> ${escapeHtml(job.id)}</p>
           <p><strong>Status:</strong> ${status}</p>
-          <p><strong>Items:</strong> ${counts}</p>
+        <p><strong>Items:</strong> ${counts}</p>
           <p>
             <button type="button" data-action="open-import" data-id="${job.id}">
               Open review
+            </button>
+            <button type="button" data-action="rerun-import" data-id="${job.id}">
+              Rerun
             </button>
           </p>
         </div>
@@ -941,6 +945,36 @@ async function submitImport(event) {
   }
 }
 
+async function submitImportRerun(event) {
+  const fileInput = event.target;
+  const file = fileInput?.files?.[0];
+  if (!state.rerunImportId) {
+    setStatus("#importSubmitStatus", "Select an import first before rerun", "err");
+    return;
+  }
+  if (!file) {
+    setStatus("#importSubmitStatus", "Rerun requires a source file", "err");
+    return;
+  }
+
+  const form = new FormData();
+  form.append("source_file", file);
+
+  setStatus("#importSubmitStatus", "rerunning import...", "");
+  try {
+    const payload = await postForm(`/api/agents/import/${encodeURIComponent(state.rerunImportId)}/rerun`, form);
+    setStatus("#importSubmitStatus", `import rerun queued: ${payload.import_id}`, "ok");
+    state.rerunImportId = "";
+    await loadImportJobs();
+    await loadImportItems(payload.import_id);
+    await loadAgentDirectory();
+  } catch (err) {
+    setStatus("#importSubmitStatus", `import rerun failed: ${err.message}`, "err");
+  } finally {
+    fileInput.value = "";
+  }
+}
+
 async function setImportItemState(itemId, stateValue) {
   if (!state.selectedImportId) {
     setStatus("#importSubmitStatus", "select an import job before reviewing", "err");
@@ -1159,6 +1193,26 @@ async function onTableChange(event) {
     }
     state.selectedImportId = importId;
     await loadImportItems(importId);
+    return;
+  }
+
+  if (action === "rerun-import") {
+    const importId = target.dataset.id;
+    const rerunInput = qs("#importRerunFile");
+    if (!importId) {
+      setStatus("#importSubmitStatus", "import id missing", "err");
+      return;
+    }
+    if (!rerunInput) {
+      setStatus("#importSubmitStatus", "rerun input missing", "err");
+      return;
+    }
+    if (state.role === "viewer") {
+      setStatus("#importSubmitStatus", "viewer cannot rerun imports", "err");
+      return;
+    }
+    state.rerunImportId = importId;
+    rerunInput.click();
     return;
   }
 
@@ -1398,6 +1452,7 @@ document.body.addEventListener("click", (event) => {
     !action.startsWith("runtime-")
     && action !== "discover-provider-models"
     && action !== "open-import"
+    && action !== "rerun-import"
     && action !== "apply-discovered-model"
     && action !== "test-provider-models"
     && action !== "test-all-providers"
@@ -1413,6 +1468,7 @@ document.body.addEventListener("click", (event) => {
   }
   onTableChange(event);
 });
+qs("#importRerunFile")?.addEventListener("change", submitImportRerun);
 
 boot();
 setInterval(boot, 15000);

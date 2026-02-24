@@ -53,9 +53,11 @@ class TestImportQueueSchema(unittest.TestCase):
         handle.close()
         self._db_file = handle.name
         os.environ["MANAGEMENT_DB_PATH"] = self._db_file
+        storage.set_db_path_override(self._db_file)
         storage.ensure_schema()
 
     def tearDown(self) -> None:
+        storage.set_db_path_override(None)
         os.remove(self._db_file)
 
     def test_import_job_dedupes_by_checksum(self) -> None:
@@ -67,6 +69,22 @@ class TestImportQueueSchema(unittest.TestCase):
         self.assertFalse(created_again)
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(len(storage.list_import_jobs()), 1)
+
+    def test_import_job_allows_duplicate_checksum_when_requested(self) -> None:
+        checksum = checksum_payload({"source": "openai"})
+        first, created = storage.create_import_job("openai", {"provider": "openai"}, checksum, status="pending")
+        second, created_again = storage.create_import_job(
+            "openai",
+            {"provider": "openai", "rerun_of_import_id": first["id"]},
+            checksum,
+            status="pending",
+            allow_duplicate_checksum=True,
+        )
+
+        self.assertTrue(created)
+        self.assertTrue(created_again)
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(len(storage.list_import_jobs()), 2)
 
     def test_import_items_are_deduped_with_progress_events(self) -> None:
         checksum = checksum_payload({"source": "openai"})
