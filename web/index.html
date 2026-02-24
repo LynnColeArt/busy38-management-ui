@@ -251,6 +251,18 @@
             <input name="appendToLatest" type="checkbox" />
             Append to latest job for this source
           </label>
+          <label>
+            Actor ID
+            <input name="actor_id" type="text" placeholder="optional" />
+          </label>
+          <label>
+            Mission ID
+            <input name="mission_id" type="text" placeholder="optional" />
+          </label>
+          <label>
+            Context schema version
+            <input name="context_schema_version" type="text" placeholder="optional" />
+          </label>
           <button type="submit">Upload and parse</button>
           <p id="importSubmitStatus" class="status"></p>
         </form>

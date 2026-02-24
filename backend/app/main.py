@@ -1622,6 +1622,9 @@ async def create_import_job(
     source_type: str = Form(...),
     source_file: UploadFile = File(...),
     append_to_latest: bool = Form(default=False),
+    actor_id: Optional[str] = Form(default=None),
+    mission_id: Optional[str] = Form(default=None),
+    context_schema_version: Optional[str] = Form(default=None),
 ) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
     return await _process_import_upload(
@@ -1630,6 +1633,9 @@ async def create_import_job(
         source_file=source_file,
         append_to_latest=append_to_latest,
         source_type_source="request",
+        actor_id=actor_id,
+        mission_id=mission_id,
+        context_schema_version=context_schema_version,
     )
 
 
@@ -1642,6 +1648,9 @@ async def _process_import_upload(
     allow_duplicate_checksum: bool = False,
     rerun_of_import_id: Optional[str] = None,
     source_type_source: str = "request",
+    actor_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
+    context_schema_version: Optional[str] = None,
 ) -> Dict[str, Any]:
     source_type_key = _normalise_source_type(source_type)
     adapter = get_import_adapter(source_type_key)
@@ -1673,6 +1682,15 @@ async def _process_import_upload(
         _event_for(role, "import", f"Import warnings for {source_type_key}", "info")
 
     source_metadata = dict(parse_result.source_metadata or {})
+    if actor_id and str(actor_id).strip():
+        source_metadata["actor_id"] = str(actor_id).strip()
+        source_metadata["source_actor_id"] = str(actor_id).strip()
+    if mission_id and str(mission_id).strip():
+        source_metadata["mission_id"] = str(mission_id).strip()
+        source_metadata["source_mission_id"] = str(mission_id).strip()
+    if context_schema_version and str(context_schema_version).strip():
+        source_metadata["context_schema_version"] = str(context_schema_version).strip()
+
     if rerun_of_import_id:
         source_metadata["rerun_of_import_id"] = rerun_of_import_id
     if source_type_source == "rerun":
@@ -1830,6 +1848,8 @@ async def rerun_import_job(
     if not source_type:
         raise HTTPException(status_code=400, detail="Import source type missing for rerun")
 
+    prior_metadata = dict(prior.get("source_metadata") or {})
+
     return await _process_import_upload(
         role=role,
         source_type=source_type,
@@ -1837,6 +1857,13 @@ async def rerun_import_job(
         allow_duplicate_checksum=True,
         rerun_of_import_id=import_id,
         source_type_source="rerun",
+        actor_id=prior_metadata.get("source_actor_id") or prior_metadata.get("actor_id"),
+        mission_id=prior_metadata.get("source_mission_id") or prior_metadata.get("mission_id"),
+        context_schema_version=(
+            prior_metadata.get("context_schema_version")
+            or prior_metadata.get("schema_version")
+            or prior_metadata.get("context_schema")
+        ),
     )
 
 
