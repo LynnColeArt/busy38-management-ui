@@ -492,6 +492,75 @@ function buildAgentCard(agent) {
   `;
 }
 
+function getDirectoryScopeOptions() {
+  const seen = new Set(["global"]);
+  const options = ["global"];
+  for (const agent of state.agents || []) {
+    const candidate = String(agent.id || "").trim();
+    if (candidate && !seen.has(candidate)) {
+      seen.add(candidate);
+      options.push(candidate);
+    }
+  }
+  return options;
+}
+
+function buildDirectoryScopeSelect(currentScope) {
+  const normalizedCurrent = (currentScope || "global").trim() || "global";
+  const options = getDirectoryScopeOptions()
+    .map((option) => {
+      const value = escapeHtml(option);
+      const selected = option === normalizedCurrent ? " selected" : "";
+      return `<option value="${value}"${selected}>${value}</option>`;
+    })
+    .join("");
+  return `
+    <p>
+      Reassign all responsibilities:
+      <select class="directory-scope-select" data-source-scope="${escapeHtml(normalizedCurrent)}">
+        ${options}
+      </select>
+      <input class="directory-scope-custom" data-source-scope="${escapeHtml(normalizedCurrent)}" type="text" placeholder="or custom scope" />
+      <button type="button" data-action="reassign-directory-scope" data-source-scope="${escapeHtml(normalizedCurrent)}">Apply</button>
+    </p>
+  `;
+}
+
+function getDirectoryScopeControlNodes(sourceScope, trigger) {
+  const normalizedSource = (sourceScope || "global").trim() || "global";
+
+  if (trigger && typeof trigger.closest === "function") {
+    const card = trigger.closest(".card");
+    if (card) {
+      const scopedSelect = card.querySelector("select.directory-scope-select");
+      const scopedCustom = card.querySelector("input.directory-scope-custom");
+      if (
+        scopedSelect &&
+        String(scopedSelect.dataset.sourceScope || "").trim() === normalizedSource
+      ) {
+        return { select: scopedSelect, custom: scopedCustom };
+      }
+    }
+  }
+
+  const cards = document.querySelectorAll(".card");
+  for (const card of cards) {
+    const scopedSelect = card.querySelector("select.directory-scope-select");
+    if (!scopedSelect) {
+      continue;
+    }
+    const candidate = String(scopedSelect.dataset.sourceScope || "").trim() || "global";
+    if (candidate === normalizedSource) {
+      return {
+        select: scopedSelect,
+        custom: card.querySelector("input.directory-scope-custom"),
+      };
+    }
+  }
+
+  return { select: null, custom: null };
+}
+
 function buildAgentDirectoryCard(directoryEntry) {
   const scope = escapeHtml(directoryEntry.agent_scope || "global");
   const responsibilityCount = Number(directoryEntry.item_count || 0);
@@ -511,6 +580,7 @@ function buildAgentDirectoryCard(directoryEntry) {
       <h3>${scope}</h3>
       <p><strong>Responsibility entries:</strong> ${responsibilityCount}</p>
       <ul>${responsibilityHtml || "<li>No approved items</li>"}</ul>
+      ${buildDirectoryScopeSelect(scope)}
     </div>
   `;
 }
@@ -1015,6 +1085,43 @@ async function setImportItemState(itemId, stateValue) {
   }
 }
 
+async function reassignDirectoryScope(sourceScope, trigger = null) {
+  const normalizedSource = (sourceScope || "global").trim() || "global";
+  const { select, custom } = getDirectoryScopeControlNodes(normalizedSource, trigger);
+  const selectedValue = select?.value?.trim() || "";
+  const customValue = custom?.value?.trim() || "";
+  const targetScope = customValue || selectedValue;
+
+  if (!targetScope) {
+    setStatus("#agentDirectoryStatus", "target scope is required", "err");
+    return;
+  }
+  if (targetScope === normalizedSource) {
+    setStatus("#agentDirectoryStatus", "target scope must be different from source scope", "err");
+    return;
+  }
+
+  setStatus("#agentDirectoryStatus", "reassigning directory scope...", "");
+  try {
+    await patchJson("/api/agents/directory/reassign", {
+      source_scope: normalizedSource,
+      target_scope: targetScope,
+      actor: state.role,
+    });
+  if (custom) {
+    custom.value = "";
+  }
+    setStatus("#agentDirectoryStatus", `reassigned ${normalizedSource} -> ${targetScope}`, "ok");
+    await Promise.all([
+      loadAgentDirectory(),
+      loadImportJobs(),
+      state.selectedImportId ? loadImportItems(state.selectedImportId) : Promise.resolve(),
+    ]);
+  } catch (err) {
+    setStatus("#agentDirectoryStatus", `reassign failed: ${err.message}`, "err");
+  }
+}
+
 async function submitProvider(event) {
   event.preventDefault();
   const provider_id = qs('input[name="providerId"]').value.trim();
@@ -1224,6 +1331,12 @@ async function onTableChange(event) {
       return;
     }
     await setImportItemState(itemId, decision);
+    return;
+  }
+
+  if (action === "reassign-directory-scope") {
+    const sourceScope = target.dataset.sourceScope || "global";
+    await reassignDirectoryScope(sourceScope, target);
     return;
   }
 
@@ -1453,6 +1566,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "discover-provider-models"
     && action !== "open-import"
     && action !== "rerun-import"
+    && action !== "reassign-directory-scope"
     && action !== "apply-discovered-model"
     && action !== "test-provider-models"
     && action !== "test-all-providers"

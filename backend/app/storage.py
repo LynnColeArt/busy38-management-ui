@@ -1100,6 +1100,83 @@ def update_import_items_review_state(
         conn.commit()
 
     return updated
+
+
+def reassign_import_items_scope(
+    source_scope: str,
+    target_scope: str,
+    actor: Optional[str] = None,
+    note: Optional[str] = None,
+    import_item_ids: Optional[Sequence[str]] = None,
+    import_id: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    normalized_source = str(source_scope).strip() or "global"
+    normalized_target = str(target_scope).strip()
+    if not normalized_target:
+        raise ValueError("target_scope cannot be empty")
+    if normalized_source == normalized_target:
+        raise ValueError("source_scope and target_scope cannot be the same")
+
+    with get_connection() as conn:
+        if import_item_ids:
+            candidate_rows = []
+            seen: set[str] = set()
+            for item_id in import_item_ids:
+                row = conn.execute("SELECT * FROM import_items WHERE id = ?", (item_id,)).fetchone()
+                if not row:
+                    raise KeyError(f"import item '{item_id}' not found")
+                item = _dict_from_row(row)
+                if (str(item.get("agent_scope") or "global").strip() or "global") != normalized_source:
+                    raise ValueError(
+                        f"import item '{item_id}' is not in source scope '{normalized_source}'"
+                    )
+                if import_id and item["import_id"] != import_id:
+                    raise KeyError(f"import item '{item_id}' is not in import '{import_id}'")
+                if item_id in seen:
+                    continue
+                candidate_rows.append(item)
+                seen.add(item_id)
+        else:
+            query = "SELECT * FROM import_items WHERE agent_scope = ?"
+            args: List[Any] = [normalized_source]
+            if import_id:
+                query += " AND import_id = ?"
+                args.append(import_id)
+            candidate_rows = [dict(row) for row in conn.execute(query, tuple(args)).fetchall()]
+
+        if not candidate_rows:
+            return []
+
+        updated: List[Dict[str, Any]] = []
+        for item in candidate_rows:
+            item_id = item["id"]
+            before_scope = str(item.get("agent_scope") or "global").strip() or "global"
+            conn.execute(
+                "UPDATE import_items SET agent_scope = ? WHERE id = ?",
+                (normalized_target, item_id),
+            )
+            appended = append_import_item_review_event(
+                import_item_id=item_id,
+                event_type="import.item.scope_reassigned",
+                review_state=item.get("review_state", "pending"),
+                actor=actor,
+                note=note,
+                payload={
+                    "job_id": item["import_id"],
+                    "agent_scope_before": before_scope,
+                    "agent_scope_after": normalized_target,
+                },
+                db_connection=conn,
+            )
+            updated_item = dict(item)
+            updated_item["agent_scope"] = normalized_target
+            updated_item["event"] = appended
+            updated.append(updated_item)
+        conn.commit()
+
+    return updated
+
+
 def create_import_job(
     source_type: str,
     source_metadata: Optional[Dict[str, Any]],

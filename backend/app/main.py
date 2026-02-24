@@ -173,6 +173,15 @@ class ImportDecisionRequest(BaseModel):
     agent_scope: Optional[str] = None
 
 
+class DirectoryScopeReassignRequest(BaseModel):
+    source_scope: str
+    target_scope: str
+    import_item_ids: Optional[List[str]] = None
+    import_id: Optional[str] = None
+    actor: Optional[str] = None
+    note: Optional[str] = None
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     storage.ensure_schema()
@@ -1924,6 +1933,57 @@ async def set_import_item_decisions(
         "import_id": import_id,
         "updated": updated,
         "updated_count": len(updated),
+        "updated_at": _now_iso(),
+    }
+
+
+@app.patch("/api/agents/directory/reassign")
+async def reassign_directory_scopes(
+    request: Request,
+    payload: DirectoryScopeReassignRequest,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    if not payload.source_scope.strip() or not payload.target_scope.strip():
+        raise HTTPException(status_code=400, detail="source_scope and target_scope are required")
+    if payload.source_scope.strip() == payload.target_scope.strip():
+        raise HTTPException(status_code=400, detail="source_scope and target_scope must differ")
+    try:
+        updated = storage.reassign_import_items_scope(
+            source_scope=payload.source_scope,
+            target_scope=payload.target_scope,
+            actor=payload.actor or role,
+            note=payload.note,
+            import_item_ids=payload.import_item_ids,
+            import_id=payload.import_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="No matching import items found for reassignment")
+
+    source_scope = str(payload.source_scope).strip() or "global"
+    target_scope = str(payload.target_scope).strip()
+    import_ids = {item["import_id"] for item in updated if item.get("import_id")}
+    for import_id in sorted(import_ids):
+        try:
+            storage.reconcile_agent_directory_snapshot(import_id)
+        except Exception as exc:  # pragma: no cover - defensive telemetry path
+            _event_for(
+                role,
+                "import",
+                f"Failed to reconcile directory snapshot for '{import_id}': {exc}",
+                "error",
+            )
+            raise HTTPException(status_code=500, detail=str(exc))
+
+    return {
+        "source_scope": source_scope,
+        "target_scope": target_scope,
+        "updated_count": len(updated),
+        "updated": [{"id": item["id"], "import_id": item.get("import_id"), "agent_scope": item.get("agent_scope")} for item in updated],
         "updated_at": _now_iso(),
     }
 

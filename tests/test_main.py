@@ -1151,6 +1151,237 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         item_ids = {responsibility.get("id") for responsibility in ops_scope_entry.get("responsibilities", [])}
         self.assertIn(item_id, item_ids)
 
+    def test_reassign_directory_scope_patch_route_admin_success(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        payload = {
+            "conversations": [
+                {
+                    "id": "thread-1",
+                    "title": "Directory reassign route",
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:00:00Z",
+                            "content": "What should we build?",
+                        },
+                        {
+                            "id": "m2",
+                            "author": {"role": "assistant"},
+                            "create_time": "2026-01-01T12:00:10Z",
+                            "content": "Draft a launch checklist and assign ownership.",
+                        },
+                    ],
+                }
+            ]
+        }
+        upload = ("openai-directory-route.json", json.dumps(payload), "application/json")
+        import_response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(import_response.status_code, 200, import_response.text)
+        import_id = import_response.json()["import_id"]
+
+        items = self.client.get(f"/api/agents/import/{import_id}", headers=admin_headers).json()["items"]
+        self.assertEqual(len(items), 2)
+        source_scope = str(items[0].get("agent_scope") or "global")
+
+        response = self.client.patch(
+            "/api/agents/directory/reassign",
+            headers=admin_headers,
+            json={"source_scope": source_scope, "target_scope": "ops-team", "actor": "admin"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+
+        body = response.json()
+        self.assertEqual(body["source_scope"], source_scope)
+        self.assertEqual(body["target_scope"], "ops-team")
+        self.assertEqual(body["updated_count"], 2)
+
+        after_items = self.client.get(f"/api/agents/import/{import_id}", headers=admin_headers).json()["items"]
+        self.assertTrue(all(item.get("agent_scope") == "ops-team" for item in after_items))
+
+    def test_reassign_directory_scope_patch_route_requires_admin(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        payload = {
+            "conversations": [
+                {
+                    "id": "thread-2",
+                    "title": "Directory reassign permission",
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:00:00Z",
+                            "content": "Who should own rollout?",
+                        }
+                    ],
+                }
+            ]
+        }
+        upload = ("openai-directory-route-reader.json", json.dumps(payload), "application/json")
+        import_response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(import_response.status_code, 200, import_response.text)
+
+        response = self.client.patch(
+            "/api/agents/directory/reassign",
+            headers=read_headers,
+            json={"source_scope": "global", "target_scope": "support"},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_reassign_directory_scope_patch_route_rejects_same_scope(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        response = self.client.patch(
+            "/api/agents/directory/reassign",
+            headers=admin_headers,
+            json={"source_scope": "global", "target_scope": "global"},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_reassign_directory_scope_patch_route_returns_404_when_no_rows(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        payload = {
+            "conversations": [
+                {
+                    "id": "thread-3",
+                    "title": "Directory reassign empty",
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:00:00Z",
+                            "content": "What should be the first milestone?",
+                        }
+                    ],
+                }
+            ]
+        }
+        upload = ("openai-directory-route-empty.json", json.dumps(payload), "application/json")
+        import_response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(import_response.status_code, 200, import_response.text)
+        import_id = import_response.json()["import_id"]
+        source_scope = f"openai:{'thread-3'}"
+
+        move_response = self.client.patch(
+            "/api/agents/directory/reassign",
+            headers=admin_headers,
+            json={"source_scope": source_scope, "target_scope": "engineering"},
+        )
+        self.assertEqual(move_response.status_code, 200, move_response.text)
+
+        no_match_response = self.client.patch(
+            "/api/agents/directory/reassign",
+            headers=admin_headers,
+            json={"source_scope": "global", "target_scope": "research", "import_id": import_id},
+        )
+        self.assertEqual(no_match_response.status_code, 404)
+
+    def test_reassign_directory_scope_patch_route_with_import_filter_and_item_filter(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        payload_a = {
+            "conversations": [
+                {
+                    "id": "thread-a",
+                    "title": "Directory reassign scoped item",
+                    "messages": [
+                        {
+                            "id": "a1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:00:00Z",
+                            "content": "Design the UI and marketing.",
+                        },
+                        {
+                            "id": "a2",
+                            "author": {"role": "assistant"},
+                            "create_time": "2026-01-01T12:00:10Z",
+                            "content": "Create a rollout plan.",
+                        },
+                    ],
+                }
+            ]
+        }
+        payload_b = {
+            "conversations": [
+                {
+                    "id": "thread-b",
+                    "title": "Directory reassign sibling",
+                    "messages": [
+                        {
+                            "id": "b1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T12:05:00Z",
+                            "content": "Track infrastructure progress.",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        first_upload = ("openai-directory-route-first.json", json.dumps(payload_a), "application/json")
+        second_upload = ("openai-directory-route-second.json", json.dumps(payload_b), "application/json")
+
+        import_a = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": first_upload},
+        )
+        self.assertEqual(import_a.status_code, 200, import_a.text)
+        import_a_id = import_a.json()["import_id"]
+
+        import_b = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": second_upload},
+        )
+        self.assertEqual(import_b.status_code, 200, import_b.text)
+        import_b_id = import_b.json()["import_id"]
+
+        items_a = self.client.get(f"/api/agents/import/{import_a_id}", headers=admin_headers).json()["items"]
+        source_scope = str(items_a[0].get("agent_scope") or "global")
+        item_a_to_reassign = items_a[0]["id"]
+
+        response = self.client.patch(
+            "/api/agents/directory/reassign",
+            headers=admin_headers,
+            json={
+                "source_scope": source_scope,
+                "target_scope": "ops",
+                "import_id": import_a_id,
+                "import_item_ids": [item_a_to_reassign],
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["updated_count"], 1)
+
+        updated_a = self.client.get(f"/api/agents/import/{import_a_id}", headers=admin_headers).json()["items"]
+        updated_b = self.client.get(f"/api/agents/import/{import_b_id}", headers=admin_headers).json()["items"]
+        updated_a_scopes = {entry["id"]: entry.get("agent_scope", "global") for entry in updated_a}
+        updated_b_scopes = {entry["id"]: entry.get("agent_scope", "global") for entry in updated_b}
+        self.assertEqual(updated_a_scopes.get(item_a_to_reassign), "ops")
+        self.assertTrue(any(scope != "ops" for scope in updated_b_scopes.values()))
+
     def test_import_rejects_unsupported_source(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         payload = {"foo": "bar"}
