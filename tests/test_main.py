@@ -2153,6 +2153,79 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(approved.status_code, 200)
         self.assertEqual(approved.json()["updated_count"], 1)
 
+    def test_import_decision_sets_visibility(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        export = {
+            "conversations": [
+                {
+                    "id": "thread-visibility",
+                    "title": "Visibility test",
+                    "messages": [
+                        {
+                            "id": "msg-1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-12T12:00:00Z",
+                            "content": "Draft a launch plan summary.",
+                        }
+                    ],
+                }
+            ]
+        }
+        upload = ("openai-visibility.json", json.dumps(export), "application/json")
+        create = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={"source_type": "openai"},
+            files={"source_file": upload},
+        )
+        self.assertEqual(create.status_code, 200, create.text)
+        import_id = create.json()["import_id"]
+
+        items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
+        self.assertEqual(len(items), 1)
+        item_id = items[0]["id"]
+
+        quarantined = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={"import_item_ids": [item_id], "review_state": "quarantined"},
+        )
+        self.assertEqual(quarantined.status_code, 200, quarantined.text)
+        self.assertEqual(quarantined.json()["updated"][0]["visibility"], "quarantined")
+        self.assertEqual(quarantined.json()["updated"][0]["review_state"], "quarantined")
+
+        refreshed = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
+        self.assertEqual(refreshed[0]["visibility"], "quarantined")
+        self.assertEqual(refreshed[0]["review_state"], "quarantined")
+
+        approved = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={"import_item_ids": [item_id], "review_state": "approved"},
+        )
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertEqual(approved.json()["updated"][0]["visibility"], "visible")
+        self.assertEqual(approved.json()["updated"][0]["review_state"], "approved")
+
+        refreshed = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
+        self.assertEqual(refreshed[0]["visibility"], "visible")
+        self.assertEqual(refreshed[0]["review_state"], "approved")
+
+        rejected = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={"import_item_ids": [item_id], "review_state": "rejected"},
+        )
+        self.assertEqual(rejected.status_code, 200, rejected.text)
+        self.assertEqual(rejected.json()["updated"][0]["visibility"], "quarantined")
+        self.assertEqual(rejected.json()["updated"][0]["review_state"], "rejected")
+
+        refreshed = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
+        self.assertEqual(refreshed[0]["visibility"], "quarantined")
+        self.assertEqual(refreshed[0]["review_state"], "rejected")
+
     def test_import_intake_policy_applies_even_when_adapter_does_not_mark_item(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}

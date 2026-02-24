@@ -1124,19 +1124,29 @@ def update_import_items_review_state(
                 )
             candidate_rows.append(item)
 
+        visibility_by_state = {
+            "approved": "visible",
+            "pending": "visible",
+            "quarantined": "quarantined",
+            "rejected": "quarantined",
+        }
         for item in candidate_rows:
             item_id = item["id"]
             if item["id"] in updated_ids:
                 continue
             scope_before = str(item.get("agent_scope") or "").strip()
             scope_after = normalized_agent_scope if normalized_agent_scope is not None else scope_before
+            visibility = visibility_by_state.get(review_state, "quarantined")
 
             if normalized_agent_scope is None:
-                conn.execute("UPDATE import_items SET review_state = ? WHERE id = ?", (review_state, item_id))
+                conn.execute(
+                    "UPDATE import_items SET review_state = ?, visibility = ? WHERE id = ?",
+                    (review_state, visibility, item_id),
+                )
             else:
                 conn.execute(
-                    "UPDATE import_items SET review_state = ?, agent_scope = ? WHERE id = ?",
-                    (review_state, scope_after, item_id),
+                    "UPDATE import_items SET review_state = ?, visibility = ?, agent_scope = ? WHERE id = ?",
+                    (review_state, visibility, scope_after, item_id),
                 )
             appended = append_import_item_review_event(
                 import_item_id=item_id,
@@ -1147,7 +1157,8 @@ def update_import_items_review_state(
                 payload={
                     "job_id": item["import_id"],
                     "agent_scope_before": scope_before,
-                    "agent_scope_after": scope_after,
+                "agent_scope_after": scope_after,
+                "visibility_after": visibility,
                 },
                 db_connection=conn,
             )
@@ -1155,6 +1166,7 @@ def update_import_items_review_state(
                 {
                     **item,
                     "review_state": review_state,
+                    "visibility": visibility,
                     "agent_scope": scope_after,
                     "metadata": _coerce_json_payload(item.get("metadata")) or {},
                     "event": appended,
