@@ -853,6 +853,85 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         )
         self.assertEqual(viewer_blocked.status_code, 403)
 
+    def test_import_upload_includes_lineage_metadata(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        export = {
+            "conversations": [
+                {
+                    "id": "thread-lineage",
+                    "title": "Lineage import test",
+                    "messages": [
+                        {
+                            "id": "m1",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-01T10:00:00Z",
+                            "content": "Track ownership for this project.",
+                        },
+                    ],
+                },
+            ]
+        }
+        upload = ("openai-lineage.json", json.dumps(export), "application/json")
+        response = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={
+                "source_type": "openai",
+                "actor_id": "actor_123",
+                "mission_id": "mission_alpha",
+                "context_schema_version": "2",
+            },
+            files={"source_file": upload},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        import_id = payload["import_id"]
+
+        job_get = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers)
+        self.assertEqual(job_get.status_code, 200)
+        job = job_get.json()["job"]
+        source_metadata = job.get("source_metadata") or {}
+        self.assertEqual(source_metadata.get("source_actor_id"), "actor_123")
+        self.assertEqual(source_metadata.get("source_mission_id"), "mission_alpha")
+        self.assertEqual(source_metadata.get("context_schema_version"), "2")
+        self.assertEqual(source_metadata.get("actor_id"), "actor_123")
+        self.assertEqual(source_metadata.get("mission_id"), "mission_alpha")
+
+        items = self.client.get(f"/api/agents/import/{import_id}", headers=admin_headers).json()["items"]
+        approve = self.client.post(
+            f"/api/agents/import/{import_id}/decision",
+            headers=admin_headers,
+            json={
+                "import_item_ids": [items[0]["id"]],
+                "review_state": "approved",
+                "note": "baseline approval",
+            },
+        )
+        self.assertEqual(approve.status_code, 200, approve.text)
+
+        job_after = self.client.get(f"/api/agents/import/{import_id}", headers=admin_headers).json()["job"]
+        refreshed_metadata = job_after.get("source_metadata") or {}
+        snapshot = refreshed_metadata.get("directory_snapshot") or {}
+        self.assertEqual(snapshot.get("source_actor_id"), "actor_123")
+        self.assertEqual(snapshot.get("source_mission_id"), "mission_alpha")
+
+        directory = self.client.get("/api/agents/directory", headers=read_headers).json().get("directory_artifact")
+        self.assertIsNotNone(directory)
+        self.assertEqual(directory.get("source_actor_id"), "actor_123")
+        self.assertEqual(directory.get("source_mission_id"), "mission_alpha")
+        self.assertEqual(directory.get("context_schema_version"), "2")
+
+        import_list = self.client.get("/api/agents/imports", headers=admin_headers)
+        self.assertEqual(import_list.status_code, 200, import_list.text)
+        list_payload = import_list.json()["imports"]
+        found_list_job = next((item for item in list_payload if item["id"] == import_id), None)
+        self.assertIsNotNone(found_list_job, "import should appear in list response")
+        self.assertEqual(found_list_job.get("source_actor_id"), "actor_123")
+        self.assertEqual(found_list_job.get("source_mission_id"), "mission_alpha")
+        self.assertEqual(found_list_job.get("context_schema_version"), "2")
+
     def test_import_jobs_list_includes_counts(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         export = {
@@ -885,6 +964,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         counts = found["item_counts"]
         self.assertEqual(counts["total"], 1)
         self.assertEqual(counts["pending"], 1)
+        self.assertEqual(found.get("context_schema_version"), "2")
 
     def test_agent_directory_is_viewable_but_empty_without_approved_items(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
@@ -1627,7 +1707,12 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         initial = self.client.post(
             "/api/agents/import",
             headers=admin_headers,
-            data={"source_type": "openai"},
+            data={
+                "source_type": "openai",
+                "actor_id": "actor_001",
+                "mission_id": "mission_rerun",
+                "context_schema_version": "2",
+            },
             files={"source_file": upload},
         )
         self.assertEqual(initial.status_code, 200, initial.text)
@@ -1650,6 +1735,9 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(rerun_job["source_type"], "openai")
         self.assertIn("rerun_of_import_id", rerun_job.get("source_metadata", {}))
         self.assertEqual(rerun_job["source_metadata"]["rerun_of_import_id"], initial_id)
+        self.assertEqual(rerun_job.get("source_metadata", {}).get("source_actor_id"), "actor_001")
+        self.assertEqual(rerun_job.get("source_metadata", {}).get("source_mission_id"), "mission_rerun")
+        self.assertEqual(rerun_job.get("source_metadata", {}).get("context_schema_version"), "2")
 
         rerun_items = self.client.get(f"/api/agents/import/{rerun_id}", headers=read_headers).json()["items"]
         self.assertGreaterEqual(len(rerun_items), 1)

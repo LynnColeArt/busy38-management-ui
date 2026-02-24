@@ -61,6 +61,59 @@ def _coerce_json_payload(value: Optional[str]) -> Optional[Any]:
     return parsed
 
 
+DEFAULT_CONTEXT_SCHEMA_VERSION = "2"
+
+
+def _normalize_import_metadata(source_metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if source_metadata is None:
+        return {}
+    normalized = source_metadata
+    if not isinstance(normalized, dict):
+        normalized = _coerce_json_payload(normalized)
+        if not isinstance(normalized, dict):
+            return {}
+    return {
+        "source_actor_id": (
+            normalized.get("source_actor_id")
+            or normalized.get("actor_id")
+            or normalized.get("actor")
+            or normalized.get("source_actor")
+        ),
+        "source_mission_id": (
+            normalized.get("source_mission_id")
+            or normalized.get("mission_id")
+            or normalized.get("mission")
+        ),
+        "context_schema_version": (
+            normalized.get("context_schema_version")
+            or normalized.get("schema_version")
+            or normalized.get("context_schema")
+            or DEFAULT_CONTEXT_SCHEMA_VERSION
+        ),
+    }
+
+
+def _enrich_import_job_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    source_metadata = _coerce_json_payload(payload.get("source_metadata")) or {}
+    payload["source_metadata"] = source_metadata if isinstance(source_metadata, dict) else {}
+    derived = _normalize_import_metadata(payload["source_metadata"])
+    if derived.get("source_actor_id") is not None:
+        payload["source_actor_id"] = derived["source_actor_id"]
+        payload["actor_id"] = derived["source_actor_id"]
+    if derived.get("source_mission_id") is not None:
+        payload["source_mission_id"] = derived["source_mission_id"]
+        payload["mission_id"] = derived["source_mission_id"]
+    payload["context_schema_version"] = (
+        payload["source_metadata"].get("context_schema_version")
+        or payload["source_metadata"].get("schema_version")
+        or payload["source_metadata"].get("context_schema")
+        or DEFAULT_CONTEXT_SCHEMA_VERSION
+    )
+    return payload
+
+
 def _coerce_metadata_for_storage(value: Optional[Any]) -> Optional[str]:
     if value is None:
         return None
@@ -881,8 +934,7 @@ def get_import_job(import_id: str) -> Optional[Dict[str, Any]]:
         if not row:
             return None
         payload = _dict_from_row(row)
-        payload["source_metadata"] = _coerce_json_payload(payload.get("source_metadata")) or {}
-        return payload
+        return _enrich_import_job_payload(payload)
 
 
 def _build_directory_snapshot_for_import(conn: sqlite3.Connection, import_id: str) -> Optional[Dict[str, Any]]:
@@ -957,6 +1009,17 @@ def _build_directory_snapshot_for_import(conn: sqlite3.Connection, import_id: st
         "generated_from_import_id": import_id,
         "source_type": job.get("source_type"),
         "import_status": job.get("status"),
+        "source_actor_id": (
+            source_metadata.get("source_actor_id")
+            or source_metadata.get("actor_id")
+            or source_metadata.get("actor")
+            or source_metadata.get("source_actor")
+        ),
+        "source_mission_id": (
+            source_metadata.get("source_mission_id")
+            or source_metadata.get("mission_id")
+            or source_metadata.get("mission")
+        ),
         "context_schema_version": (
             source_metadata.get("context_schema_version")
             or source_metadata.get("schema_version")
@@ -1245,11 +1308,10 @@ def get_latest_import_job_for_source(source_type: str) -> Optional[Dict[str, Any
             """,
             (source_type,),
         ).fetchone()
-    if not row:
-        return None
+        if not row:
+            return None
     payload = _dict_from_row(row)
-    payload["source_metadata"] = _coerce_json_payload(payload.get("source_metadata")) or {}
-    return payload
+    return _enrich_import_job_payload(payload)
 
 
 def add_import_items(import_id: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1548,6 +1610,19 @@ def get_agent_directory_artifact() -> Optional[Dict[str, Any]]:
             artifact_payload = dict(directory_snapshot)
             artifact_payload["source_type"] = row_data.get("source_type")
             artifact_payload["source_metadata"] = source_metadata
+            if "source_actor_id" not in artifact_payload:
+                artifact_payload["source_actor_id"] = (
+                    source_metadata.get("source_actor_id")
+                    or source_metadata.get("actor_id")
+                    or source_metadata.get("actor")
+                    or source_metadata.get("source_actor")
+                )
+            if "source_mission_id" not in artifact_payload:
+                artifact_payload["source_mission_id"] = (
+                    source_metadata.get("source_mission_id")
+                    or source_metadata.get("mission_id")
+                    or source_metadata.get("mission")
+                )
             artifact_payload["generated_at"] = artifact_payload.get(
                 "generated_at",
                 row_data.get("import_created_at"),
@@ -1582,6 +1657,17 @@ def get_agent_directory_artifact() -> Optional[Dict[str, Any]]:
             "generated_from_import_id": row_data.get("import_id"),
             "source_type": row_data.get("source_type"),
             "import_status": row_data.get("import_status"),
+            "source_actor_id": (
+                source_metadata.get("source_actor_id")
+                or source_metadata.get("actor_id")
+                or source_metadata.get("actor")
+                or source_metadata.get("source_actor")
+            ),
+            "source_mission_id": (
+                source_metadata.get("source_mission_id")
+                or source_metadata.get("mission_id")
+                or source_metadata.get("mission")
+            ),
             "source_metadata": source_metadata,
             "imported_item_count": approved_item_count,
             "context_schema_version": context_schema_version,
@@ -1600,8 +1686,7 @@ def list_import_jobs(limit: int = 50) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []
         for row in rows:
             payload = _dict_from_row(row)
-            payload["source_metadata"] = _coerce_json_payload(payload.get("source_metadata")) or {}
-            out.append(payload)
+            out.append(_enrich_import_job_payload(payload))
         return out
 
 

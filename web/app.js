@@ -167,13 +167,19 @@ function renderImportJobs(jobs) {
       const counts = formatImportStateCountLabel(job.item_counts || {});
       const status = escapeHtml(job.status || "unknown");
       const source = escapeHtml(job.source_type || "unknown");
+      const actorId = escapeHtml(job.source_actor_id || "n/a");
+      const missionId = escapeHtml(job.source_mission_id || "n/a");
+      const schemaVersion = escapeHtml(job.context_schema_version || "2");
       const selected = state.selectedImportId === job.id;
       return `
         <div class="card${selected ? " selected" : ""}">
           <h3>Source ${source}</h3>
           <p><strong>Job:</strong> ${escapeHtml(job.id)}</p>
           <p><strong>Status:</strong> ${status}</p>
-        <p><strong>Items:</strong> ${counts}</p>
+          <p><strong>Items:</strong> ${counts}</p>
+          <p><strong>Actor:</strong> ${actorId}</p>
+          <p><strong>Mission:</strong> ${missionId}</p>
+          <p><strong>Context schema:</strong> ${schemaVersion}</p>
           <p>
             <button type="button" data-action="open-import" data-id="${job.id}">
               Open review
@@ -614,6 +620,8 @@ function buildDirectoryArtifactCard(artifact) {
   const sourceStatus = escapeHtml(artifact.import_status || "n/a");
   const metadata = artifact.source_metadata || {};
   const metadataText = Object.keys(metadata).length ? escapeHtml(JSON.stringify(metadata)) : "none";
+  const actorId = escapeHtml(artifact.source_actor_id || "n/a");
+  const missionId = escapeHtml(artifact.source_mission_id || "n/a");
 
   return `
     <div class="card">
@@ -623,6 +631,8 @@ function buildDirectoryArtifactCard(artifact) {
       <p><strong>Generated from:</strong> ${importId}</p>
       <p><strong>Approved entries:</strong> ${itemCount}</p>
       <p><strong>Context schema:</strong> ${schemaVersion}</p>
+      <p><strong>Actor ID:</strong> ${actorId}</p>
+      <p><strong>Mission ID:</strong> ${missionId}</p>
       <p><strong>Metadata:</strong> ${metadataText}</p>
     </div>
   `;
@@ -988,6 +998,9 @@ async function submitImport(event) {
   const sourceType = qs('select[name="sourceType"]')?.value || "openai";
   const fileInput = qs('input[name="sourceFile"]');
   const appendToLatest = Boolean(qs('input[name="appendToLatest"]')?.checked);
+  const actorId = (qs('input[name="actor_id"]')?.value || "").trim();
+  const missionId = (qs('input[name="mission_id"]')?.value || "").trim();
+  const contextSchemaVersion = (qs('input[name="context_schema_version"]')?.value || "").trim();
 
   if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
     setStatus("#importSubmitStatus", "source file is required", "err");
@@ -1002,6 +1015,15 @@ async function submitImport(event) {
   form.append("source_type", sourceType);
   form.append("append_to_latest", String(appendToLatest));
   form.append("source_file", sourceFile);
+  if (actorId) {
+    form.append("actor_id", actorId);
+  }
+  if (missionId) {
+    form.append("mission_id", missionId);
+  }
+  if (contextSchemaVersion) {
+    form.append("context_schema_version", contextSchemaVersion);
+  }
 
   setStatus("#importSubmitStatus", "uploading...", "");
   try {
