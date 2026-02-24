@@ -1616,6 +1616,50 @@ def _coerce_import_item_intake(
     return item_payload, reasons
 
 
+def _collect_import_lineage(import_id: str) -> List[Dict[str, Any]]:
+    lineage: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    current = import_id
+
+    while current:
+        if current in seen:
+            break
+        seen.add(current)
+
+        job = storage.get_import_job(current)
+        if not job:
+            break
+
+        source_metadata = job.get("source_metadata") or {}
+        if isinstance(source_metadata, str):
+            source_metadata = _coerce_json_metadata(source_metadata)
+            if source_metadata is None:
+                source_metadata = {}
+        elif not isinstance(source_metadata, dict):
+            source_metadata = {}
+
+        lineage.append(
+            {
+                "import_id": job.get("id"),
+                "source_type": job.get("source_type"),
+                "source_actor_id": source_metadata.get("source_actor_id"),
+                "source_mission_id": source_metadata.get("source_mission_id"),
+                "status": job.get("status"),
+                "created_at": job.get("created_at"),
+                "updated_at": job.get("updated_at"),
+                "context_schema_version": source_metadata.get("context_schema_version"),
+                "rerun_of_import_id": source_metadata.get("rerun_of_import_id"),
+                "checksum": job.get("checksum"),
+            }
+        )
+
+        current = source_metadata.get("rerun_of_import_id")
+        if not current:
+            break
+
+    return lineage
+
+
 @app.post("/api/agents/import")
 async def create_import_job(
     request: Request,
@@ -1918,6 +1962,55 @@ async def get_import_job(
     return {
         "job": job,
         "items": items,
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/agents/import/{import_id}/audit")
+async def get_import_audit(
+    import_id: str,
+    request: Request,
+) -> Dict[str, Any]:
+    _require_role(request, required="viewer")
+    job = storage.get_import_job(import_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"import '{import_id}' not found")
+
+    progress_events = storage.list_import_progress_events(import_id)
+    item_events = storage.list_import_item_events(import_id=import_id)
+    timeline: List[Dict[str, Any]] = []
+    for event in progress_events:
+        timeline.append(
+            {
+                "created_at": event.get("created_at"),
+                "event_type": "import.progress",
+                "phase": (event.get("payload") or {}).get("phase") if isinstance(event.get("payload"), dict) else None,
+                "details": event.get("payload") or {},
+            }
+        )
+    for event in item_events:
+        timeline.append(
+            {
+                "created_at": event.get("created_at"),
+                "event_type": "import.item.event",
+                "phase": event.get("event_type"),
+                "details": {
+                    "import_item_id": event.get("import_item_id"),
+                    "review_state": event.get("review_state"),
+                    "actor": event.get("actor"),
+                    "note": event.get("note"),
+                    "payload": event.get("payload") or {},
+                },
+            }
+        )
+
+    timeline.sort(key=lambda item: str(item.get("created_at") or ""))
+    return {
+        "job": job,
+        "lineage": _collect_import_lineage(import_id),
+        "progress_events": progress_events,
+        "item_events": item_events,
+        "timeline": timeline,
         "updated_at": _now_iso(),
     }
 

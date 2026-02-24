@@ -1742,6 +1742,78 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         rerun_items = self.client.get(f"/api/agents/import/{rerun_id}", headers=read_headers).json()["items"]
         self.assertGreaterEqual(len(rerun_items), 1)
 
+    def test_import_audit_endpoint_exposes_lineage_and_events(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        export = {
+            "conversations": [
+                {
+                    "id": "thread-audit",
+                    "title": "Audit import",
+                    "messages": [
+                        {
+                            "id": "m-audit",
+                            "author": {"role": "user"},
+                            "create_time": "2026-01-13T09:00:00Z",
+                            "content": "Review this for audit lineage.",
+                        },
+                    ],
+                }
+            ]
+        }
+        upload = ("openai-audit.json", json.dumps(export), "application/json")
+        initial = self.client.post(
+            "/api/agents/import",
+            headers=admin_headers,
+            data={
+                "source_type": "openai",
+                "actor_id": "actor_audit",
+                "mission_id": "mission_audit",
+                "context_schema_version": "2",
+            },
+            files={"source_file": upload},
+        )
+        self.assertEqual(initial.status_code, 200, initial.text)
+        initial_id = initial.json()["import_id"]
+
+        rerun = self.client.post(
+            f"/api/agents/import/{initial_id}/rerun",
+            headers=admin_headers,
+            files={"source_file": upload},
+        )
+        self.assertEqual(rerun.status_code, 200, rerun.text)
+        rerun_id = rerun.json()["import_id"]
+
+        rerun_items = self.client.get(f"/api/agents/import/{rerun_id}", headers=admin_headers).json()["items"]
+        self.assertGreaterEqual(len(rerun_items), 1)
+        review = self.client.post(
+            f"/api/agents/import/{rerun_id}/decision",
+            headers=admin_headers,
+            json={
+                "import_item_ids": [rerun_items[0]["id"]],
+                "review_state": "approved",
+                "note": "audit review pass",
+            },
+        )
+        self.assertEqual(review.status_code, 200, review.text)
+
+        audit_payload = self.client.get(f"/api/agents/import/{rerun_id}/audit", headers=read_headers).json()
+        self.assertEqual(audit_payload.get("job", {}).get("source_type"), "openai")
+        lineage = audit_payload.get("lineage") or []
+        self.assertIsInstance(lineage, list)
+        self.assertGreaterEqual(len(lineage), 2)
+        self.assertEqual(lineage[0].get("import_id"), rerun_id)
+        self.assertEqual(lineage[1].get("import_id"), initial_id)
+
+        timeline = audit_payload.get("timeline") or []
+        event_types = {entry.get("event_type") for entry in timeline}
+        self.assertIn("import.progress", event_types)
+        self.assertIn("import.item.event", event_types)
+        progress_phases = [entry.get("phase") for entry in timeline if entry.get("event_type") == "import.progress"]
+        self.assertIn("created", progress_phases)
+        self.assertTrue(any(entry.get("phase") == "import.item.reviewed" for entry in timeline if entry.get("event_type") == "import.item.event"))
+
     def test_import_codex_upload_and_review_flow(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}

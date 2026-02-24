@@ -17,6 +17,7 @@ const state = {
   providerDiagnostics: null,
   importJobs: [],
   importItems: [],
+  importAudit: null,
   agentDirectory: [],
   agentDirectoryArtifact: null,
   selectedImportId: "",
@@ -237,6 +238,79 @@ function renderImportItems(items) {
     })
     .join("");
   root.innerHTML = `<div class="card-list">${cards}</div>`;
+}
+
+function renderImportAudit(audit) {
+  const root = qs("#importAudit");
+  if (!root) {
+    return;
+  }
+  if (!audit || !audit.job) {
+    root.innerHTML = "<p>Select an import job to review its audit trail.</p>";
+    return;
+  }
+
+  const lineage = audit.lineage || [];
+  const timeline = audit.timeline || [];
+  const lineageBlock = lineage.length
+    ? lineage
+        .map((entry, index) => {
+          const details = [
+            `source: ${escapeHtml(entry.source_type || "unknown")}`,
+            `status: ${escapeHtml(entry.status || "unknown")}`,
+            `actor: ${escapeHtml(entry.source_actor_id || "n/a")}`,
+            `mission: ${escapeHtml(entry.source_mission_id || "n/a")}`,
+          ]
+            .filter(Boolean)
+            .join("<br>");
+          const parent = entry.rerun_of_import_id
+            ? `<p><strong>Parent rerun:</strong> ${escapeHtml(entry.rerun_of_import_id)}</p>`
+            : "";
+          return `
+            <div class="card">
+              <h3>${index + 1}. Import ${escapeHtml(entry.import_id || "unknown")}</h3>
+              <p>${details}</p>
+              ${parent}
+              <p><strong>Created:</strong> ${escapeHtml(entry.created_at || "n/a")}</p>
+            </div>
+          `;
+        })
+        .join("")
+    : "<p>No lineage found.</p>";
+
+  const eventsBlock = timeline.length
+    ? timeline
+        .map((event) => {
+          const phase = event.phase || "event";
+          const created = event.created_at || "n/a";
+          const details = event.details || {};
+          const detailText = escapeHtml(JSON.stringify(details).replaceAll("\"", "'"));
+          return `
+            <div class="card">
+              <p><strong>${escapeHtml(event.event_type || "event")} · ${escapeHtml(phase)}</strong></p>
+              <p><strong>At:</strong> ${escapeHtml(created)}</p>
+              <p><strong>Details:</strong> ${detailText}</p>
+            </div>
+          `;
+        })
+        .join("")
+    : "<p>No events yet.</p>";
+
+  root.innerHTML = `
+    <div class="card-list">
+      <div class="card">
+        <h3>Import ${escapeHtml(audit.job.id || "unknown")}</h3>
+        <p><strong>Source:</strong> ${escapeHtml(audit.job.source_type || "unknown")}</p>
+        <p><strong>Status:</strong> ${escapeHtml(audit.job.status || "unknown")}</p>
+        <p><strong>Actor:</strong> ${escapeHtml(audit.job.source_actor_id || "n/a")}</p>
+        <p><strong>Mission:</strong> ${escapeHtml(audit.job.source_mission_id || "n/a")}</p>
+      </div>
+      <h3>Lineage</h3>
+      ${lineageBlock}
+      <h3>Timeline</h3>
+      ${eventsBlock}
+    </div>
+  `;
 }
 
 function getProviderFilterState() {
@@ -910,6 +984,7 @@ async function loadImportJobs() {
     if (header) {
       header.textContent = "Select an import job to review";
     }
+    renderImportAudit(null);
   }
 }
 
@@ -927,6 +1002,24 @@ async function loadImportItems(importId, reviewState = "") {
   if (header) {
     const sourceType = payload.job?.source_type ? ` (${payload.job.source_type})` : "";
     header.textContent = `Reviewing import ${importId}${sourceType}`;
+  }
+  await loadImportAudit(importId);
+}
+
+async function loadImportAudit(importId) {
+  if (!importId) {
+    state.importAudit = null;
+    renderImportAudit(null);
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/agents/import/${encodeURIComponent(importId)}/audit`);
+    state.importAudit = payload;
+    renderImportAudit(payload);
+  } catch (err) {
+    state.importAudit = null;
+    renderImportAudit(null);
+    setStatus("#importSubmitStatus", `audit load failed: ${err.message}`, "err");
   }
 }
 
@@ -1031,6 +1124,7 @@ async function submitImport(event) {
     setStatus("#importSubmitStatus", `import queued: ${payload.import_id}`, "ok");
     await loadImportJobs();
     await loadImportItems(payload.import_id);
+    await loadImportAudit(payload.import_id);
     await loadAgentDirectory();
   } catch (err) {
     setStatus("#importSubmitStatus", `import failed: ${err.message}`, "err");
@@ -1059,6 +1153,7 @@ async function submitImportRerun(event) {
     state.rerunImportId = "";
     await loadImportJobs();
     await loadImportItems(payload.import_id);
+    await loadImportAudit(payload.import_id);
     await loadAgentDirectory();
   } catch (err) {
     setStatus("#importSubmitStatus", `import rerun failed: ${err.message}`, "err");
@@ -1322,6 +1417,7 @@ async function onTableChange(event) {
     }
     state.selectedImportId = importId;
     await loadImportItems(importId);
+    await loadImportAudit(importId);
     return;
   }
 

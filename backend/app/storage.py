@@ -111,6 +111,7 @@ def _enrich_import_job_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         or payload["source_metadata"].get("context_schema")
         or DEFAULT_CONTEXT_SCHEMA_VERSION
     )
+    payload["rerun_of_import_id"] = payload["source_metadata"].get("rerun_of_import_id")
     return payload
 
 
@@ -1494,6 +1495,41 @@ def list_import_items(import_id: Optional[str] = None, review_state: Optional[st
         for row in rows:
             payload = _dict_from_row(row)
             payload["metadata"] = _coerce_json_payload(payload.get("metadata")) or {}
+            out.append(payload)
+        return out
+
+
+def list_import_progress_events(import_id: str) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM events WHERE type = 'import.progress' ORDER BY datetime(created_at) ASC"
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = _coerce_json_payload(row["payload"])
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("import_id") or "") != str(import_id):
+                continue
+            event_payload = _dict_from_row(row)
+            event_payload["payload"] = payload
+            out.append(event_payload)
+        return out
+
+
+def list_import_item_events(import_id: str, import_item_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        filters = ["import_id = ?"]
+        args: List[Any] = [import_id]
+        if import_item_id is not None:
+            filters.append("import_item_id = ?")
+            args.append(import_item_id)
+        query = "SELECT * FROM import_item_events WHERE " + " AND ".join(filters) + " ORDER BY datetime(created_at) ASC"
+        rows = conn.execute(query, tuple(args)).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = _dict_from_row(row)
+            payload["payload"] = _coerce_json_payload(payload.get("payload"))
             out.append(payload)
         return out
 
