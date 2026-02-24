@@ -2209,6 +2209,15 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(approved.json()["updated"][0]["visibility"], "visible")
         self.assertEqual(approved.json()["updated"][0]["review_state"], "approved")
 
+        approved_audit = self.client.get(f"/api/agents/import/{import_id}/audit", headers=read_headers).json()
+        review_events = [
+            entry
+            for entry in approved_audit.get("timeline", [])
+            if entry.get("event_type") == "import.item.event" and entry.get("phase") == "import.item.reviewed"
+        ]
+        self.assertTrue(review_events)
+        self.assertEqual(review_events[-1]["details"]["payload"]["visibility_after"], "visible")
+
         refreshed = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
         self.assertEqual(refreshed[0]["visibility"], "visible")
         self.assertEqual(refreshed[0]["review_state"], "approved")
