@@ -1513,6 +1513,9 @@ async def get_agent_directory(request: Request) -> Dict[str, Any]:
     directory = storage.list_agent_directory()
     directory_artifact = storage.get_agent_directory_artifact()
     if isinstance(directory_artifact, dict):
+        import_id = directory_artifact.get("generated_from_import_id")
+        if import_id:
+            directory_artifact["lineage"] = _collect_import_lineage(str(import_id))
         directory_artifact["source_metadata"] = _redact_metadata(
             directory_artifact.get("source_metadata"),
             role,

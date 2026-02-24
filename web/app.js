@@ -696,6 +696,23 @@ function buildDirectoryArtifactCard(artifact) {
   const metadataText = Object.keys(metadata).length ? escapeHtml(JSON.stringify(metadata)) : "none";
   const actorId = escapeHtml(artifact.source_actor_id || "n/a");
   const missionId = escapeHtml(artifact.source_mission_id || "n/a");
+  const lineage = Array.isArray(artifact.lineage) ? artifact.lineage : [];
+  const lineageBlock = lineage.length
+    ? `<p><strong>Lineage:</strong> ${lineage
+        .map((entry) => {
+          const label = escapeHtml(entry.import_id || "unknown");
+          return `<span>${label}</span>`;
+        })
+        .join(" → ")}</p>`
+    : "";
+  const overlays = artifact.source_metadata && Object.keys(artifact.source_metadata).length
+    ? artifact.source_metadata.agent_overlays || artifact.source_metadata.overlays || null
+    : null;
+  const overlaysLabel = overlays
+    ? `<p><strong>Overlays:</strong> ${escapeHtml(
+        typeof overlays === "string" ? overlays : JSON.stringify(overlays),
+      )}</p>`
+    : "";
 
   return `
     <div class="card">
@@ -707,6 +724,8 @@ function buildDirectoryArtifactCard(artifact) {
       <p><strong>Context schema:</strong> ${schemaVersion}</p>
       <p><strong>Actor ID:</strong> ${actorId}</p>
       <p><strong>Mission ID:</strong> ${missionId}</p>
+      ${lineageBlock}
+      ${overlaysLabel}
       <p><strong>Metadata:</strong> ${metadataText}</p>
     </div>
   `;

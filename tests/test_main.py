@@ -1078,6 +1078,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(artifact["generated_from_import_id"], import_id)
         self.assertEqual(artifact["source_type"], "openai")
         self.assertEqual(artifact["import_status"], "awaiting_review")
+        self.assertEqual(artifact["lineage"][0]["import_id"], import_id)
         self.assertGreaterEqual(int(artifact.get("imported_item_count", 0)), 1)
         self.assertEqual(artifact["artifact_id"], f"directory:{import_id}")
 
