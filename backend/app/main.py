@@ -2105,9 +2105,15 @@ async def get_agent_audit(
 
 
 @app.get("/api/agents")
-async def get_agents(request: Request) -> Dict[str, Any]:
+async def get_agents(
+    request: Request,
+    lifecycle: str = Query(default=storage.AGENT_LIFECYCLE_ALL),
+) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
-    agents = [_agent_with_overlay(agent, role) for agent in storage.list_agents()]
+    try:
+        agents = [_agent_with_overlay(agent, role) for agent in storage.list_agents(lifecycle=lifecycle)]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"agents": agents, "updated_at": _now_iso()}
 
 
@@ -2178,6 +2184,30 @@ async def patch_agent(request: Request, agent_id: str, update: AgentUpdate) -> D
     _event_for(role, "agent", f"Agent updated: {agent_id}", "info")
     response_agent = _agent_with_overlay(agent, role)
     return {"agent": response_agent, "updated_at": _now_iso()}
+
+
+@app.post("/api/agents/{agent_id}/archive")
+async def archive_agent(request: Request, agent_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    try:
+        agent = storage.archive_agent(agent_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"agent '{agent_id}' not found")
+
+    _event_for(role, "agent", f"Agent archived: {agent_id}", "warn", {"agent_id": agent_id})
+    return {"agent": _agent_with_overlay(agent, role), "updated_at": _now_iso()}
+
+
+@app.post("/api/agents/{agent_id}/restore")
+async def restore_agent(request: Request, agent_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    try:
+        agent = storage.restore_agent(agent_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"agent '{agent_id}' not found")
+
+    _event_for(role, "agent", f"Agent restored: {agent_id}", "info", {"agent_id": agent_id})
+    return {"agent": _agent_with_overlay(agent, role), "updated_at": _now_iso()}
 
 
 def _normalise_source_type(source_type: str) -> str:

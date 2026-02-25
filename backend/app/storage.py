@@ -80,6 +80,10 @@ def _normalize_day_filter(value: Optional[str]) -> Optional[str]:
 
 
 DEFAULT_CONTEXT_SCHEMA_VERSION = "2"
+AGENT_LIFECYCLE_ACTIVE = "active"
+AGENT_LIFECYCLE_ARCHIVED = "archived"
+AGENT_LIFECYCLE_ALL = "all"
+_AGENT_LIFECYCLE_VALUES = {AGENT_LIFECYCLE_ACTIVE, AGENT_LIFECYCLE_ARCHIVED}
 
 
 def _normalize_import_metadata(source_metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -158,6 +162,17 @@ def _item_checksum(values: Dict[str, Any]) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _normalize_agent_lifecycle(value: Optional[str]) -> str:
+    if value is None:
+        return AGENT_LIFECYCLE_ACTIVE
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return AGENT_LIFECYCLE_ACTIVE
+    if normalized not in _AGENT_LIFECYCLE_VALUES and normalized != AGENT_LIFECYCLE_ALL:
+        raise ValueError(f"invalid agent lifecycle: {value!r}")
+    return normalized
 
 
 def _ensure_events_payload_column(conn: sqlite3.Connection) -> None:
@@ -250,6 +265,14 @@ def _ensure_plugin_table(conn: sqlite3.Connection) -> None:
         );
         """
     )
+
+
+def _ensure_agent_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(agents)")}
+    if "lifecycle" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'active'")
+    if "archived_at" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN archived_at TEXT")
 
 
 def _ensure_tool_tables(conn: sqlite3.Connection) -> None:
@@ -417,6 +440,8 @@ def ensure_schema() -> None:
                 role TEXT NOT NULL,
                 last_active_at TEXT NOT NULL,
                 config TEXT,
+                lifecycle TEXT NOT NULL DEFAULT 'active',
+                archived_at TEXT,
                 updated_at TEXT NOT NULL
             );
 
@@ -450,6 +475,7 @@ def ensure_schema() -> None:
         _ensure_import_tables(conn)
         _ensure_settings_columns(conn)
         _ensure_plugin_table(conn)
+        _ensure_agent_columns(conn)
         _ensure_tool_tables(conn)
         _ensure_tool_usage_columns(conn)
         _ensure_chat_history_columns(conn)
@@ -491,11 +517,11 @@ def ensure_schema() -> None:
             conn.execute(
                 """
                 INSERT OR IGNORE INTO agents(
-                    id, name, enabled, status, role, last_active_at, config, updated_at
+                    id, name, enabled, status, role, last_active_at, config, lifecycle, archived_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, NULL, ?)
+                VALUES(?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?)
                 """,
-                (*agent, now, now),
+                (*agent, now, AGENT_LIFECYCLE_ACTIVE, now),
             )
 
         defaults = [
@@ -2018,9 +2044,16 @@ def create_provider(values: Dict[str, Any]) -> Dict[str, Any]:
         return payload
 
 
-def list_agents() -> List[Dict]:
+def list_agents(lifecycle: Optional[str] = AGENT_LIFECYCLE_ALL) -> List[Dict]:
+    normalized_lifecycle = _normalize_agent_lifecycle(lifecycle)
     with get_connection() as conn:
-        rows = conn.execute("SELECT * FROM agents ORDER BY name ASC").fetchall()
+        query = "SELECT * FROM agents"
+        args: List[Any] = []
+        if normalized_lifecycle in {AGENT_LIFECYCLE_ACTIVE, AGENT_LIFECYCLE_ARCHIVED}:
+            query += " WHERE lifecycle = ?"
+            args.append(normalized_lifecycle)
+        query += " ORDER BY name ASC"
+        rows = conn.execute(query, args).fetchall()
         out: List[Dict] = []
         for row in rows:
             payload = _dict_from_row(row)
@@ -2037,16 +2070,24 @@ def update_agent(agent_id: str, values: Dict) -> Dict:
         row = _dict_from_row(existing)
         payload = row | values
         payload["enabled"] = int(bool(payload.get("enabled", row["enabled"])))
+        payload["lifecycle"] = _normalize_agent_lifecycle(values.get("lifecycle", row.get("lifecycle")))
+        payload["archived_at"] = payload.get("archived_at", row.get("archived_at"))
         if values.get("enabled") is False:
             payload["status"] = "paused"
         elif values.get("enabled") is True:
             payload["status"] = "running"
+        if payload["lifecycle"] == AGENT_LIFECYCLE_ARCHIVED:
+            payload["enabled"] = 0
+            payload["status"] = "archived"
+            payload["archived_at"] = payload.get("archived_at") or _now_iso()
+        elif payload["lifecycle"] == AGENT_LIFECYCLE_ACTIVE and row.get("lifecycle") == AGENT_LIFECYCLE_ARCHIVED:
+            payload["archived_at"] = None
         payload["last_active_at"] = _now_iso()
         now = _now_iso()
         conn.execute(
             """
             UPDATE agents
-            SET name=?, enabled=?, status=?, role=?, last_active_at=?, config=?, updated_at=?
+            SET name=?, enabled=?, status=?, role=?, last_active_at=?, config=?, lifecycle=?, archived_at=?, updated_at=?
             WHERE id=?
             """,
             (
@@ -2056,12 +2097,90 @@ def update_agent(agent_id: str, values: Dict) -> Dict:
                 payload["role"],
                 payload["last_active_at"],
                 payload.get("config"),
+                payload["lifecycle"],
+                payload.get("archived_at"),
                 now,
                 agent_id,
             ),
         )
         conn.commit()
         payload["enabled"] = bool(payload["enabled"])
+        return payload
+
+
+def archive_agent(agent_id: str, *, archived_at: Optional[str] = None) -> Dict:
+    now = _now_iso()
+    with get_connection() as conn:
+        existing = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        if not existing:
+            raise KeyError(f"agent '{agent_id}' not found")
+        row = _dict_from_row(existing)
+        payload = row | {"lifecycle": AGENT_LIFECYCLE_ARCHIVED}
+        payload["archived_at"] = archived_at or now
+        payload["enabled"] = 0
+        payload["status"] = row.get("status") if str(row.get("status", "")).strip() == "archived" else "archived"
+        payload["last_active_at"] = now
+        conn.execute(
+            """
+            UPDATE agents
+            SET lifecycle=?, archived_at=?, enabled=?, status=?, last_active_at=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                AGENT_LIFECYCLE_ARCHIVED,
+                payload["archived_at"],
+                payload["enabled"],
+                payload["status"],
+                now,
+                now,
+                agent_id,
+            ),
+        )
+        conn.commit()
+        payload["enabled"] = bool(payload["enabled"])
+        payload["status"] = payload["status"]
+        payload["lifecycle"] = AGENT_LIFECYCLE_ARCHIVED
+        return payload
+
+
+def restore_agent(agent_id: str) -> Dict:
+    now = _now_iso()
+    with get_connection() as conn:
+        existing = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+        if not existing:
+            raise KeyError(f"agent '{agent_id}' not found")
+        row = _dict_from_row(existing)
+        if row.get("lifecycle") != AGENT_LIFECYCLE_ARCHIVED:
+            payload = dict(row)
+            payload["enabled"] = bool(payload.get("enabled"))
+            payload["lifecycle"] = _normalize_agent_lifecycle(row.get("lifecycle"))
+            return payload
+        payload = row
+        payload["lifecycle"] = AGENT_LIFECYCLE_ACTIVE
+        payload["archived_at"] = None
+        payload["enabled"] = 1
+        payload["status"] = "running"
+        payload["last_active_at"] = now
+        conn.execute(
+            """
+            UPDATE agents
+            SET lifecycle=?, archived_at=?, enabled=?, status=?, last_active_at=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                AGENT_LIFECYCLE_ACTIVE,
+                None,
+                1,
+                "running",
+                now,
+                now,
+                agent_id,
+            ),
+        )
+        conn.commit()
+        payload["enabled"] = True
+        payload["lifecycle"] = AGENT_LIFECYCLE_ACTIVE
+        payload["status"] = "running"
         return payload
 
 

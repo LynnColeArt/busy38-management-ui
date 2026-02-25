@@ -1295,6 +1295,69 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(response.status_code, 400, response.text)
         self.assertEqual(response.json()["detail"], "overlay_token_cap must be a positive integer")
 
+    def test_agents_list_filter_by_lifecycle(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        archived = self.client.post("/api/agents/orchestrator-core/archive", headers=admin_headers)
+        self.assertEqual(archived.status_code, 200, archived.text)
+        archived_agent = archived.json()["agent"]
+        self.assertEqual(archived_agent["lifecycle"], "archived")
+        self.assertFalse(archived_agent["enabled"])
+
+        active_payload = self.client.get(
+            "/api/agents",
+            headers=read_headers,
+            params={"lifecycle": "active"},
+        )
+        self.assertEqual(active_payload.status_code, 200, active_payload.text)
+        active_agents = active_payload.json()["agents"]
+        self.assertNotIn("orchestrator-core", [agent["id"] for agent in active_agents])
+
+        archived_payload = self.client.get("/api/agents", headers=read_headers, params={"lifecycle": "archived"})
+        self.assertEqual(archived_payload.status_code, 200, archived_payload.text)
+        archived_agents = archived_payload.json()["agents"]
+        self.assertEqual(len(archived_agents), 1)
+        self.assertEqual(archived_agents[0]["id"], "orchestrator-core")
+
+        all_payload = self.client.get("/api/agents", headers=read_headers, params={"lifecycle": "all"})
+        self.assertEqual(all_payload.status_code, 200, all_payload.text)
+        all_agents = all_payload.json()["agents"]
+        self.assertGreaterEqual(len(all_agents), 3)
+        ids = [agent["id"] for agent in all_agents]
+        self.assertIn("orchestrator-core", ids)
+
+    def test_agents_archive_and_restore_actions(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        blocked = self.client.post("/api/agents/orchestrator-core/archive", headers=read_headers)
+        self.assertEqual(blocked.status_code, 403)
+
+        archived = self.client.post("/api/agents/orchestrator-core/archive", headers=admin_headers)
+        self.assertEqual(archived.status_code, 200, archived.text)
+        archived_agent = archived.json()["agent"]
+        self.assertEqual(archived_agent["lifecycle"], "archived")
+        self.assertFalse(archived_agent["enabled"])
+        self.assertIn("archived_at", archived_agent)
+
+        restored = self.client.post("/api/agents/orchestrator-core/restore", headers=admin_headers)
+        self.assertEqual(restored.status_code, 200, restored.text)
+        restored_agent = restored.json()["agent"]
+        self.assertEqual(restored_agent["lifecycle"], "active")
+        self.assertTrue(restored_agent["enabled"])
+        self.assertIsNone(restored_agent.get("archived_at"))
+
+        blocked_restore = self.client.post("/api/agents/orchestrator-core/restore", headers=read_headers)
+        self.assertEqual(blocked_restore.status_code, 403)
+
+    def test_agents_list_rejects_invalid_lifecycle(self):
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        response = self.client.get("/api/agents", headers=read_headers, params={"lifecycle": "bogus"})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("invalid agent lifecycle", response.json()["detail"])
+
     def test_provider_discovery_success_stores_model_metadata(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
 
