@@ -165,6 +165,7 @@ class MemoryCreate(BaseModel):
 class ChatHistoryCreate(BaseModel):
     agent_id: str
     summary: str
+    chat_session_id: Optional[str] = None
 
 
 class ToolUsageCreate(BaseModel):
@@ -2823,16 +2824,35 @@ async def get_chat_history(
     request: Request,
     agent_id: Optional[str] = None,
     item_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
-    rows = storage.list_chat_history(agent_id=agent_id, item_id=item_id)
+    rows = storage.list_chat_history(
+        agent_id=agent_id,
+        item_id=item_id,
+        chat_session_id=chat_session_id,
+    )
+    return {"chat_history": rows, "updated_at": _now_iso()}
+
+
+@app.get("/api/chat_history/session/{chat_session_id}")
+async def get_chat_history_by_session(
+    request: Request,
+    chat_session_id: str,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    rows = storage.list_chat_history(chat_session_id=chat_session_id)
     return {"chat_history": rows, "updated_at": _now_iso()}
 
 
 @app.post("/api/chat_history")
 async def add_chat_entry(request: Request, payload: ChatHistoryCreate) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
-    row = storage.add_chat_entry(agent_id=payload.agent_id, summary=payload.summary)
+    row = storage.add_chat_entry(
+        agent_id=payload.agent_id,
+        summary=payload.summary,
+        chat_session_id=payload.chat_session_id,
+    )
     _event_for(role, "chat", f"Chat history entry added for {payload.agent_id}", "info")
     return {"chat": row}
 

@@ -942,9 +942,10 @@ function renderChat(rows) {
     return;
   }
   list.innerHTML = (rows || [])
-    .map(
-      (row) => `<li><strong>${row.agent_id}</strong> (${row.id}): ${row.summary} — <small>${row.timestamp}</small></li>`
-    )
+    .map((row) => {
+      const sessionText = row.chat_session_id ? ` · session ${escapeHtml(row.chat_session_id)}` : "";
+      return `<li><strong>${escapeHtml(row.agent_id)}</strong> (${escapeHtml(row.id)}): ${escapeHtml(row.summary)}${sessionText} — <small>${escapeHtml(row.timestamp)}</small></li>`;
+    })
     .join("");
 }
 
@@ -1122,7 +1123,7 @@ async function loadMemory(scope = "", type = "", itemId = "") {
   }
 }
 
-async function loadChatHistory(agentId = "", itemId = "") {
+async function loadChatHistory(agentId = "", itemId = "", chatSessionId = "") {
   const params = new URLSearchParams();
   if (agentId) {
     params.set("agent_id", agentId);
@@ -1130,11 +1131,18 @@ async function loadChatHistory(agentId = "", itemId = "") {
   if (itemId) {
     params.set("item_id", itemId);
   }
+  if (chatSessionId) {
+    params.set("chat_session_id", chatSessionId);
+  }
   const query = params.toString();
   const payload = await fetchJson(query ? `/api/chat_history?${query}` : "/api/chat_history");
   renderChat(payload.chat_history || []);
   if (itemId) {
     setStatus("#chatStatus", `chat filtered by item ${itemId}`, "ok");
+    return;
+  }
+  if (chatSessionId) {
+    setStatus("#chatStatus", `chat filtered by session ${chatSessionId}`, "ok");
   } else {
     setStatus("#chatStatus", "", "");
   }
@@ -1522,6 +1530,10 @@ async function openToolUsageContext(contextType, contextId, memoryId = "", chatM
       return;
     }
     if (contextType === "chat") {
+      if (resolvedChatSessionId) {
+        await loadChatHistory("", "", resolvedChatSessionId);
+        return;
+      }
       const targetChatMessageId = resolvedChatMessageId || fallbackContextId;
       if (targetChatMessageId) {
         await loadChatHistory("", targetChatMessageId);
@@ -1600,7 +1612,8 @@ function renderToolUsage(usageItems) {
               Open session
             </button>`
         : "";
-      const contextButton = contextAction && contextId
+      const canOpenContext = contextAction && (contextId || memoryId || chatMessageId || chatSessionId);
+      const contextButton = canOpenContext
         ? `<button
               type="button"
               data-action="${contextAction}"
@@ -1613,22 +1626,7 @@ function renderToolUsage(usageItems) {
               Open ${escapeHtml(contextType)} context
             </button>`
         : "";
-      const contextButtonFallback = contextAction && !contextId && (
-        (contextType === "memory" && memoryId) || (contextType === "chat" && chatMessageId)
-      )
-        ? `<button
-              type="button"
-              data-action="${contextAction}"
-              data-context-type="${escapeHtml(contextType)}"
-              data-context-id=""
-              data-memory-id="${escapeHtml(memoryId)}"
-              data-chat-message-id="${escapeHtml(chatMessageId)}"
-              data-chat-session-id="${escapeHtml(chatSessionId)}"
-            >
-              Open ${escapeHtml(contextType)} context
-            </button>`
-        : "";
-      const resolvedContextButton = contextButton || contextButtonFallback;
+      const resolvedContextButton = contextButton;
       const entryAction = entry.id
         ? `<button
               type="button"
@@ -1784,15 +1782,23 @@ async function submitChat(event) {
   event.preventDefault();
   const agent_id = qs('input[name="chatAgentId"]').value.trim();
   const summary = qs('input[name="chatSummary"]').value.trim();
+  const chat_session_id = qs('input[name="chatSessionId"]').value.trim();
   if (!agent_id || !summary) {
     setStatus("#chatStatus", "chat form requires agent id and summary", "err");
     return;
   }
 
   try {
-    await postJson("/api/chat_history", { agent_id, summary });
+    const payload = { agent_id, summary };
+    if (chat_session_id) {
+      payload.chat_session_id = chat_session_id;
+    }
+    await postJson("/api/chat_history", payload);
     setStatus("#chatStatus", "chat note added", "ok");
     qs('input[name="chatSummary"]').value = "";
+    if (qs('input[name="chatSessionId"]')) {
+      qs('input[name="chatSessionId"]').value = "";
+    }
     await loadChatHistory();
   } catch (err) {
     setStatus("#chatStatus", `save failed: ${err.message}`, "err");

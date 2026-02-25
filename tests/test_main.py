@@ -1156,6 +1156,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         chat_a = self.client.post("/api/chat_history", headers=admin_headers, json={
             "agent_id": "agent-memory",
             "summary": "First chat summary.",
+            "chat_session_id": "chat-session-alpha",
         })
         self.assertEqual(chat_a.status_code, 200, chat_a.text)
         chat_payload = chat_a.json()["chat"]
@@ -1171,6 +1172,27 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         chat_rows = chat_item.json()["chat_history"]
         self.assertEqual(len(chat_rows), 1)
         self.assertEqual(chat_rows[0]["id"], chat_payload["id"])
+
+        chat_session_item = self.client.get(
+            "/api/chat_history",
+            headers=read_headers,
+            params={"chat_session_id": "chat-session-alpha"},
+        )
+        self.assertEqual(chat_session_item.status_code, 200, chat_session_item.text)
+        chat_session_rows = chat_session_item.json()["chat_history"]
+        self.assertEqual(len(chat_session_rows), 1)
+        self.assertEqual(chat_session_rows[0]["chat_session_id"], "chat-session-alpha")
+        self.assertEqual(chat_session_rows[0]["id"], chat_payload["id"])
+
+        chat_session_endpoint = self.client.get(
+            "/api/chat_history/session/chat-session-alpha",
+            headers=read_headers,
+        )
+        self.assertEqual(chat_session_endpoint.status_code, 200, chat_session_endpoint.text)
+        chat_session_endpoint_rows = chat_session_endpoint.json()["chat_history"]
+        self.assertEqual(len(chat_session_endpoint_rows), 1)
+        self.assertEqual(chat_session_endpoint_rows[0]["chat_session_id"], "chat-session-alpha")
+        self.assertEqual(chat_session_endpoint_rows[0]["id"], chat_payload["id"])
 
     def test_runtime_actions_require_admin(self):
         read_headers = {"Authorization": f"Bearer {self.read_token}"}

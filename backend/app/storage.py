@@ -352,6 +352,18 @@ def _ensure_tool_usage_columns(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_agent_id ON tool_usage(agent_id, created_at)")
 
 
+def _ensure_chat_history_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_history)")}
+    if "chat_session_id" not in columns:
+        conn.execute("ALTER TABLE chat_history ADD COLUMN chat_session_id TEXT")
+
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list(chat_history)")}
+    if "idx_chat_history_chat_session" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_chat_session ON chat_history(chat_session_id, timestamp)")
+    if "idx_chat_history_agent" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_history_agent ON chat_history(agent_id, timestamp)")
+
+
 def _coerce_proxy_value(value: Any | None) -> str:
     if value is None:
         return ""
@@ -429,7 +441,8 @@ def ensure_schema() -> None:
                 id TEXT PRIMARY KEY,
                 agent_id TEXT NOT NULL,
                 summary TEXT NOT NULL,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                chat_session_id TEXT
             );
             """
         )
@@ -439,6 +452,7 @@ def ensure_schema() -> None:
         _ensure_plugin_table(conn)
         _ensure_tool_tables(conn)
         _ensure_tool_usage_columns(conn)
+        _ensure_chat_history_columns(conn)
         conn.commit()
 
         row = conn.execute("SELECT 1 FROM settings WHERE id='singleton'").fetchone()
@@ -3081,7 +3095,11 @@ def add_memory(scope: str, memory_type: str, content: str) -> Dict:
     return payload
 
 
-def list_chat_history(agent_id: Optional[str], item_id: Optional[str] = None) -> List[Dict]:
+def list_chat_history(
+    agent_id: Optional[str] = None,
+    item_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
+) -> List[Dict]:
     filters: list[str] = []
     args: list[str] = []
     if agent_id:
@@ -3090,6 +3108,9 @@ def list_chat_history(agent_id: Optional[str], item_id: Optional[str] = None) ->
     if item_id:
         filters.append("id = ?")
         args.append(item_id)
+    if chat_session_id:
+        filters.append("chat_session_id = ?")
+        args.append(chat_session_id)
     where = f" WHERE {' AND '.join(filters)}" if filters else ""
     with get_connection() as conn:
         rows = conn.execute(
@@ -3099,14 +3120,20 @@ def list_chat_history(agent_id: Optional[str], item_id: Optional[str] = None) ->
         return [_dict_from_row(row) for row in rows]
 
 
-def add_chat_entry(agent_id: str, summary: str) -> Dict:
+def add_chat_entry(agent_id: str, summary: str, chat_session_id: Optional[str] = None) -> Dict:
     chat_id = f"chat-{uuid.uuid4().hex[:12]}"
     now = _now_iso()
-    payload = {"id": chat_id, "agent_id": agent_id, "summary": summary, "timestamp": now}
+    payload = {
+        "id": chat_id,
+        "agent_id": agent_id,
+        "summary": summary,
+        "timestamp": now,
+        "chat_session_id": _normalize_str(chat_session_id),
+    }
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO chat_history(id, agent_id, summary, timestamp) VALUES(?, ?, ?, ?)",
-            (chat_id, agent_id, summary, now),
+            "INSERT INTO chat_history(id, agent_id, summary, timestamp, chat_session_id) VALUES(?, ?, ?, ?, ?)",
+            (chat_id, agent_id, summary, now, _normalize_str(chat_session_id)),
         )
         conn.commit()
     return payload
