@@ -152,6 +152,8 @@ class AgentUpdate(BaseModel):
     name: Optional[str] = None
     role: Optional[str] = None
     config: Optional[Dict[str, Any]] = None
+    overlay_content: Optional[str] = None
+    overlay_token_cap: Optional[int] = None
 
 
 class MemoryCreate(BaseModel):
@@ -163,6 +165,17 @@ class MemoryCreate(BaseModel):
 class ChatHistoryCreate(BaseModel):
     agent_id: str
     summary: str
+
+
+class ToolUsageCreate(BaseModel):
+    agent_id: Optional[str] = None
+    session_id: Optional[str] = None
+    request_id: Optional[str] = None
+    status: str = "executed"
+    duration_ms: Optional[int] = None
+    result_status: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+    payload: Optional[Dict[str, Any]] = None
 
 
 class ImportDecisionRequest(BaseModel):
@@ -380,6 +393,101 @@ def _sanitize_provider(provider: Dict[str, Any], role: str) -> Dict[str, Any]:
 def _sanitize_plugin(plugin: Dict[str, Any], role: str) -> Dict[str, Any]:
     payload = dict(plugin)
     payload["metadata"] = _redact_metadata(payload.get("metadata"), role)
+    return payload
+
+
+def _plugin_map() -> Dict[str, Dict[str, Any]]:
+    return {str(plugin.get("id")).strip(): plugin for plugin in storage.list_plugins()}
+
+
+def _sanitize_tool_payload(
+    tool: Dict[str, Any],
+    role: str,
+    plugin_map: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = dict(tool)
+    payload["metadata"] = _redact_metadata(payload.get("metadata"), role)
+    plugin_id = str(payload.get("plugin_id") or "").strip()
+    if plugin_id:
+        plugin = plugin_map.get(plugin_id, {})
+        if plugin:
+            payload["plugin"] = {
+                "id": plugin_id,
+                "name": plugin.get("name"),
+                "source": plugin.get("source"),
+            }
+        else:
+            payload["plugin"] = {"id": plugin_id}
+    else:
+        payload["plugin"] = None
+    return payload
+
+
+def _sanitize_tool_usage_payload(usage: Dict[str, Any], role: str) -> Dict[str, Any]:
+    if role == "admin":
+        return dict(usage)
+
+    payload = dict(usage)
+    payload["details"] = _redact_metadata(payload.get("details"), role)
+    payload["payload"] = _redact_metadata(payload.get("payload"), role)
+    if isinstance(payload.get("agent_id"), str):
+        payload["agent_id"] = "***redacted***"
+    if isinstance(payload.get("session_id"), str):
+        payload["session_id"] = "***redacted***"
+    if isinstance(payload.get("request_id"), str):
+        payload["request_id"] = "***redacted***"
+    return payload
+
+
+def _coerce_overlay_token_cap(token_cap: Optional[int]) -> Optional[int]:
+    if token_cap is None:
+        return None
+    if token_cap <= 0:
+        raise HTTPException(status_code=400, detail="overlay_token_cap must be a positive integer")
+    return int(token_cap)
+
+
+def _sanitize_agent_overlay(overlay_result: Any, role: str) -> Dict[str, Any]:
+    if not isinstance(overlay_result, dict):
+        return {"found": False, "overlay": None}
+
+    if not overlay_result.get("success", True):
+        payload = {"found": False, "overlay": None}
+        if isinstance(overlay_result.get("error"), str):
+            payload["error"] = overlay_result.get("error")
+        return payload
+
+    raw = overlay_result.get("overlay")
+    if raw is None and overlay_result.get("overlay_data") is not None:
+        raw = overlay_result.get("overlay_data")
+
+    if raw is None:
+        return {"found": bool(overlay_result.get("found", False)), "overlay": None}
+
+    if not isinstance(raw, dict):
+        return {"found": False, "overlay": None}
+
+    overlay_payload = dict(raw)
+    overlay_payload.pop("source_hash", None)
+    if role != "admin":
+        content = str(overlay_payload.get("content", ""))
+        if content:
+            overlay_payload["content_preview"] = content[:240] + ("…" if len(content) > 240 else "")
+        overlay_payload.pop("content", None)
+
+    return {
+        "found": True,
+        "overlay": overlay_payload,
+        "actor_id": str(overlay_result.get("actor_id", "")),
+    }
+
+
+def _agent_with_overlay(agent: Dict[str, Any], role: str) -> Dict[str, Any]:
+    payload = dict(agent)
+    try:
+        payload["overlay"] = _sanitize_agent_overlay(runtime.get_actor_overlay(str(agent.get("id", "")).strip()), role)
+    except Exception as exc:  # pragma: no cover - defensive
+        payload["overlay"] = {"found": False, "overlay": None, "error": str(exc)}
     return payload
 
 
@@ -1500,10 +1608,132 @@ async def patch_plugin(request: Request, plugin_id: str, update: PluginUpdate) -
     return {"plugin": _sanitize_plugin(plugin, role), "updated_at": _now_iso()}
 
 
+@app.get("/api/tools")
+async def list_tools(
+    request: Request,
+    q: Optional[str] = None,
+    namespace: Optional[str] = None,
+    module: Optional[str] = None,
+    plugin_id: Optional[str] = None,
+    status: Optional[str] = None,
+    sort: str = "popularity",
+    limit: int = 50,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    plugins = _plugin_map()
+    tools = storage.list_tools(
+        q=q,
+        namespace=namespace,
+        module=module,
+        plugin_id=plugin_id,
+        status=status,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "tools": [_sanitize_tool_payload(tool, role, plugins) for tool in tools],
+        "count": storage.count_tools(
+            q=q,
+            namespace=namespace,
+            module=module,
+            plugin_id=plugin_id,
+            status=status,
+        ),
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/tools/search")
+async def search_tools(
+    request: Request,
+    q: Optional[str] = None,
+    namespace: Optional[str] = None,
+    module: Optional[str] = None,
+    plugin_id: Optional[str] = None,
+    status: Optional[str] = None,
+    sort: str = "popularity",
+    limit: int = 50,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    return await list_tools(
+        request=request,
+        q=q,
+        namespace=namespace,
+        module=module,
+        plugin_id=plugin_id,
+        status=status,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/api/tools/{tool_id}")
+async def get_tool(request: Request, tool_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    tool = storage.get_tool_registry(tool_id)
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"tool '{tool_id}' not found")
+    return {
+        "tool": _sanitize_tool_payload(tool, role, _plugin_map()),
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/tools/{tool_id}/usage")
+async def get_tool_usage(
+    request: Request,
+    tool_id: str,
+    limit: int = Query(default=25, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    sort_desc: bool = True,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    usage = storage.list_tool_usage(
+        tool_id=tool_id,
+        limit=limit,
+        offset=offset,
+        sort_desc=sort_desc,
+    )
+    return {
+        "tool_id": tool_id,
+        "usage": [_sanitize_tool_usage_payload(entry, role) for entry in usage],
+        "updated_at": _now_iso(),
+    }
+
+
+@app.post("/api/tools/{tool_id}/usage")
+async def record_tool_usage(
+    request: Request,
+    tool_id: str,
+    payload: ToolUsageCreate,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    try:
+        usage = storage.append_tool_usage(
+            tool_id=tool_id,
+            agent_id=payload.agent_id,
+            session_id=payload.session_id,
+            request_id=payload.request_id,
+            status=payload.status,
+            duration_ms=payload.duration_ms,
+            result_status=payload.result_status,
+            details=payload.details,
+            payload=payload.payload,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    _event_for(role, "tool.usage", f"Tool usage recorded: {tool_id}", "info", {"tool_id": tool_id})
+    return {"usage": usage, "updated_at": _now_iso()}
+
+
 @app.get("/api/agents")
 async def get_agents(request: Request) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
-    agents = storage.list_agents()
+    agents = [_agent_with_overlay(agent, role) for agent in storage.list_agents()]
     return {"agents": agents, "updated_at": _now_iso()}
 
 
@@ -1531,17 +1761,49 @@ async def get_agent_directory(request: Request) -> Dict[str, Any]:
 @app.patch("/api/agents/{agent_id}")
 async def patch_agent(request: Request, agent_id: str, update: AgentUpdate) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
-    payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
-    if not payload:
+    payload = {k: v for k, v in update.model_dump(exclude_unset=True).items()}
+    overlay_content = payload.pop("overlay_content", None)
+    overlay_token_cap = payload.pop("overlay_token_cap", None)
+
+    if overlay_content is None and overlay_token_cap is not None:
+        raise HTTPException(status_code=400, detail="overlay_content is required when overlay_token_cap is provided")
+
+    normalized_overlay = {k: v for k, v in payload.items() if v is not None}
+
+    if overlay_content is not None:
+        try:
+            overlay_result = runtime.write_actor_overlay(
+                str(agent_id).strip(),
+                str(overlay_content),
+                token_cap=_coerce_overlay_token_cap(overlay_token_cap),
+                source="management-ui",
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            _event_for(role, "agent.overlay.failed", f"Agent overlay update failed: {agent_id}", "warn", {"agent_id": str(agent_id), "error": str(exc)})
+            raise HTTPException(status_code=502, detail=f"agent overlay update failed: {exc}") from exc
+
+        if not isinstance(overlay_result, dict) or not overlay_result.get("success", False):
+            raise HTTPException(
+                status_code=502,
+                detail=overlay_result.get("error", "overlay write failed") if isinstance(overlay_result, dict) else "overlay write failed",
+            )
+
+    if not normalized_overlay and overlay_content is None:
         raise HTTPException(status_code=400, detail="No agent fields provided")
 
     try:
-        agent = storage.update_agent(agent_id, payload)
+        agent = storage.update_agent(agent_id, normalized_overlay)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"agent '{agent_id}' not found")
 
+    if overlay_content is not None:
+        _event_for(role, "agent.overlay", f"Agent overlay updated: {agent_id}", "info", {"agent_id": str(agent_id)})
+
     _event_for(role, "agent", f"Agent updated: {agent_id}", "info")
-    return {"agent": agent, "updated_at": _now_iso()}
+    response_agent = _agent_with_overlay(agent, role)
+    return {"agent": response_agent, "updated_at": _now_iso()}
 
 
 def _normalise_source_type(source_type: str) -> str:

@@ -234,6 +234,64 @@ def _ensure_plugin_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _ensure_tool_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS tool_registry (
+            id TEXT PRIMARY KEY,
+            plugin_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            namespace TEXT NOT NULL,
+            action TEXT NOT NULL,
+            module TEXT,
+            description TEXT,
+            signature TEXT,
+            parameters TEXT,
+            container INTEGER NOT NULL DEFAULT 0,
+            popularity INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(plugin_id) REFERENCES plugins(id) ON DELETE CASCADE
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_registry_plugin_namespace_action
+            ON tool_registry(plugin_id, namespace, action);
+        CREATE INDEX IF NOT EXISTS idx_tool_registry_namespace
+            ON tool_registry(namespace);
+        CREATE INDEX IF NOT EXISTS idx_tool_registry_module
+            ON tool_registry(module);
+        CREATE INDEX IF NOT EXISTS idx_tool_registry_status
+            ON tool_registry(status);
+        CREATE INDEX IF NOT EXISTS idx_tool_registry_popularity
+            ON tool_registry(popularity DESC);
+        CREATE INDEX IF NOT EXISTS idx_tool_registry_updated_at
+            ON tool_registry(updated_at);
+
+        CREATE TABLE IF NOT EXISTS tool_usage (
+            id TEXT PRIMARY KEY,
+            tool_id TEXT NOT NULL,
+            agent_id TEXT,
+            session_id TEXT,
+            request_id TEXT,
+            status TEXT NOT NULL,
+            duration_ms INTEGER,
+            result_status TEXT,
+            details TEXT,
+            payload TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(tool_id) REFERENCES tool_registry(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tool_usage_tool_time
+            ON tool_usage(tool_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_tool_usage_created_at
+            ON tool_usage(created_at);
+        """
+    )
+
+
 def _coerce_proxy_value(value: Any | None) -> str:
     if value is None:
         return ""
@@ -319,6 +377,7 @@ def ensure_schema() -> None:
         _ensure_import_tables(conn)
         _ensure_settings_columns(conn)
         _ensure_plugin_table(conn)
+        _ensure_tool_tables(conn)
         conn.commit()
 
         row = conn.execute("SELECT 1 FROM settings WHERE id='singleton'").fetchone()
@@ -474,6 +533,275 @@ def list_plugins() -> List[Dict[str, Any]]:
         return out
 
 
+def _normalize_tool_metadata(metadata: Any) -> Dict[str, Any]:
+    if isinstance(metadata, dict):
+        return metadata
+    if isinstance(metadata, str):
+        parsed = _coerce_json_payload(metadata)
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def _normalize_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _coerce_tool_status(raw: Any) -> str:
+    if not raw:
+        return "active"
+    candidate = str(raw).strip().lower()
+    if candidate in {"deprecated", "disabled", "retired", "inactive"}:
+        return "disabled"
+    return "active"
+
+
+def _tool_id(plugin_id: str, namespace: str, action: str) -> str:
+    raw = f"{plugin_id}::{namespace}::{action}"
+    return f"tool-{hashlib.sha1(raw.encode('utf-8')).hexdigest()[:18]}"
+
+
+def _normalize_tool_candidate(candidate: Dict[str, Any], plugin: Dict[str, Any], fallback_module: str) -> Optional[Dict[str, Any]]:
+    if not isinstance(candidate, dict):
+        return None
+
+    namespace = _normalize_str(candidate.get("namespace"))
+    action = _normalize_str(candidate.get("action"))
+    maybe_name = _normalize_str(candidate.get("name"))
+    if not namespace and ":" in maybe_name:
+        namespace, action = maybe_name.split(":", 1)
+    if not namespace and maybe_name:
+        namespace = _normalize_str(candidate.get("group") or candidate.get("domain"))
+
+    if not namespace:
+        namespace = _normalize_str(candidate.get("ns") or plugin.get("kind") or plugin.get("source") or plugin.get("id"))
+    if not action and maybe_name and ":" in maybe_name:
+        _, action = maybe_name.split(":", 1)
+    if not action:
+        action = _normalize_str(candidate.get("command") or candidate.get("method") or maybe_name)
+
+    if not namespace or not action:
+        return None
+
+    display_name = maybe_name or f"{namespace}:{action}"
+    signature = _normalize_str(candidate.get("signature"))
+    parameters = candidate.get("parameters")
+    return {
+        "id": _tool_id(plugin["id"], namespace, action),
+        "plugin_id": plugin["id"],
+        "name": display_name,
+        "namespace": namespace,
+        "action": action,
+        "module": _normalize_str(candidate.get("module")) or fallback_module,
+        "description": _normalize_str(candidate.get("description")),
+        "signature": signature or None,
+        "parameters": _coerce_metadata_for_storage(parameters),
+        "container": bool(candidate.get("container") or candidate.get("is_container") or False),
+        "status": _coerce_tool_status(candidate.get("status")),
+        "metadata": _coerce_metadata_for_storage(candidate.get("metadata")),
+    }
+
+
+def _normalize_tool_sources(metadata: Dict[str, Any], plugin: Dict[str, Any], fallback_module: str) -> List[Dict[str, Any]]:
+    specs: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add_from_entry(value: Any) -> None:
+        if not value:
+            return
+        if isinstance(value, dict):
+            if "namespace" in value or "action" in value or "name" in value:
+                candidate = _normalize_tool_candidate(value, plugin, fallback_module)
+                if candidate:
+                    key = f"{candidate['namespace']}::{candidate['action']}"
+                    if key in seen:
+                        return
+                    seen.add(key)
+                    specs.append(candidate)
+            return
+        if isinstance(value, list):
+            for nested in value:
+                _add_from_entry(nested)
+
+    for key in ("tools", "tool_registry", "commands", "command_registry", "capabilities", "actions"):
+        entry = metadata.get(key)
+        if key == "capabilities" and isinstance(entry, dict):
+            for cap_key in ("tools", "actions", "commands"):
+                _add_from_entry(entry.get(cap_key))
+            continue
+        _add_from_entry(entry)
+
+    return specs
+
+
+def _normalize_plugin_tools(plugin: Dict[str, Any]) -> List[Dict[str, Any]]:
+    metadata = _normalize_tool_metadata(plugin.get("metadata"))
+    fallback_module = _normalize_str(plugin.get("kind") or plugin.get("source") or plugin.get("id"))
+    specs = _normalize_tool_sources(metadata, plugin, fallback_module)
+    return specs
+
+
+def _determine_tool_registry_status(plugin_payload: Dict[str, Any]) -> str:
+    if not bool(plugin_payload.get("enabled", True)):
+        return "disabled"
+    return _coerce_tool_status(plugin_payload.get("status"))
+
+
+def _sync_plugin_tools(conn: sqlite3.Connection, plugin_payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    now = _now_iso()
+    plugin_id = _normalize_str(plugin_payload.get("id"))
+    if not plugin_id:
+        return []
+
+    specs = _normalize_plugin_tools(plugin_payload)
+    normalized_status = _determine_tool_registry_status(plugin_payload)
+    current_tool_ids: set[str] = set()
+    upserted: List[Dict[str, Any]] = []
+
+    for spec in specs:
+        spec_id = spec["id"]
+        current_tool_ids.add(spec_id)
+        existing = conn.execute("SELECT id, metadata, popularity, created_at FROM tool_registry WHERE id = ?", (spec_id,)).fetchone()
+        popularity = int(existing["popularity"]) if existing and existing["popularity"] is not None else 0
+        status = normalized_status if normalized_status in {"active", "disabled"} else spec["status"]
+        row = {
+            "id": spec_id,
+            "plugin_id": plugin_id,
+            "name": spec["name"],
+            "namespace": spec["namespace"],
+            "action": spec["action"],
+            "module": spec.get("module"),
+            "description": spec.get("description"),
+            "signature": spec.get("signature"),
+            "parameters": spec.get("parameters"),
+            "container": int(bool(spec["container"])),
+            "status": status if normalized_status == "active" else "disabled",
+            "metadata": spec.get("metadata"),
+            "updated_at": now,
+        }
+        if existing:
+            conn.execute(
+                """
+                UPDATE tool_registry
+                SET name=?, description=?, signature=?, parameters=?, container=?, status=?, metadata=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    row["name"],
+                    row["description"],
+                    row["signature"],
+                    row["parameters"],
+                    row["container"],
+                    row["status"],
+                    row["metadata"],
+                    row["updated_at"],
+                    row["id"],
+                ),
+            )
+            payload = {
+                "id": row["id"],
+                "plugin_id": plugin_id,
+                "name": row["name"],
+                "namespace": row["namespace"],
+                "action": row["action"],
+                "module": row["module"],
+                "description": row["description"],
+                "signature": row["signature"],
+                "parameters": _coerce_json_payload(row["parameters"]),
+                "container": bool(row["container"]),
+                "status": row["status"],
+                "metadata": _coerce_json_payload(row["metadata"]),
+                "popularity": popularity,
+                "created_at": existing["created_at"] or now,
+                "updated_at": row["updated_at"],
+            }
+        else:
+            conn.execute(
+                """
+                INSERT INTO tool_registry(
+                    id,
+                    plugin_id,
+                    name,
+                    namespace,
+                    action,
+                    module,
+                    description,
+                    signature,
+                    parameters,
+                    container,
+                    popularity,
+                    status,
+                    metadata,
+                    created_at,
+                    updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    row["plugin_id"],
+                    row["name"],
+                    row["namespace"],
+                    row["action"],
+                    row["module"],
+                    row["description"],
+                    row["signature"],
+                    row["parameters"],
+                    row["container"],
+                    row["status"],
+                    row["metadata"],
+                    now,
+                    now,
+                ),
+            )
+            payload = {
+                "id": row["id"],
+                "plugin_id": plugin_id,
+                "name": row["name"],
+                "namespace": row["namespace"],
+                "action": row["action"],
+                "module": row["module"],
+                "description": row["description"],
+                "signature": row["signature"],
+                "parameters": _coerce_json_payload(row["parameters"]),
+                "container": bool(row["container"]),
+                "status": row["status"],
+                "metadata": _coerce_json_payload(row["metadata"]),
+                "popularity": 0,
+                "created_at": now,
+                "updated_at": now,
+            }
+        upserted.append(payload)
+
+    if specs:
+        placeholders = ",".join(["?"] * len(current_tool_ids))
+        conn.execute(
+            f"""
+            UPDATE tool_registry
+            SET status='retired', updated_at=?
+            WHERE plugin_id=? AND id NOT IN ({placeholders}) AND status != 'retired'
+            """,
+            (now, plugin_id, *current_tool_ids),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE tool_registry
+            SET status='retired', updated_at=?
+            WHERE plugin_id=? AND status != 'retired'
+            """,
+            (now, plugin_id),
+        )
+
+    conn.execute(
+        "UPDATE tool_registry SET status=? WHERE plugin_id=? AND status='disabled'",
+        (normalized_status, plugin_id),
+    )
+    conn.commit()
+    return upserted
+
+
 def get_plugin(plugin_id: str) -> Optional[Dict[str, Any]]:
     with get_connection() as conn:
         row = conn.execute("SELECT * FROM plugins WHERE id = ?", (plugin_id,)).fetchone()
@@ -539,7 +867,7 @@ def create_plugin(values: Dict[str, Any]) -> Dict[str, Any]:
                 payload["updated_at"],
             ),
         )
-        conn.commit()
+        _sync_plugin_tools(conn, payload)
         payload["enabled"] = bool(payload["enabled"])
         payload["config"] = _coerce_json_payload(payload.get("config"))
         payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
@@ -585,11 +913,231 @@ def update_plugin(plugin_id: str, values: Dict[str, Any]) -> Dict[str, Any]:
                 plugin_id,
             ),
         )
-        conn.commit()
+        _sync_plugin_tools(conn, payload)
         payload["enabled"] = bool(payload["enabled"])
         payload["config"] = _coerce_json_payload(payload.get("config"))
         payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
         return payload
+
+
+def get_tool_registry(tool_id: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM tool_registry WHERE id = ?", (tool_id,)).fetchone()
+        if not row:
+            return None
+        payload = _dict_from_row(row)
+        payload["container"] = bool(payload["container"])
+        payload["enabled"] = payload["status"] == "active"
+        payload["popularity"] = int(payload["popularity"] or 0)
+        payload["created_at"] = payload.get("created_at")
+        payload["updated_at"] = payload.get("updated_at")
+        payload["parameters"] = _coerce_json_payload(payload.get("parameters"))
+        payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
+        return payload
+
+
+def list_tools(
+    q: Optional[str] = None,
+    namespace: Optional[str] = None,
+    module: Optional[str] = None,
+    plugin_id: Optional[str] = None,
+    status: Optional[str] = None,
+    sort: str = "popularity",
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    normalized_limit = max(1, min(200, int(limit)))
+    normalized_offset = max(0, int(offset))
+    filters = []
+    values: List[Any] = []
+    if namespace and str(namespace).strip():
+        filters.append("namespace = ?")
+        values.append(str(namespace).strip())
+    if module and str(module).strip():
+        filters.append("module = ?")
+        values.append(str(module).strip())
+    if plugin_id and str(plugin_id).strip():
+        filters.append("plugin_id = ?")
+        values.append(str(plugin_id).strip())
+    if status and str(status).strip():
+        filters.append("status = ?")
+        values.append(str(status).strip())
+    if q and str(q).strip():
+        normalized_q = f"%{str(q).strip().lower()}%"
+        filters.append("(LOWER(name) LIKE ? OR LOWER(namespace) LIKE ? OR LOWER(action) LIKE ?)")
+        values.extend([normalized_q, normalized_q, normalized_q])
+
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    normalized_sort = str(sort or "popularity").strip().lower()
+    if normalized_sort not in {"popularity", "updated", "name", "namespace"}:
+        normalized_sort = "popularity"
+    if normalized_sort == "updated":
+        order = "datetime(updated_at) DESC"
+    elif normalized_sort == "name":
+        order = "LOWER(namespace) ASC, LOWER(action) ASC"
+    elif normalized_sort == "namespace":
+        order = "LOWER(namespace) ASC, popularity DESC"
+    else:
+        order = "popularity DESC, datetime(updated_at) DESC"
+
+    sql = f"SELECT * FROM tool_registry {where_clause} ORDER BY {order} LIMIT ? OFFSET ?"
+    values.extend([normalized_limit, normalized_offset])
+    with get_connection() as conn:
+        rows = conn.execute(sql, tuple(values)).fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = _dict_from_row(row)
+            payload["container"] = bool(payload["container"])
+            payload["enabled"] = payload["status"] == "active"
+            payload["popularity"] = int(payload["popularity"] or 0)
+            payload["parameters"] = _coerce_json_payload(payload.get("parameters"))
+            payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
+            out.append(payload)
+        return out
+
+
+def count_tools(
+    q: Optional[str] = None,
+    namespace: Optional[str] = None,
+    module: Optional[str] = None,
+    plugin_id: Optional[str] = None,
+    status: Optional[str] = None,
+) -> int:
+    filters = []
+    values: List[Any] = []
+    if namespace and str(namespace).strip():
+        filters.append("namespace = ?")
+        values.append(str(namespace).strip())
+    if module and str(module).strip():
+        filters.append("module = ?")
+        values.append(str(module).strip())
+    if plugin_id and str(plugin_id).strip():
+        filters.append("plugin_id = ?")
+        values.append(str(plugin_id).strip())
+    if status and str(status).strip():
+        filters.append("status = ?")
+        values.append(str(status).strip())
+    if q and str(q).strip():
+        normalized_q = f"%{str(q).strip().lower()}%"
+        filters.append("(LOWER(name) LIKE ? OR LOWER(namespace) LIKE ? OR LOWER(action) LIKE ?)")
+        values.extend([normalized_q, normalized_q, normalized_q])
+
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT COUNT(1) AS total FROM tool_registry {where_clause}",
+            tuple(values),
+        ).fetchone()
+        if not row:
+            return 0
+        return int(row["total"] or 0)
+
+
+def append_tool_usage(
+    tool_id: str,
+    agent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    status: str = "executed",
+    duration_ms: Optional[int] = None,
+    result_status: Optional[str] = None,
+    details: Optional[Dict[str, Any]] = None,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    sanitized_tool_id = _normalize_str(tool_id)
+    if not sanitized_tool_id:
+        raise KeyError("tool id is required")
+    with get_connection() as conn:
+        existing = conn.execute("SELECT id FROM tool_registry WHERE id = ?", (sanitized_tool_id,)).fetchone()
+        if not existing:
+            raise KeyError(f"tool '{tool_id}' not found")
+
+        now = _now_iso()
+        usage_id = f"tool-use-{uuid.uuid4().hex[:12]}"
+        conn.execute(
+            """
+            INSERT INTO tool_usage(
+                id,
+                tool_id,
+                agent_id,
+                session_id,
+                request_id,
+                status,
+                duration_ms,
+                result_status,
+                details,
+                payload,
+                created_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                usage_id,
+                sanitized_tool_id,
+                _normalize_str(agent_id) or None,
+                _normalize_str(session_id) or None,
+                _normalize_str(request_id) or None,
+                _normalize_str(status) or "executed",
+                int(duration_ms) if duration_ms is not None else None,
+                _normalize_str(result_status) or None,
+                _coerce_metadata_for_storage(details),
+                _coerce_metadata_for_storage(payload),
+                now,
+            ),
+        )
+        if status:
+            conn.execute(
+                "UPDATE tool_registry SET popularity = popularity + 1, updated_at = ? WHERE id = ?",
+                (now, sanitized_tool_id),
+            )
+        conn.commit()
+
+    usage = {
+        "id": usage_id,
+        "tool_id": sanitized_tool_id,
+        "agent_id": _normalize_str(agent_id) or None,
+        "session_id": _normalize_str(session_id) or None,
+        "request_id": _normalize_str(request_id) or None,
+        "status": _normalize_str(status) or "executed",
+        "duration_ms": int(duration_ms) if duration_ms is not None else None,
+        "result_status": _normalize_str(result_status) or None,
+        "details": details if isinstance(details, dict) else _coerce_json_payload(_coerce_metadata_for_storage(details)),
+        "payload": payload if isinstance(payload, dict) else _coerce_json_payload(_coerce_metadata_for_storage(payload)),
+        "created_at": now,
+    }
+    usage["details"] = _coerce_json_payload(_coerce_metadata_for_storage(usage["details"]))
+    usage["payload"] = _coerce_json_payload(_coerce_metadata_for_storage(usage["payload"]))
+    return usage
+
+
+def list_tool_usage(
+    tool_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    sort_desc: bool = True,
+) -> List[Dict[str, Any]]:
+    normalized_tool_id = _normalize_str(tool_id)
+    if not normalized_tool_id:
+        return []
+    with get_connection() as conn:
+        row = conn.execute("SELECT id FROM tool_registry WHERE id = ?", (normalized_tool_id,)).fetchone()
+        if not row:
+            raise KeyError(f"tool '{tool_id}' not found")
+        normalized_limit = max(1, min(200, int(limit)))
+        normalized_offset = max(0, int(offset))
+        order = "datetime(created_at) DESC" if sort_desc else "datetime(created_at) ASC"
+        rows = conn.execute(
+            f"SELECT * FROM tool_usage WHERE tool_id = ? ORDER BY {order} LIMIT ? OFFSET ?",
+            (normalized_tool_id, normalized_limit, normalized_offset),
+        ).fetchall()
+        out: List[Dict[str, Any]] = []
+        for usage in rows:
+            payload = _dict_from_row(usage)
+            payload["duration_ms"] = int(payload["duration_ms"]) if payload["duration_ms"] is not None else None
+            payload["details"] = _coerce_json_payload(payload.get("details"))
+            payload["payload"] = _coerce_json_payload(payload.get("payload"))
+            out.append(payload)
+        return out
 
 
 def get_provider(provider_id: str) -> Optional[Dict[str, Any]]:

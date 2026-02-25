@@ -64,6 +64,7 @@ def _load_main_module(admin_token: str, read_token: str, db_path: str):
 class _MockRuntime:
     def __init__(self) -> None:
         self.actions: List[Tuple[str, str]] = []
+        self.overlay_writes: List[Tuple[str, str, int | None]] = []
 
     def get_status(self) -> Dict[str, object]:
         return {"connected": True, "source": "mock"}
@@ -75,6 +76,50 @@ class _MockRuntime:
             "services": [
                 {"name": "busy", "running": True, "pid": 1001, "pid_file": "/tmp/busy.pid", "log_file": "/tmp/busy.log"},
             ],
+        }
+
+    def get_actor_overlay(self, actor_id: str) -> Dict[str, object]:
+        normalized_actor_id = str(actor_id or "").strip()
+        return {
+            "success": True,
+            "found": False,
+            "overlay": None,
+            "actor_id": normalized_actor_id,
+            "error": None,
+        }
+
+    def write_actor_overlay(
+        self,
+        actor_id: str,
+        content: str,
+        token_cap: int | None = None,
+        source: str = "management-ui",
+        provenance: dict | None = None,
+        editor_actor: str | None = None,
+    ) -> Dict[str, object]:
+        del provenance
+        del source
+        del editor_actor
+        normalized_actor_id = str(actor_id or "").strip()
+        normalized_cap = int(token_cap) if token_cap is not None else None
+        self.overlay_writes.append((normalized_actor_id, content, normalized_cap))
+        return {
+            "success": True,
+            "actor_id": normalized_actor_id,
+            "found": True,
+            "overlay": {
+                "overlay_id": "ov-1",
+                "overlay_version": 1,
+                "actor_id": normalized_actor_id,
+                "source": "management-ui",
+                "content": content,
+                "source_hash": "source-hash",
+                "token_count": len(content.split()),
+                "reduced": False,
+                "requested_token_cap": normalized_cap or 5000,
+                "created_by": "management-ui",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
         }
 
     def control_service(self, service_name: str, action: str) -> RuntimeActionResult:
@@ -213,7 +258,131 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         updated_plugin = updated.json()["plugin"]
         self.assertFalse(updated_plugin["enabled"])
         self.assertEqual(updated_plugin["status"], "disabled")
-        self.assertEqual(updated_plugin["command"], "pmwiki sync --watch")
+
+    def test_tool_registry_syncs_from_plugin_metadata(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "pmwiki-tools",
+            "name": "PmWiki Tooling",
+            "source": "busy38 builtin",
+            "kind": "knowledge",
+            "status": "configured",
+            "enabled": True,
+            "command": "pmwiki sync",
+            "metadata": {
+                "tools": [
+                    {
+                        "namespace": "pmwiki",
+                        "action": "read",
+                        "name": "pmwiki.read",
+                        "module": "wiki",
+                        "description": "Read a wiki page",
+                        "container": False,
+                    },
+                    {
+                        "namespace": "pmwiki",
+                        "action": "search",
+                        "name": "pmwiki.search",
+                        "module": "wiki",
+                        "description": "Search wiki content",
+                        "container": False,
+                    },
+                ]
+            },
+        }
+
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        tools = self.client.get("/api/tools", headers=read_headers, params={"plugin_id": "pmwiki-tools", "sort": "name"})
+        self.assertEqual(tools.status_code, 200, tools.text)
+        tool_payload = tools.json()
+        entries = tool_payload["tools"]
+        self.assertEqual(tool_payload["count"], 2)
+        namespaces = {entry["namespace"] for entry in entries}
+        actions = {(entry["namespace"], entry["action"]) for entry in entries}
+        self.assertEqual(namespaces, {"pmwiki"})
+        self.assertIn(("pmwiki", "read"), actions)
+        self.assertIn(("pmwiki", "search"), actions)
+
+        search = self.client.get("/api/tools/search", headers=read_headers, params={"q": "search"})
+        self.assertEqual(search.status_code, 200, search.text)
+        search_payload = search.json()
+        self.assertEqual(search_payload["count"], 1)
+        self.assertEqual(search_payload["tools"][0]["action"], "search")
+
+        first_tool = entries[0]
+        tool_id = first_tool["id"]
+        detail = self.client.get(f"/api/tools/{tool_id}", headers=read_headers)
+        self.assertEqual(detail.status_code, 200, detail.text)
+        tool_detail = detail.json()["tool"]
+        self.assertEqual(tool_detail["id"], tool_id)
+        self.assertEqual(tool_detail["plugin"]["id"], "pmwiki-tools")
+
+    def test_tool_usage_tracking_and_role_gating(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "browser-agent",
+            "name": "Browser agent",
+            "source": "integration test",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "metadata": {
+                "tools": [
+                    {
+                        "namespace": "browser",
+                        "action": "open_page",
+                        "description": "Open a URL",
+                    },
+                ]
+            },
+        }
+
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        tools = self.client.get("/api/tools", headers=admin_headers, params={"namespace": "browser", "sort": "updated"})
+        self.assertEqual(tools.status_code, 200, tools.text)
+        self.assertEqual(tools.json()["count"], 1)
+        tool = tools.json()["tools"][0]
+        tool_id = tool["id"]
+
+        usage_payload = {
+            "agent_id": "agent-alpha",
+            "session_id": "session-001",
+            "request_id": "req-xyz",
+            "status": "executed",
+            "duration_ms": 87,
+            "result_status": "ok",
+            "details": {"result_count": 1, "status": "cached"},
+            "payload": {"url": "https://example.org"},
+        }
+
+        recorded = self.client.post(f"/api/tools/{tool_id}/usage", headers=admin_headers, json=usage_payload)
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+        usage = recorded.json()["usage"]
+        self.assertEqual(usage["tool_id"], tool_id)
+        self.assertEqual(usage["agent_id"], "agent-alpha")
+
+        viewer_blocked = self.client.post(f"/api/tools/{tool_id}/usage", headers=read_headers, json=usage_payload)
+        self.assertEqual(viewer_blocked.status_code, 403)
+
+        usage_view = self.client.get(f"/api/tools/{tool_id}/usage", headers=read_headers)
+        self.assertEqual(usage_view.status_code, 200, usage_view.text)
+        admin_view = self.client.get(f"/api/tools/{tool_id}/usage", headers=admin_headers)
+        self.assertEqual(admin_view.status_code, 200, admin_view.text)
+        admin_entry = admin_view.json()["usage"][0]
+        viewer_entry = usage_view.json()["usage"][0]
+
+        self.assertEqual(admin_entry["agent_id"], "agent-alpha")
+        self.assertEqual(viewer_entry["agent_id"], "***redacted***")
+        self.assertEqual(viewer_entry["session_id"], "***redacted***")
+        self.assertEqual(viewer_entry["details"]["result_count"], 1)
 
     def test_runtime_actions_require_admin(self):
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
@@ -232,6 +401,89 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["payload"]["service"], "busy")
         self.assertEqual(self.runtime.actions[-1], ("busy", "start"))
+
+    def test_agents_overlay_read_and_update_roles(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+        target_agent = "orchestrator-core"
+
+        overlay_payload = {
+            "success": True,
+            "found": True,
+            "actor_id": target_agent,
+            "overlay": {
+                "overlay_id": "ov-1",
+                "overlay_version": 2,
+                "actor_id": target_agent,
+                "source": "runtime",
+                "content": "identity directive for the orchestrator",
+                "source_hash": "abc",
+                "token_count": 7,
+                "reduced": False,
+                "requested_token_cap": 2048,
+                "created_by": "management-ui",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+        }
+
+        with patch.object(self.main.runtime, "get_actor_overlay", side_effect=lambda actor_id: overlay_payload if str(actor_id) == target_agent else {"success": True, "found": False, "overlay": None, "actor_id": str(actor_id)}):
+            admin_agents = self.client.get("/api/agents", headers=admin_headers)
+            self.assertEqual(admin_agents.status_code, 200, admin_agents.text)
+            admin_payload = admin_agents.json()["agents"]
+            admin_agent = next(item for item in admin_payload if item["id"] == target_agent)
+            self.assertTrue(admin_agent["overlay"]["found"])
+            self.assertEqual(admin_agent["overlay"]["overlay"]["content"], overlay_payload["overlay"]["content"])
+            self.assertNotIn("source_hash", admin_agent["overlay"]["overlay"])
+            self.assertIn("overlay_id", admin_agent["overlay"]["overlay"])
+
+            viewer_agents = self.client.get("/api/agents", headers=read_headers)
+            self.assertEqual(viewer_agents.status_code, 200, viewer_agents.text)
+            viewer_payload = viewer_agents.json()["agents"]
+            viewer_agent = next(item for item in viewer_payload if item["id"] == target_agent)
+            self.assertTrue(viewer_agent["overlay"]["found"])
+            self.assertNotIn("content", viewer_agent["overlay"]["overlay"])
+            self.assertIn("content_preview", viewer_agent["overlay"]["overlay"])
+
+        overlay_payload["overlay"]["content"] = "new actor identity line for next shift"
+        overlay_payload["overlay"]["requested_token_cap"] = 4096
+
+        with patch.object(self.main.runtime, "get_actor_overlay", side_effect=lambda actor_id: overlay_payload if str(actor_id) == target_agent else {"success": True, "found": False, "overlay": None, "actor_id": str(actor_id)}):
+            updated = self.client.patch(
+                f"/api/agents/{target_agent}",
+                headers=admin_headers,
+                json={
+                    "overlay_content": "new actor identity line for next shift",
+                    "overlay_token_cap": 4096,
+                },
+            )
+            self.assertEqual(updated.status_code, 200, updated.text)
+            updated_agent = updated.json()["agent"]
+            self.assertTrue(updated_agent["overlay"]["found"])
+            self.assertEqual(updated_agent["overlay"]["overlay"]["content"], "new actor identity line for next shift")
+            self.assertEqual(self.runtime.overlay_writes[-1], (target_agent, "new actor identity line for next shift", 4096))
+
+        blocked = self.client.patch(
+            f"/api/agents/{target_agent}",
+            headers=read_headers,
+            json={"overlay_content": "viewer should not update"},
+        )
+        self.assertEqual(blocked.status_code, 403)
+
+    def test_agents_overlay_patch_validates_missing_content(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        response = self.client.patch("/api/agents/orchestrator-core", headers=admin_headers, json={"overlay_token_cap": 2048})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"], "overlay_content is required when overlay_token_cap is provided")
+
+    def test_agents_overlay_patch_rejects_invalid_token_cap(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        response = self.client.patch(
+            "/api/agents/orchestrator-core",
+            headers=admin_headers,
+            json={"overlay_content": "cap test", "overlay_token_cap": 0},
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"], "overlay_token_cap must be a positive integer")
 
     def test_provider_discovery_success_stores_model_metadata(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
