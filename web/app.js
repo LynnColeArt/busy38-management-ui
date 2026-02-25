@@ -1145,11 +1145,26 @@ function buildToolUsageFilter() {
   const agentId = qs("#toolUsageAgentId")?.value.trim() || "";
   const contextType = qs("#toolUsageContextType")?.value.trim() || "";
   const contextId = qs("#toolUsageContextId")?.value.trim() || "";
+  const memoryId = qs("#toolUsageMemoryId")?.value.trim() || "";
+  const chatMessageId = qs("#toolUsageChatMessageId")?.value.trim() || "";
+  const chatSessionId = qs("#toolUsageChatSessionId")?.value.trim() || "";
   const missionId = qs("#toolUsageMissionId")?.value.trim() || "";
   const sessionId = qs("#toolUsageSessionId")?.value.trim() || "";
   const limit = Math.min(200, Math.max(1, Number(qs("#toolUsageLimit")?.value || 25)));
   const sortDesc = Boolean(qs("#toolUsageSortDesc")?.checked);
-  return { toolId, agentId, contextType, contextId, missionId, sessionId, limit, sortDesc };
+  return {
+    toolId,
+    agentId,
+    contextType,
+    contextId,
+    memoryId,
+    chatMessageId,
+    chatSessionId,
+    missionId,
+    sessionId,
+    limit,
+    sortDesc,
+  };
 }
 
 function buildToolUsageParams(filter, overrides = {}) {
@@ -1159,14 +1174,17 @@ function buildToolUsageParams(filter, overrides = {}) {
     mission_id: overrides.missionId || filter.missionId,
     context_type: overrides.contextType || filter.contextType,
     context_id: overrides.contextId || filter.contextId,
+    memory_id: overrides.memoryId || filter.memoryId,
+    chat_message_id: overrides.chatMessageId || filter.chatMessageId,
+    chat_session_id: overrides.chatSessionId || filter.chatSessionId,
     session_id: overrides.sessionId || filter.sessionId,
     limit: overrides.limit != null ? overrides.limit : filter.limit,
     sort_desc: overrides.sortDesc != null ? overrides.sortDesc : filter.sortDesc,
   };
   const toolIdOverride = overrides.toolId != null ? overrides.toolId : filter.toolId;
-  if (toolIdOverride) {
-    params.set("tool_id", toolIdOverride);
-  }
+    if (toolIdOverride) {
+      params.set("tool_id", toolIdOverride);
+    }
   Object.entries(payload).forEach(([key, value]) => {
     if (value !== "" && value !== undefined && value !== null) {
       params.set(key, String(value));
@@ -1213,6 +1231,9 @@ async function loadToolUsageRows({ toolId = "", filters = {}, mode = "tool", sum
   setStatus("#toolUsageSummary", buildToolUsageSummary(state.toolUsageCount, {
     tool_id: payload.tool_id || toolId || null,
     agent_id: filter.agentId || null,
+    memory_id: filter.memoryId || null,
+    chat_message_id: filter.chatMessageId || null,
+    chat_session_id: filter.chatSessionId || null,
     context_type: filter.contextType || null,
     context_id: filter.contextId || null,
     mission_id: filter.missionId || null,
@@ -1296,6 +1317,9 @@ async function loadAgentToolUsage(agentId) {
     const params = buildToolUsageParams(filter, {
       agentId,
       missionId: filter.missionId,
+      memoryId: filter.memoryId,
+      chatMessageId: filter.chatMessageId,
+      chatSessionId: filter.chatSessionId,
       contextType: filter.contextType,
       contextId: filter.contextId,
       sessionId: filter.sessionId,
@@ -1311,6 +1335,9 @@ async function loadAgentToolUsage(agentId) {
     setStatus("#toolUsageSummary", buildToolUsageSummary(state.toolUsageCount, {
       tool_id: payload.tool_id || null,
       agent_id: agentId,
+      memory_id: payload.memory_id || filter.memoryId || null,
+      chat_message_id: payload.chat_message_id || filter.chatMessageId || null,
+      chat_session_id: payload.chat_session_id || filter.chatSessionId || null,
       context_type: filter.contextType || null,
       context_id: filter.contextId || null,
       mission_id: filter.missionId || null,
@@ -1342,6 +1369,15 @@ async function loadAgentToolAudit(agentId) {
     }
     if (filter.contextId) {
       params.set("context_id", filter.contextId);
+    }
+    if (filter.memoryId) {
+      params.set("memory_id", filter.memoryId);
+    }
+    if (filter.chatMessageId) {
+      params.set("chat_message_id", filter.chatMessageId);
+    }
+    if (filter.chatSessionId) {
+      params.set("chat_session_id", filter.chatSessionId);
     }
     if (filter.sessionId) {
       params.set("session_id", filter.sessionId);
@@ -1409,6 +1445,9 @@ function renderToolUsageLogEntry(entry) {
       <p><strong>Agent:</strong> ${escapeHtml(entry.agent_id || "n/a")}</p>
       <p><strong>Session:</strong> ${escapeHtml(entry.session_id || "n/a")}</p>
       <p><strong>Mission:</strong> ${escapeHtml(entry.mission_id || "n/a")}</p>
+      <p><strong>Memory ID:</strong> ${escapeHtml(entry.memory_id || "n/a")}</p>
+      <p><strong>Chat message ID:</strong> ${escapeHtml(entry.chat_message_id || "n/a")}</p>
+      <p><strong>Chat session ID:</strong> ${escapeHtml(entry.chat_session_id || "n/a")}</p>
       <p><strong>Status:</strong> ${escapeHtml(entry.status || "n/a")}</p>
       <p><strong>Result:</strong> ${escapeHtml(entry.result_status || "n/a")}</p>
       <p><strong>Created:</strong> ${escapeHtml(entry.created_at || "n/a")}</p>
@@ -1418,18 +1457,41 @@ function renderToolUsageLogEntry(entry) {
   `;
 }
 
-async function openToolUsageContext(contextType, contextId) {
-  if (!contextId) {
+async function openToolUsageContext(contextType, contextId, memoryId = "", chatMessageId = "", chatSessionId = "") {
+  const resolvedMemoryId = memoryId || "";
+  const resolvedChatMessageId = chatMessageId || "";
+  const resolvedChatSessionId = chatSessionId || "";
+  const fallbackContextId = contextId || "";
+
+  if (!contextType && !resolvedMemoryId && !resolvedChatMessageId && !resolvedChatSessionId && !fallbackContextId) {
     setStatus("#toolUsageStatus", "context id is required for drill-through", "err");
     return;
   }
   try {
     if (contextType === "memory") {
-      await loadMemory("", "", contextId);
+      const targetMemoryId = resolvedMemoryId || fallbackContextId;
+      if (targetMemoryId) {
+        await loadMemory("", "", targetMemoryId);
+        return;
+      }
+      setStatus("#toolUsageStatus", "memory id is required for memory context drill-through", "err");
       return;
     }
     if (contextType === "chat") {
-      await loadChatHistory("", contextId);
+      const targetChatMessageId = resolvedChatMessageId || fallbackContextId;
+      if (targetChatMessageId) {
+        await loadChatHistory("", targetChatMessageId);
+        return;
+      }
+      setStatus("#toolUsageStatus", "chat message id is required for chat context drill-through", "err");
+      return;
+    }
+    if (resolvedMemoryId) {
+      await loadMemory("", "", resolvedMemoryId);
+      return;
+    }
+    if (resolvedChatMessageId) {
+      await loadChatHistory("", resolvedChatMessageId);
       return;
     }
     setStatus("#toolUsageStatus", `no drill-through supported for context ${contextType}`, "err");
@@ -1478,6 +1540,9 @@ function renderToolUsage(usageItems) {
     .map((entry) => {
       const contextType = (entry.context_type || "n/a");
       const contextId = entry.context_id || "";
+      const memoryId = entry.memory_id || "";
+      const chatMessageId = entry.chat_message_id || "";
+      const chatSessionId = entry.chat_session_id || "";
       const contextAction = contextType === "memory" || contextType === "chat"
         ? `open-tool-context`
         : "";
@@ -1497,10 +1562,29 @@ function renderToolUsage(usageItems) {
               data-action="${contextAction}"
               data-context-type="${escapeHtml(contextType)}"
               data-context-id="${escapeHtml(contextId)}"
+              data-memory-id="${escapeHtml(memoryId)}"
+              data-chat-message-id="${escapeHtml(chatMessageId)}"
+              data-chat-session-id="${escapeHtml(chatSessionId)}"
             >
               Open ${escapeHtml(contextType)} context
             </button>`
         : "";
+      const contextButtonFallback = contextAction && !contextId && (
+        (contextType === "memory" && memoryId) || (contextType === "chat" && chatMessageId)
+      )
+        ? `<button
+              type="button"
+              data-action="${contextAction}"
+              data-context-type="${escapeHtml(contextType)}"
+              data-context-id=""
+              data-memory-id="${escapeHtml(memoryId)}"
+              data-chat-message-id="${escapeHtml(chatMessageId)}"
+              data-chat-session-id="${escapeHtml(chatSessionId)}"
+            >
+              Open ${escapeHtml(contextType)} context
+            </button>`
+        : "";
+      const resolvedContextButton = contextButton || contextButtonFallback;
       const entryAction = entry.id
         ? `<button
               type="button"
@@ -1518,12 +1602,15 @@ function renderToolUsage(usageItems) {
           <p><strong>Entry:</strong> ${escapeHtml(entry.id || "n/a")}</p>
           <p><strong>Agent:</strong> ${escapeHtml(entry.agent_id || "n/a")}</p>
           <p><strong>Context:</strong> ${escapeHtml(contextType)} ${contextId ? `( ${escapeHtml(contextId)})` : ""}</p>
+          ${memoryId ? `<p><strong>Memory ID:</strong> ${escapeHtml(memoryId)}</p>` : ""}
+          ${chatMessageId ? `<p><strong>Chat message:</strong> ${escapeHtml(chatMessageId)}</p>` : ""}
+          ${chatSessionId ? `<p><strong>Chat session:</strong> ${escapeHtml(chatSessionId)}</p>` : ""}
           <p><strong>Status:</strong> ${escapeHtml(entry.status || "n/a")} · ${detail}duration ${
             typeof entry.duration_ms === "number" ? `${entry.duration_ms}ms` : "n/a"
           }</p>
           <p><strong>Created:</strong> ${escapeHtml(entry.created_at || "n/a")}</p>
           ${details}
-          ${contextButton}
+          ${resolvedContextButton}
           ${sessionButton}
           ${entryAction}
         </div>
@@ -1541,9 +1628,12 @@ function buildToolUsageSummary(toolUsageCount, toolUsageFilter) {
   const contextIdText = toolUsageFilter.context_id || "any context";
   const toolText = toolUsageFilter.tool_id || "all tools";
   const missionText = toolUsageFilter.mission_id || "all missions";
+  const memoryText = toolUsageFilter.memory_id || "all memory ids";
+  const chatMessageText = toolUsageFilter.chat_message_id || "all chat messages";
+  const chatSessionText = toolUsageFilter.chat_session_id || "all chat sessions";
   const sessionText = toolUsageFilter.session_id || "all sessions";
   const modeText = toolUsageFilter.mode ? `${toolUsageFilter.mode} ` : "";
-  return `Showing ${total} ${modeText}rows for ${toolText}; ${agentText} · ${contextText} · ${contextIdText} · ${missionText} · ${sessionText}`;
+  return `Showing ${total} ${modeText}rows for ${toolText}; ${agentText} · ${contextText} · ${contextIdText} · ${memoryText} · ${chatMessageText} · ${chatSessionText} · ${missionText} · ${sessionText}`;
 }
 
 async function loadImportJobs() {
@@ -1985,7 +2075,10 @@ async function onTableChange(event) {
   if (action === "open-tool-context") {
     const contextType = target.dataset.contextType || "";
     const contextId = target.dataset.contextId || "";
-    await openToolUsageContext(contextType, contextId);
+    const memoryId = target.dataset.memoryId || "";
+    const chatMessageId = target.dataset.chatMessageId || "";
+    const chatSessionId = target.dataset.chatSessionId || "";
+    await openToolUsageContext(contextType, contextId, memoryId, chatMessageId, chatSessionId);
     return;
   }
 

@@ -321,6 +321,151 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(tool_detail["id"], tool_id)
         self.assertEqual(tool_detail["plugin"]["id"], "pmwiki-tools")
 
+    def test_tool_search_modes_and_grouping(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "search-demo-tools",
+            "name": "Search demo tools",
+            "source": "busy38 builtin",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "metadata": {
+                "tools": [
+                    {
+                        "namespace": "searchdemo",
+                        "action": "index",
+                        "name": "searchdemo.index",
+                        "module": "runtime",
+                        "description": "Index a project",
+                        "container": False,
+                    },
+                    {
+                        "namespace": "searchdemo",
+                        "action": "search_text",
+                        "name": "searchdemo.search_text",
+                        "module": "runtime",
+                        "description": "Search text",
+                        "container": False,
+                    },
+                    {
+                        "namespace": "searchdemo",
+                        "action": "render_report",
+                        "name": "searchdemo.render_report",
+                        "module": "studio",
+                        "description": "Render final report",
+                        "container": False,
+                    },
+                ]
+            },
+        }
+
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        exact = self.client.get(
+            "/api/tools/search",
+            headers=read_headers,
+            params={"plugin_id": "search-demo-tools", "q": "searchdemo.search_text", "match_mode": "exact"},
+        )
+        self.assertEqual(exact.status_code, 200, exact.text)
+        exact_payload = exact.json()
+        self.assertEqual(exact_payload["count"], 1)
+        self.assertEqual(exact_payload["tools"][0]["action"], "search_text")
+
+        prefix = self.client.get(
+            "/api/tools/search",
+            headers=read_headers,
+            params={"plugin_id": "search-demo-tools", "q": "searchdemo", "match_mode": "prefix", "sort": "name"},
+        )
+        self.assertEqual(prefix.status_code, 200, prefix.text)
+        prefix_payload = prefix.json()
+        self.assertEqual(prefix_payload["count"], 3)
+
+        wildcard = self.client.get(
+            "/api/tools/search",
+            headers=read_headers,
+            params={"plugin_id": "search-demo-tools", "q": "search*.search_*", "match_mode": "wildcard"},
+        )
+        self.assertEqual(wildcard.status_code, 200, wildcard.text)
+        wildcard_payload = wildcard.json()
+        self.assertEqual(wildcard_payload["count"], 1)
+
+        regex = self.client.get(
+            "/api/tools/search",
+            headers=read_headers,
+            params={
+                "plugin_id": "search-demo-tools",
+                "q": r"^searchdemo\.(index|search_text)$",
+                "match_mode": "regex",
+                "sort": "updated",
+            },
+        )
+        self.assertEqual(regex.status_code, 200, regex.text)
+        self.assertEqual(regex.json()["count"], 2)
+
+        bad_regex = self.client.get(
+            "/api/tools/search",
+            headers=read_headers,
+            params={"plugin_id": "search-demo-tools", "q": "[unterminated", "match_mode": "regex"},
+        )
+        self.assertEqual(bad_regex.status_code, 400, bad_regex.text)
+
+        tools_by_module = self.client.get(
+            "/api/tools/search",
+            headers=read_headers,
+            params={
+                "plugin_id": "search-demo-tools",
+                "q": "searchdemo",
+                "match_mode": "contains",
+                "group_by": "module",
+            },
+        )
+        self.assertEqual(tools_by_module.status_code, 200, tools_by_module.text)
+        grouped_payload = tools_by_module.json()
+        self.assertEqual(grouped_payload["group_by"], "module")
+        self.assertIn("groups", grouped_payload)
+        module_counts = {group["key"]: group["count"] for group in grouped_payload["groups"]}
+        self.assertEqual(module_counts["runtime"], 2)
+        self.assertEqual(module_counts["studio"], 1)
+
+        usage_payload = {
+            "agent_id": "agent-alpha",
+            "session_id": "session-001",
+            "status": "executed",
+            "result_status": "ok",
+        }
+        all_tools = {tool["action"]: tool["id"] for tool in tools_by_module.json()["tools"]}
+        for _ in range(3):
+            self.client.post(
+                f"/api/tools/{all_tools['search_text']}/usage",
+                headers=admin_headers,
+                json=usage_payload,
+            )
+        for _ in range(1):
+            self.client.post(
+                f"/api/tools/{all_tools['index']}/usage",
+                headers=admin_headers,
+                json=usage_payload,
+            )
+
+        popularity_rank = self.client.get(
+            "/api/tools/search",
+            headers=read_headers,
+            params={
+                "plugin_id": "search-demo-tools",
+                "q": "searchdemo",
+                "sort": "popularity",
+                "match_mode": "contains",
+                "limit": 2,
+            },
+        )
+        self.assertEqual(popularity_rank.status_code, 200, popularity_rank.text)
+        ranked_tools = popularity_rank.json()["tools"]
+        self.assertEqual(ranked_tools[0]["id"], all_tools["search_text"])
+
     def test_tool_usage_tracking_and_role_gating(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
@@ -571,6 +716,125 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         agent_payload = agent_tool_usage.json()
         self.assertEqual(agent_payload["count"], 1)
         self.assertEqual(agent_payload["usage"][0]["mission_id"], "mission-beta")
+
+    def test_tool_usage_reference_id_filters(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "browser-agent-reference",
+            "name": "Browser agent reference",
+            "source": "integration test",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "metadata": {
+                "tools": [
+                    {
+                        "namespace": "browser",
+                        "action": "open_page",
+                        "description": "Open a URL",
+                    },
+                ]
+            },
+        }
+
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        tools = self.client.get("/api/tools", headers=admin_headers, params={"namespace": "browser", "sort": "updated"})
+        self.assertEqual(tools.status_code, 200, tools.text)
+        tool = tools.json()["tools"][0]
+        tool_id = tool["id"]
+
+        memory_reference = "memory-ref-001"
+        chat_reference = "chat-msg-001"
+        chat_session_reference = "chat-session-001"
+
+        memory_payload = {
+            "agent_id": "agent-memory-reference",
+            "session_id": "session-memory-reference",
+            "request_id": "request-memory-reference",
+            "status": "executed",
+            "duration_ms": 20,
+            "result_status": "ok",
+            "context_type": "memory",
+            "context_id": "memory-context-001",
+            "memory_id": memory_reference,
+            "details": {"result_count": 4},
+        }
+        chat_payload = {
+            "agent_id": "agent-chat-reference",
+            "session_id": "session-chat-reference",
+            "request_id": "request-chat-reference",
+            "status": "executed",
+            "duration_ms": 40,
+            "result_status": "ok",
+            "context_type": "chat",
+            "context_id": "chat-context-001",
+            "chat_message_id": chat_reference,
+            "chat_session_id": chat_session_reference,
+            "details": {"result_count": 6},
+        }
+
+        self.assertEqual(
+            self.client.post(f"/api/tools/{tool_id}/usage", headers=admin_headers, json=memory_payload).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.post(f"/api/tools/{tool_id}/usage", headers=admin_headers, json=chat_payload).status_code,
+            200,
+        )
+
+        memory_filter = self.client.get(
+            f"/api/tools/{tool_id}/usage",
+            headers=admin_headers,
+            params={"memory_id": memory_reference},
+        )
+        self.assertEqual(memory_filter.status_code, 200, memory_filter.text)
+        memory_payload_out = memory_filter.json()
+        self.assertEqual(memory_payload_out["count"], 1)
+        self.assertEqual(memory_payload_out["usage"][0]["memory_id"], memory_reference)
+
+        chat_session_filter = self.client.get(
+            "/api/tools/usage",
+            headers=admin_headers,
+            params={"chat_session_id": chat_session_reference},
+        )
+        self.assertEqual(chat_session_filter.status_code, 200, chat_session_filter.text)
+        chat_session_payload = chat_session_filter.json()
+        self.assertEqual(chat_session_payload["count"], 1)
+        self.assertEqual(chat_session_payload["usage"][0]["chat_session_id"], chat_session_reference)
+
+        chat_message_filter = self.client.get(
+            "/api/tool-log",
+            headers=admin_headers,
+            params={"chat_message_id": chat_reference},
+        )
+        self.assertEqual(chat_message_filter.status_code, 200, chat_message_filter.text)
+        chat_message_payload = chat_message_filter.json()
+        self.assertEqual(chat_message_payload["count"], 1)
+        self.assertEqual(chat_message_payload["usage"][0]["chat_message_id"], chat_reference)
+
+        agent_reference_filter = self.client.get(
+            "/api/agents/agent-chat-reference/tool_usage",
+            headers=admin_headers,
+            params={"chat_message_id": chat_reference},
+        )
+        self.assertEqual(agent_reference_filter.status_code, 200, agent_reference_filter.text)
+        agent_reference_payload = agent_reference_filter.json()
+        self.assertEqual(agent_reference_payload["count"], 1)
+        self.assertEqual(agent_reference_payload["usage"][0]["chat_message_id"], chat_reference)
+
+        agent_audit_reference = self.client.get(
+            "/api/agents/agent-chat-reference/audit",
+            headers=read_headers,
+            params={"chat_session_id": chat_session_reference},
+        )
+        self.assertEqual(agent_audit_reference.status_code, 200, agent_audit_reference.text)
+        agent_audit_payload = agent_audit_reference.json()
+        self.assertEqual(agent_audit_payload.get("summary", {}).get("total_tool_calls"), 1)
+        self.assertEqual(agent_audit_payload.get("filters", {}).get("chat_session_id"), chat_session_reference)
 
     def test_agent_tool_audit_endpoint_returns_summary_and_breakdowns(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}

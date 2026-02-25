@@ -174,6 +174,9 @@ class ToolUsageCreate(BaseModel):
     request_id: Optional[str] = None
     context_type: Optional[str] = None
     context_id: Optional[str] = None
+    memory_id: Optional[str] = None
+    chat_message_id: Optional[str] = None
+    chat_session_id: Optional[str] = None
     status: str = "executed"
     duration_ms: Optional[int] = None
     result_status: Optional[str] = None
@@ -1656,21 +1659,39 @@ async def search_tools(
     module: Optional[str] = None,
     plugin_id: Optional[str] = None,
     status: Optional[str] = None,
+    match_mode: str = "contains",
     sort: str = "popularity",
+    group_by: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> Dict[str, Any]:
-    return await list_tools(
-        request=request,
-        q=q,
-        namespace=namespace,
-        module=module,
-        plugin_id=plugin_id,
-        status=status,
-        sort=sort,
-        limit=limit,
-        offset=offset,
-    )
+    role = _require_role(request, required="viewer")
+    plugins = _plugin_map()
+    try:
+        tools, count, groups = storage.search_tools(
+            q=q,
+            namespace=namespace,
+            module=module,
+            plugin_id=plugin_id,
+            status=status,
+            match_mode=match_mode,
+            sort=sort,
+            group_by=group_by,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    response: Dict[str, Any] = {
+        "tools": [_sanitize_tool_payload(tool, role, plugins) for tool in tools],
+        "count": count,
+        "updated_at": _now_iso(),
+    }
+    if groups:
+        response["groups"] = groups
+        response["group_by"] = group_by
+    return response
 
 
 @app.get("/api/tools/usage")
@@ -1679,6 +1700,9 @@ async def get_tool_usage_global(
     tool_id: Optional[str] = Query(default=None),
     agent_id: Optional[str] = Query(default=None),
     mission_id: Optional[str] = Query(default=None),
+    memory_id: Optional[str] = Query(default=None),
+    chat_message_id: Optional[str] = Query(default=None),
+    chat_session_id: Optional[str] = Query(default=None),
     context_type: Optional[str] = Query(default=None),
     context_id: Optional[str] = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
@@ -1690,6 +1714,9 @@ async def get_tool_usage_global(
         tool_id=tool_id,
         agent_id=agent_id,
         mission_id=mission_id,
+        memory_id=memory_id,
+        chat_message_id=chat_message_id,
+        chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
         limit=limit,
@@ -1700,12 +1727,18 @@ async def get_tool_usage_global(
         tool_id=tool_id,
         agent_id=agent_id,
         mission_id=mission_id,
+        memory_id=memory_id,
+        chat_message_id=chat_message_id,
+        chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
     )
     return {
         "tool_id": tool_id,
         "agent_id": agent_id,
+        "memory_id": memory_id,
+        "chat_message_id": chat_message_id,
+        "chat_session_id": chat_session_id,
         "context_type": context_type,
         "context_id": context_id,
         "count": count,
@@ -1734,6 +1767,9 @@ async def get_tool_usage(
     tool_id: str,
     agent_id: Optional[str] = None,
     mission_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
+    chat_message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
     limit: int = Query(default=25, ge=1, le=200),
@@ -1747,6 +1783,9 @@ async def get_tool_usage(
         tool_id=tool_id,
         agent_id=agent_id,
         mission_id=mission_id,
+        memory_id=memory_id,
+        chat_message_id=chat_message_id,
+        chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
     )
@@ -1754,6 +1793,9 @@ async def get_tool_usage(
         tool_id=tool_id,
         agent_id=agent_id,
         mission_id=mission_id,
+        memory_id=memory_id,
+        chat_message_id=chat_message_id,
+        chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
         limit=limit,
@@ -1762,6 +1804,9 @@ async def get_tool_usage(
     )
     return {
         "tool_id": tool_id,
+        "memory_id": memory_id,
+        "chat_message_id": chat_message_id,
+        "chat_session_id": chat_session_id,
         "count": count,
         "usage": [_sanitize_tool_usage_payload(entry, role) for entry in usage],
         "updated_at": _now_iso(),
@@ -1784,6 +1829,9 @@ async def record_tool_usage(
             session_id=payload.session_id,
             mission_id=payload.mission_id,
             request_id=payload.request_id,
+            memory_id=payload.memory_id,
+            chat_message_id=payload.chat_message_id,
+            chat_session_id=payload.chat_session_id,
             context_type=payload.context_type,
             context_id=payload.context_id,
             status=payload.status,
@@ -1801,6 +1849,9 @@ async def record_tool_usage(
         "mission_id": payload.mission_id,
         "session_id": payload.session_id,
         "request_id": payload.request_id,
+        "memory_id": payload.memory_id,
+        "chat_message_id": payload.chat_message_id,
+        "chat_session_id": payload.chat_session_id,
         "context_type": payload.context_type,
         "context_id": payload.context_id,
         "result_status": payload.result_status,
@@ -1814,6 +1865,9 @@ async def get_tool_log(
     tool_id: Optional[str] = Query(default=None),
     agent_id: Optional[str] = Query(default=None),
     mission_id: Optional[str] = Query(default=None),
+    memory_id: Optional[str] = Query(default=None),
+    chat_message_id: Optional[str] = Query(default=None),
+    chat_session_id: Optional[str] = Query(default=None),
     session_id: Optional[str] = Query(default=None),
     context_type: Optional[str] = Query(default=None),
     context_id: Optional[str] = Query(default=None),
@@ -1822,12 +1876,24 @@ async def get_tool_log(
     sort_desc: bool = True,
 ) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
-    filters = {"tool_id": tool_id, "agent_id": agent_id, "mission_id": mission_id, "context_type": context_type, "context_id": context_id}
+    filters = {
+        "tool_id": tool_id,
+        "agent_id": agent_id,
+        "mission_id": mission_id,
+        "memory_id": memory_id,
+        "chat_message_id": chat_message_id,
+        "chat_session_id": chat_session_id,
+        "context_type": context_type,
+        "context_id": context_id,
+    }
     usage = storage.list_tool_usage_global(
         tool_id=tool_id,
         agent_id=agent_id,
         session_id=session_id,
         mission_id=mission_id,
+        memory_id=memory_id,
+        chat_message_id=chat_message_id,
+        chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
         limit=limit,
@@ -1839,6 +1905,9 @@ async def get_tool_log(
         agent_id=agent_id,
         session_id=session_id,
         mission_id=mission_id,
+        memory_id=memory_id,
+        chat_message_id=chat_message_id,
+        chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
     )
@@ -1846,6 +1915,9 @@ async def get_tool_log(
         "tool_id": tool_id,
         "agent_id": agent_id,
         "mission_id": mission_id,
+        "memory_id": memory_id,
+        "chat_message_id": chat_message_id,
+        "chat_session_id": chat_session_id,
         "session_id": session_id,
         "context_type": context_type,
         "context_id": context_id,
@@ -1892,6 +1964,9 @@ async def get_agent_tool_usage(
     agent_id: str,
     tool_id: Optional[str] = None,
     mission_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
+    chat_message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
     session_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
@@ -1905,6 +1980,9 @@ async def get_agent_tool_usage(
         agent_id=agent_id,
         session_id=session_id,
         mission_id=mission_id,
+        memory_id=memory_id,
+        chat_message_id=chat_message_id,
+        chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
     )
@@ -1913,6 +1991,9 @@ async def get_agent_tool_usage(
         agent_id=agent_id,
         session_id=session_id,
         mission_id=mission_id,
+        memory_id=memory_id,
+        chat_message_id=chat_message_id,
+        chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
         limit=limit,
@@ -1922,6 +2003,9 @@ async def get_agent_tool_usage(
     return {
         "agent_id": agent_id,
         "tool_id": tool_id,
+        "memory_id": memory_id,
+        "chat_message_id": chat_message_id,
+        "chat_session_id": chat_session_id,
         "session_id": session_id,
         "mission_id": mission_id,
         "count": count,
@@ -1935,6 +2019,9 @@ async def get_agent_audit(
     request: Request,
     agent_id: str,
     mission_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
+    chat_message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -1947,6 +2034,9 @@ async def get_agent_audit(
         payload = storage.get_agent_tool_audit(
             agent_id=agent_id,
             mission_id=mission_id,
+            memory_id=memory_id,
+            chat_message_id=chat_message_id,
+            chat_session_id=chat_session_id,
             context_type=context_type,
             context_id=context_id,
             session_id=session_id,

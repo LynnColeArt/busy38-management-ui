@@ -8,7 +8,10 @@ import sqlite3
 import hashlib
 import uuid
 from contextlib import contextmanager
+import fnmatch
 from datetime import datetime, timezone
+import math
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -278,6 +281,9 @@ def _ensure_tool_tables(conn: sqlite3.Connection) -> None:
             request_id TEXT,
             context_type TEXT,
             context_id TEXT,
+            memory_id TEXT,
+            chat_message_id TEXT,
+            chat_session_id TEXT,
             status TEXT NOT NULL,
             duration_ms INTEGER,
             result_status TEXT,
@@ -301,12 +307,24 @@ def _ensure_tool_usage_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tool_usage ADD COLUMN context_type TEXT")
     if "context_id" not in columns:
         conn.execute("ALTER TABLE tool_usage ADD COLUMN context_id TEXT")
+    if "memory_id" not in columns:
+        conn.execute("ALTER TABLE tool_usage ADD COLUMN memory_id TEXT")
+    if "chat_message_id" not in columns:
+        conn.execute("ALTER TABLE tool_usage ADD COLUMN chat_message_id TEXT")
+    if "chat_session_id" not in columns:
+        conn.execute("ALTER TABLE tool_usage ADD COLUMN chat_session_id TEXT")
     if "mission_id" not in columns:
         conn.execute("ALTER TABLE tool_usage ADD COLUMN mission_id TEXT")
 
     indexes = {row["name"] for row in conn.execute("PRAGMA index_list(tool_usage)")}
     if "idx_tool_usage_context" not in indexes:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_context ON tool_usage(context_type, context_id, created_at)")
+    if "idx_tool_usage_memory" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_memory ON tool_usage(memory_id, created_at)")
+    if "idx_tool_usage_chat_message" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_chat_message ON tool_usage(chat_message_id, created_at)")
+    if "idx_tool_usage_chat_session" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_chat_session ON tool_usage(chat_session_id, created_at)")
     if "idx_tool_usage_session" not in indexes:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_session ON tool_usage(session_id)")
     if "idx_tool_usage_mission" not in indexes:
@@ -1061,6 +1079,280 @@ def count_tools(
         return int(row["total"] or 0)
 
 
+def search_tools(
+    q: Optional[str] = None,
+    namespace: Optional[str] = None,
+    module: Optional[str] = None,
+    plugin_id: Optional[str] = None,
+    status: Optional[str] = None,
+    match_mode: str = "contains",
+    sort: str = "relevance",
+    group_by: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[List[Dict[str, Any]], int, List[Dict[str, Any]]]:
+    normalized_limit = max(1, min(200, int(limit)))
+    normalized_offset = max(0, int(offset))
+    normalized_match_mode = str(match_mode or "contains").strip().lower()
+    if normalized_match_mode not in {"contains", "prefix", "wildcard", "regex", "exact"}:
+        normalized_match_mode = "contains"
+
+    normalized_sort = str(sort or "relevance").strip().lower()
+    if normalized_sort not in {"relevance", "popularity", "updated", "name", "namespace"}:
+        normalized_sort = "relevance"
+
+    normalized_group = str(group_by or "").strip().lower()
+    if normalized_group not in {"", "module", "plugin", "source"}:
+        normalized_group = ""
+
+    filters = []
+    values: List[Any] = []
+
+    if namespace and str(namespace).strip():
+        filters.append("namespace = ?")
+        values.append(str(namespace).strip())
+    if module and str(module).strip():
+        filters.append("module = ?")
+        values.append(str(module).strip())
+    if plugin_id and str(plugin_id).strip():
+        filters.append("plugin_id = ?")
+        values.append(str(plugin_id).strip())
+    if status and str(status).strip():
+        filters.append("status = ?")
+        values.append(str(status).strip())
+
+    query_text = str(q).strip().lower() if q else ""
+    regex: Optional[re.Pattern[str]] = None
+
+    def _escape_like(value: str) -> str:
+        return (
+            str(value)
+            .replace("!", "!!")
+            .replace("%", "!%")
+            .replace("_", "!_")
+        )
+
+    wildcard_pattern = ""
+    if query_text:
+        if normalized_match_mode == "exact":
+            filters.append("(LOWER(tr.name) = ? OR LOWER(tr.namespace) = ? OR LOWER(tr.action) = ?)")
+            values.extend([query_text, query_text, query_text])
+        elif normalized_match_mode == "prefix":
+            wildcard_pattern = f"{_escape_like(query_text)}%"
+        elif normalized_match_mode == "wildcard":
+            wildcard_body = ""
+            for ch in query_text:
+                if ch == "*":
+                    wildcard_body += "%"
+                elif ch == "?":
+                    wildcard_body += "_"
+                else:
+                    wildcard_body += _escape_like(ch)
+            wildcard_pattern = wildcard_body if ("*" in query_text or "?" in query_text) else f"%{wildcard_body}%"
+        elif normalized_match_mode == "regex":
+            try:
+                regex = re.compile(query_text, re.IGNORECASE)
+            except re.error as exc:
+                raise ValueError(f"invalid regex: {exc}") from exc
+        else:
+            wildcard_pattern = f"%{_escape_like(query_text)}%"
+
+        if wildcard_pattern:
+            filters.append(
+                "(LOWER(tr.name) LIKE ? ESCAPE '!' OR LOWER(tr.namespace) LIKE ? ESCAPE '!' OR LOWER(tr.action) LIKE ? ESCAPE '!')"
+            )
+            values.extend([wildcard_pattern, wildcard_pattern, wildcard_pattern])
+
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    base_order = "popularity DESC, datetime(updated_at) DESC, LOWER(namespace) ASC, LOWER(action) ASC"
+    from_clause = "FROM tool_registry tr"
+    select_clause = "tr.*"
+    if normalized_group == "source":
+        from_clause = "FROM tool_registry tr LEFT JOIN plugins p ON p.id = tr.plugin_id"
+        select_clause = "tr.*, p.source AS plugin_source"
+    rows_sql = f"SELECT {select_clause} {from_clause} {where_clause} ORDER BY {base_order}"
+
+    with get_connection() as conn:
+        rows = conn.execute(rows_sql, tuple(values)).fetchall()
+
+    candidates: List[Dict[str, Any]] = []
+    normalized_query = query_text
+
+    def _parse_updated_at(value: Optional[str]) -> float:
+        if not value:
+            return 0.0
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except Exception:
+            return 0.0
+
+    def _is_match(payload: Dict[str, Any], matcher: Optional[re.Pattern[str]]) -> tuple[bool, float]:
+        if not normalized_query:
+            return True, 0.0
+
+        haystacks = [
+            str(payload.get("name") or "").lower(),
+            str(payload.get("namespace") or "").lower(),
+            str(payload.get("action") or "").lower(),
+            str(payload.get("description") or "").lower(),
+            str(payload.get("module") or "").lower(),
+        ]
+
+        if normalized_match_mode == "exact":
+            is_match = any(item == normalized_query for item in haystacks[:3])
+            return is_match, 100.0 if is_match else 0.0
+        if normalized_match_mode == "prefix":
+            is_match = any(item.startswith(normalized_query) for item in haystacks)
+            return is_match, 95.0 if is_match else 0.0
+        if normalized_match_mode == "wildcard":
+            fn_pattern = (
+                normalized_query if ("*" in query_text or "?" in query_text) else f"*{normalized_query}*"
+            )
+            is_match = any(fnmatch.fnmatch(item, fn_pattern) for item in haystacks)
+            return is_match, 94.0 if is_match else 0.0
+        if normalized_match_mode == "regex":
+            if matcher is None:
+                return False, 0.0
+            is_match = any(bool(matcher.search(item)) for item in haystacks)
+            return is_match, 94.0 if is_match else 0.0
+        is_match = any(normalized_query in item for item in haystacks)
+        return is_match, 90.0 if is_match else 0.0
+
+    for row in rows:
+        payload = _dict_from_row(row)
+        payload["container"] = bool(payload["container"])
+        payload["enabled"] = payload["status"] == "active"
+        payload["popularity"] = int(payload["popularity"] or 0)
+        payload["parameters"] = _coerce_json_payload(payload.get("parameters"))
+        payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
+        payload["updated_at_epoch"] = _parse_updated_at(payload.get("updated_at"))
+        payload["plugin_source"] = payload.pop("plugin_source", None)
+        payload["relevance_score"] = 0.0
+
+        is_match, match_score = _is_match(payload, regex)
+        if not is_match:
+            continue
+
+        namespace_value = str(payload.get("namespace") or "").lower()
+        action_value = str(payload.get("action") or "").lower()
+        name_value = str(payload.get("name") or "").lower()
+        module_value = str(payload.get("module") or "").lower()
+        description_value = str(payload.get("description") or "").lower()
+
+        score = match_score
+        if normalized_query:
+            score += (40.0 if namespace_value == normalized_query else 0.0)
+            score += (30.0 if action_value == normalized_query else 0.0)
+            score += (12.0 if name_value == normalized_query else 0.0)
+            score += (12.0 if namespace_value.startswith(normalized_query) else 0.0)
+            score += (8.0 if action_value.startswith(normalized_query) else 0.0)
+            score += (4.0 if normalized_query in module_value else 0.0)
+            score += (3.0 if normalized_query in name_value else 0.0)
+            score += (2.0 if normalized_query in description_value else 0.0)
+
+        payload["relevance_score"] = float(
+            score + min(20.0, math.log1p(payload["popularity"]) * 4) + (payload["updated_at_epoch"] / 1e11)
+        )
+        candidates.append(payload)
+
+    if normalized_sort == "relevance":
+        candidates.sort(
+            key=lambda item: (
+                -item.get("relevance_score", 0.0),
+                -int(item.get("popularity") or 0),
+                -item.get("updated_at_epoch", 0.0),
+                str(item.get("namespace") or ""),
+                str(item.get("action") or ""),
+                str(item.get("id") or ""),
+            )
+        )
+    elif normalized_sort == "updated":
+        candidates.sort(
+            key=lambda item: (
+                -item.get("updated_at_epoch", 0.0),
+                str(item.get("namespace") or ""),
+                str(item.get("action") or ""),
+            )
+        )
+    elif normalized_sort == "name":
+        candidates.sort(key=lambda item: (str(item.get("namespace") or ""), str(item.get("action") or "")))
+    elif normalized_sort == "namespace":
+        candidates.sort(key=lambda item: (str(item.get("module") or ""), str(item.get("namespace") or ""), str(item.get("action") or "")))
+    else:
+        candidates.sort(
+            key=lambda item: (
+                -int(item.get("popularity") or 0),
+                -item.get("updated_at_epoch", 0.0),
+                str(item.get("namespace") or ""),
+                str(item.get("action") or ""),
+            )
+        )
+
+    total = len(candidates)
+    paged = candidates[normalized_offset : normalized_offset + normalized_limit]
+
+    ranked = sorted(
+        candidates,
+        key=lambda item: (
+            -int(item.get("popularity") or 0),
+            -item.get("updated_at_epoch", 0.0),
+            str(item.get("namespace") or ""),
+            str(item.get("action") or ""),
+            str(item.get("id") or ""),
+        ),
+    )
+    popularity_rank_map = {str(item.get("id")): rank for rank, item in enumerate(ranked, start=1)}
+    for entry in paged:
+        entry["popularity_rank"] = popularity_rank_map.get(str(entry.get("id")), 0)
+        score = entry.get("relevance_score")
+        if isinstance(score, float):
+            entry["relevance_score"] = round(score, 4)
+        entry.pop("updated_at_epoch", None)
+
+    groups: List[Dict[str, Any]] = []
+    if normalized_group:
+        grouped_totals: Dict[str, int] = {}
+        grouped_tools: Dict[str, List[str]] = {}
+        for candidate in candidates:
+            if normalized_group == "module":
+                group_key = str(candidate.get("module") or "default")
+            elif normalized_group == "plugin":
+                group_key = str(candidate.get("plugin_id") or "unbound")
+            else:
+                group_key = str(candidate.get("plugin_source") or "unbound")
+            grouped_totals[group_key] = grouped_totals.get(group_key, 0) + 1
+            grouped_tools.setdefault(group_key, []).append(str(candidate.get("id")))
+
+        for group_key in sorted(grouped_totals.keys(), key=str):
+            page_tools = [
+                tool
+                for tool in paged
+                if str(
+                    (
+                        tool.get("module")
+                        if normalized_group == "module"
+                        else tool.get("plugin_id") if normalized_group == "plugin" else tool.get("plugin_source")
+                    )
+                    or ""
+                ).lower()
+                == group_key.lower()
+            ]
+            groups.append(
+                {
+                    "key": group_key,
+                    "count": grouped_totals[group_key],
+                    "tool_ids": grouped_tools[group_key],
+                    "tools": [tool["id"] for tool in page_tools],
+                }
+            )
+
+    for candidate in candidates:
+        candidate.pop("plugin_source", None)
+        candidate.pop("updated_at_epoch", None)
+
+    return paged, total, groups
+
+
 def append_tool_usage(
     tool_id: str,
     agent_id: Optional[str] = None,
@@ -1069,6 +1361,9 @@ def append_tool_usage(
     request_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
+    chat_message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
     status: str = "executed",
     duration_ms: Optional[int] = None,
     result_status: Optional[str] = None,
@@ -1085,6 +1380,19 @@ def append_tool_usage(
 
         now = _now_iso()
         usage_id = f"tool-use-{uuid.uuid4().hex[:12]}"
+        normalized_context_type = _normalize_str(context_type) or None
+        normalized_context_id = _normalize_str(context_id) or None
+        normalized_memory_id = _normalize_str(memory_id)
+        normalized_chat_message_id = _normalize_str(chat_message_id)
+        normalized_chat_session_id = _normalize_str(chat_session_id)
+
+        if normalized_memory_id is None and normalized_context_type == "memory":
+            normalized_memory_id = normalized_context_id
+        if normalized_chat_message_id is None and normalized_context_type == "chat":
+            normalized_chat_message_id = normalized_context_id
+        if normalized_chat_session_id is None and normalized_context_type == "chat":
+            normalized_chat_session_id = _normalize_str(session_id)
+
         conn.execute(
             """
             INSERT INTO tool_usage(
@@ -1096,6 +1404,9 @@ def append_tool_usage(
                 request_id,
                 context_type,
                 context_id,
+                memory_id,
+                chat_message_id,
+                chat_session_id,
                 status,
                 duration_ms,
                 result_status,
@@ -1103,7 +1414,7 @@ def append_tool_usage(
                 payload,
                 created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 usage_id,
@@ -1112,8 +1423,11 @@ def append_tool_usage(
                 _normalize_str(session_id) or None,
                 _normalize_str(mission_id) or None,
                 _normalize_str(request_id) or None,
-                _normalize_str(context_type) or None,
-                _normalize_str(context_id) or None,
+                normalized_context_type,
+                normalized_context_id,
+                normalized_memory_id,
+                normalized_chat_message_id,
+                normalized_chat_session_id,
                 _normalize_str(status) or "executed",
                 int(duration_ms) if duration_ms is not None else None,
                 _normalize_str(result_status) or None,
@@ -1136,8 +1450,11 @@ def append_tool_usage(
         "session_id": _normalize_str(session_id) or None,
         "mission_id": _normalize_str(mission_id) or None,
         "request_id": _normalize_str(request_id) or None,
-        "context_type": _normalize_str(context_type) or None,
-        "context_id": _normalize_str(context_id) or None,
+        "context_type": normalized_context_type,
+        "context_id": normalized_context_id,
+        "memory_id": normalized_memory_id,
+        "chat_message_id": normalized_chat_message_id,
+        "chat_session_id": normalized_chat_session_id,
         "status": _normalize_str(status) or "executed",
         "duration_ms": int(duration_ms) if duration_ms is not None else None,
         "result_status": _normalize_str(result_status) or None,
@@ -1181,6 +1498,9 @@ def list_tool_usage(
     mission_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
+    chat_message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     sort_desc: bool = True,
@@ -1210,6 +1530,21 @@ def list_tool_usage(
             if normalized_context_id:
                 filters.append("context_id = ?")
                 values.append(normalized_context_id)
+        if memory_id:
+            normalized_memory_id = _normalize_str(memory_id)
+            if normalized_memory_id:
+                filters.append("memory_id = ?")
+                values.append(normalized_memory_id)
+        if chat_message_id:
+            normalized_chat_message_id = _normalize_str(chat_message_id)
+            if normalized_chat_message_id:
+                filters.append("chat_message_id = ?")
+                values.append(normalized_chat_message_id)
+        if chat_session_id:
+            normalized_chat_session_id = _normalize_str(chat_session_id)
+            if normalized_chat_session_id:
+                filters.append("chat_session_id = ?")
+                values.append(normalized_chat_session_id)
         if mission_id:
             normalized_mission_id = _normalize_str(mission_id)
             if normalized_mission_id:
@@ -1233,6 +1568,9 @@ def list_tool_usage_global(
     mission_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
+    chat_message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     sort_desc: bool = True,
@@ -1268,6 +1606,21 @@ def list_tool_usage_global(
             if normalized_context_id:
                 filters.append("context_id = ?")
                 values.append(normalized_context_id)
+        if memory_id:
+            normalized_memory_id = _normalize_str(memory_id)
+            if normalized_memory_id:
+                filters.append("memory_id = ?")
+                values.append(normalized_memory_id)
+        if chat_message_id:
+            normalized_chat_message_id = _normalize_str(chat_message_id)
+            if normalized_chat_message_id:
+                filters.append("chat_message_id = ?")
+                values.append(normalized_chat_message_id)
+        if chat_session_id:
+            normalized_chat_session_id = _normalize_str(chat_session_id)
+            if normalized_chat_session_id:
+                filters.append("chat_session_id = ?")
+                values.append(normalized_chat_session_id)
         if mission_id:
             normalized_mission_id = _normalize_str(mission_id)
             if normalized_mission_id:
@@ -1292,6 +1645,9 @@ def count_tool_usage(
     mission_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
+    chat_message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
 ) -> int:
     filters = []
     values: List[Any] = []
@@ -1324,6 +1680,21 @@ def count_tool_usage(
             if normalized_context_id:
                 filters.append("context_id = ?")
                 values.append(normalized_context_id)
+        if memory_id:
+            normalized_memory_id = _normalize_str(memory_id)
+            if normalized_memory_id:
+                filters.append("memory_id = ?")
+                values.append(normalized_memory_id)
+        if chat_message_id:
+            normalized_chat_message_id = _normalize_str(chat_message_id)
+            if normalized_chat_message_id:
+                filters.append("chat_message_id = ?")
+                values.append(normalized_chat_message_id)
+        if chat_session_id:
+            normalized_chat_session_id = _normalize_str(chat_session_id)
+            if normalized_chat_session_id:
+                filters.append("chat_session_id = ?")
+                values.append(normalized_chat_session_id)
         if mission_id:
             normalized_mission_id = _normalize_str(mission_id)
             if normalized_mission_id:
@@ -1342,6 +1713,9 @@ def get_agent_tool_audit(
     mission_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
+    chat_message_id: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
     session_id: Optional[str] = None,
     tool_limit: int = 5,
     session_limit: int = 5,
@@ -1358,6 +1732,9 @@ def get_agent_tool_audit(
     normalized_mission_id = _normalize_str(mission_id)
     normalized_context_type = _normalize_str(context_type)
     normalized_context_id = _normalize_str(context_id)
+    normalized_memory_id = _normalize_str(memory_id)
+    normalized_chat_message_id = _normalize_str(chat_message_id)
+    normalized_chat_session_id = _normalize_str(chat_session_id)
     normalized_session_id = _normalize_str(session_id)
 
     with get_connection() as conn:
@@ -1372,6 +1749,15 @@ def get_agent_tool_audit(
         if normalized_context_id:
             base_filter.append("context_id = ?")
             values.append(normalized_context_id)
+        if normalized_memory_id:
+            base_filter.append("memory_id = ?")
+            values.append(normalized_memory_id)
+        if normalized_chat_message_id:
+            base_filter.append("chat_message_id = ?")
+            values.append(normalized_chat_message_id)
+        if normalized_chat_session_id:
+            base_filter.append("chat_session_id = ?")
+            values.append(normalized_chat_session_id)
         if normalized_session_id:
             base_filter.append("session_id = ?")
             values.append(normalized_session_id)
@@ -1414,6 +1800,9 @@ def get_agent_tool_audit(
             "mission_id": normalized_mission_id,
             "context_type": normalized_context_type,
             "context_id": normalized_context_id,
+            "memory_id": normalized_memory_id,
+            "chat_message_id": normalized_chat_message_id,
+            "chat_session_id": normalized_chat_session_id,
             "session_id": normalized_session_id,
         },
         "summary": summary_payload,
