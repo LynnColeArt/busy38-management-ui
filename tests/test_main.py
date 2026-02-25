@@ -1350,22 +1350,62 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         blocked = self.client.post("/api/agents/orchestrator-core/archive", headers=read_headers)
         self.assertEqual(blocked.status_code, 403)
 
-        archived = self.client.post("/api/agents/orchestrator-core/archive", headers=admin_headers)
+        archived = self.client.post(
+            "/api/agents/orchestrator-core/archive",
+            headers=admin_headers,
+            json={"reason": "agent retired from rotation", "replacement_agent_id": "ops-notify"},
+        )
         self.assertEqual(archived.status_code, 200, archived.text)
         archived_agent = archived.json()["agent"]
         self.assertEqual(archived_agent["lifecycle"], "archived")
         self.assertFalse(archived_agent["enabled"])
         self.assertIn("archived_at", archived_agent)
 
-        restored = self.client.post("/api/agents/orchestrator-core/restore", headers=admin_headers)
+        archive_events = [
+            event
+            for event in self.client.get("/api/events", headers=admin_headers).json()["events"]
+            if event["type"] == "agent.lifecycle.archive"
+        ]
+        self.assertTrue(archive_events)
+        latest_archive = archive_events[0]
+        self.assertEqual(latest_archive["payload"]["agent_id"], "orchestrator-core")
+        self.assertEqual(latest_archive["payload"]["reason"], "agent retired from rotation")
+        self.assertEqual(latest_archive["payload"]["replacement_agent_id"], "ops-notify")
+        self.assertEqual(latest_archive["payload"]["actor"], "admin")
+
+        restored = self.client.post(
+            "/api/agents/orchestrator-core/restore",
+            headers=admin_headers,
+            json={"reason": "restore for emergency test run"},
+        )
         self.assertEqual(restored.status_code, 200, restored.text)
         restored_agent = restored.json()["agent"]
         self.assertEqual(restored_agent["lifecycle"], "active")
         self.assertTrue(restored_agent["enabled"])
         self.assertIsNone(restored_agent.get("archived_at"))
 
+        restore_events = [
+            event
+            for event in self.client.get("/api/events", headers=admin_headers).json()["events"]
+            if event["type"] == "agent.lifecycle.restore"
+        ]
+        self.assertTrue(restore_events)
+        latest_restore = restore_events[0]
+        self.assertEqual(latest_restore["payload"]["agent_id"], "orchestrator-core")
+        self.assertEqual(latest_restore["payload"]["reason"], "restore for emergency test run")
+        self.assertEqual(latest_restore["payload"]["actor"], "admin")
+
         blocked_restore = self.client.post("/api/agents/orchestrator-core/restore", headers=read_headers)
         self.assertEqual(blocked_restore.status_code, 403)
+
+    def test_agents_archive_rejects_invalid_replacement_agent(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        response = self.client.post(
+            "/api/agents/orchestrator-core/archive",
+            headers=admin_headers,
+            json={"reason": "test replacement", "replacement_agent_id": "missing-agent"},
+        )
+        self.assertEqual(response.status_code, 404)
 
     def test_agents_list_rejects_invalid_lifecycle(self):
         read_headers = {"Authorization": f"Bearer {self.read_token}"}

@@ -156,6 +156,12 @@ class AgentUpdate(BaseModel):
     overlay_token_cap: Optional[int] = None
 
 
+class AgentLifecycleAction(BaseModel):
+    reason: Optional[str] = None
+    replacement_agent_id: Optional[str] = None
+    actor: Optional[str] = None
+
+
 class MemoryCreate(BaseModel):
     scope: str
     type: str
@@ -377,6 +383,45 @@ def _event_for(
 ) -> Dict[str, Any]:
     payload = storage.append_event(event_type, message, level, payload=payload)
     return payload
+
+
+def _coerce_agent_lifecycle_payload(
+    role: str,
+    action: Optional[AgentLifecycleAction],
+    *,
+    fallback_reason: str,
+    replacement_allowed: bool = True,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {"actor": role}
+    if action is None:
+        payload["reason"] = fallback_reason
+        return payload
+
+    values = action.model_dump(exclude_unset=True)
+    reason = str(values.get("reason") or "").strip()
+    actor = str(values.get("actor") or "").strip()
+    replacement_agent_id = str(values.get("replacement_agent_id") or "").strip()
+
+    payload["reason"] = reason or fallback_reason
+    if actor:
+        payload["request_actor"] = actor
+    if replacement_agent_id and replacement_allowed:
+        payload["replacement_agent_id"] = replacement_agent_id
+    return payload
+
+
+def _coerce_replacement_agent(agent_id: str, replacement_agent_id: str) -> Optional[str]:
+    normalized_replacement = str(replacement_agent_id or "").strip()
+    if not normalized_replacement:
+        return None
+    if normalized_replacement == agent_id:
+        raise HTTPException(status_code=400, detail="replacement_agent_id must be different from target agent")
+
+    candidates = storage.list_agents(storage.AGENT_LIFECYCLE_ACTIVE)
+    for candidate in candidates:
+        if candidate.get("id") == normalized_replacement:
+            return normalized_replacement
+    raise HTTPException(status_code=404, detail=f"replacement agent '{normalized_replacement}' not found or not active")
 
 
 def _coerce_iso_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -2191,26 +2236,60 @@ async def patch_agent(request: Request, agent_id: str, update: AgentUpdate) -> D
 
 
 @app.post("/api/agents/{agent_id}/archive")
-async def archive_agent(request: Request, agent_id: str) -> Dict[str, Any]:
+async def archive_agent(
+    request: Request,
+    agent_id: str,
+    action: Optional[AgentLifecycleAction] = None,
+) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
+    payload = _coerce_agent_lifecycle_payload(
+        role,
+        action,
+        fallback_reason="agent archived by operator",
+    )
+    replacement_agent_id = _coerce_replacement_agent(agent_id, payload.pop("replacement_agent_id", "")) if payload.get("replacement_agent_id") else None
+    if replacement_agent_id:
+        payload["replacement_agent_id"] = replacement_agent_id
     try:
         agent = storage.archive_agent(agent_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"agent '{agent_id}' not found")
 
-    _event_for(role, "agent", f"Agent archived: {agent_id}", "warn", {"agent_id": agent_id})
+    _event_for(
+        role,
+        "agent.lifecycle.archive",
+        f"Agent archived: {agent_id}",
+        "warn",
+        payload={"agent_id": str(agent_id), **payload},
+    )
     return {"agent": _agent_with_overlay(agent, role), "updated_at": _now_iso()}
 
 
 @app.post("/api/agents/{agent_id}/restore")
-async def restore_agent(request: Request, agent_id: str) -> Dict[str, Any]:
+async def restore_agent(
+    request: Request,
+    agent_id: str,
+    action: Optional[AgentLifecycleAction] = None,
+) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
+    payload = _coerce_agent_lifecycle_payload(
+        role,
+        action,
+        fallback_reason="agent restored by operator",
+        replacement_allowed=False,
+    )
     try:
         agent = storage.restore_agent(agent_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"agent '{agent_id}' not found")
 
-    _event_for(role, "agent", f"Agent restored: {agent_id}", "info", {"agent_id": agent_id})
+    _event_for(
+        role,
+        "agent.lifecycle.restore",
+        f"Agent restored: {agent_id}",
+        "info",
+        payload={"agent_id": str(agent_id), **payload},
+    )
     return {"agent": _agent_with_overlay(agent, role), "updated_at": _now_iso()}
 
 

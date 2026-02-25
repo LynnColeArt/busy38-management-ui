@@ -2608,14 +2608,29 @@ async function onTableChange(event) {
 
     if (action === "archive-agent") {
       const id = target.dataset.id;
-      await postJson(`/api/agents/${id}/archive`, {});
+      const reason = window.prompt(`Reason for archiving ${id}:`)?.trim();
+      if (!reason) {
+        setStatus("#healthState", "archive cancelled (reason required)", "err");
+        return;
+      }
+      const replacement = window.prompt(`Optional replacement agent id for ${id} responsibilities:`)?.trim();
+      const payload = { reason };
+      if (replacement) {
+        payload.replacement_agent_id = replacement;
+      }
+      await postJson(`/api/agents/${id}/archive`, payload);
       await loadAgents();
       return;
     }
 
     if (action === "restore-agent") {
       const id = target.dataset.id;
-      await postJson(`/api/agents/${id}/restore`, {});
+      const reason = window.prompt(`Reason for restoring ${id}:`)?.trim();
+      if (!reason) {
+        setStatus("#healthState", "restore cancelled (reason required)", "err");
+        return;
+      }
+      await postJson(`/api/agents/${id}/restore`, { reason });
       await loadAgents();
       return;
     }
