@@ -1930,6 +1930,44 @@ async def get_agent_tool_usage(
     }
 
 
+@app.get("/api/agents/{agent_id}/audit")
+async def get_agent_audit(
+    request: Request,
+    agent_id: str,
+    mission_id: Optional[str] = None,
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_limit: int = Query(default=5, ge=1, le=50),
+    session_limit: int = Query(default=5, ge=1, le=50),
+    recent_limit: int = Query(default=25, ge=1, le=200),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    try:
+        payload = storage.get_agent_tool_audit(
+            agent_id=agent_id,
+            mission_id=mission_id,
+            context_type=context_type,
+            context_id=context_id,
+            session_id=session_id,
+            tool_limit=tool_limit,
+            session_limit=session_limit,
+            recent_limit=recent_limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    payload["summary"] = payload.get("summary", {})
+    payload["summary"]["unique_sessions"] = len(payload.get("session_breakdown", []))
+    payload["recent_calls"] = [
+        _sanitize_tool_usage_payload(entry, role) for entry in payload.get("recent_calls", [])
+    ]
+    payload["tool_breakdown"] = payload.get("tool_breakdown", [])
+    payload["session_breakdown"] = payload.get("session_breakdown", [])
+    payload["updated_at"] = _now_iso()
+    return payload
+
+
 @app.get("/api/agents")
 async def get_agents(request: Request) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")

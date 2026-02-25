@@ -22,6 +22,8 @@ const state = {
   agentDirectoryArtifact: null,
   selectedImportId: "",
   rerunImportId: "",
+  selectedAgentAuditId: "",
+  agentToolAudit: null,
   toolUsage: [],
   toolUsageCount: 0,
 };
@@ -311,6 +313,76 @@ function renderImportAudit(audit) {
       ${lineageBlock}
       <h3>Timeline</h3>
       ${eventsBlock}
+    </div>
+  `;
+}
+
+function renderAgentToolAudit(audit) {
+  const root = qs("#agentToolAudit");
+  if (!root) {
+    return;
+  }
+  if (!audit || !audit.agent_id) {
+    root.innerHTML = "<p>Select an agent to load tool audit details.</p>";
+    return;
+  }
+
+  const summary = audit.summary || {};
+  const filters = audit.filters || {};
+  const toolRows = (audit.tool_breakdown || [])
+    .map(
+      (row) => `
+        <div class="card">
+          <h4>${escapeHtml(row.tool_id || "unknown")}</h4>
+          <p><strong>Calls:</strong> ${escapeHtml(String(row.call_count || 0))}</p>
+          <p><strong>Last used:</strong> ${escapeHtml((row.last_used_at || "").slice(0, 10) || "n/a")}</p>
+        </div>
+      `,
+    )
+    .join("");
+  const sessionRows = (audit.session_breakdown || [])
+    .map((row) => {
+      const sessionId = row.session_id || "";
+      const drill = sessionId
+        ? `<button
+            type="button"
+            data-action="open-tool-session"
+            data-session-id="${escapeHtml(sessionId)}"
+          >
+            Open session
+          </button>`
+        : "";
+      return `
+        <div class="card">
+          <h4>${escapeHtml(sessionId || "n/a")}</h4>
+          <p><strong>Calls:</strong> ${escapeHtml(String(row.call_count || 0))}</p>
+          <p><strong>Last used:</strong> ${escapeHtml((row.last_used_at || "").slice(0, 10) || "n/a")}</p>
+          ${drill}
+        </div>
+      `;
+    })
+    .join("");
+  const filterLine = [
+    filters.mission_id ? `mission=${escapeHtml(filters.mission_id)}` : "mission=all",
+    filters.context_type ? `context=${escapeHtml(filters.context_type)}` : "context=all",
+    filters.context_id ? `context_id=${escapeHtml(filters.context_id)}` : "context_id=all",
+    filters.session_id ? `session=${escapeHtml(filters.session_id)}` : "session=all",
+  ].join(" · ");
+
+  root.innerHTML = `
+    <div class="card-list">
+      <div class="card">
+        <h3>Agent ${escapeHtml(audit.agent_id)} tool audit</h3>
+        <p><strong>Total calls:</strong> ${escapeHtml(String(summary.total_tool_calls || 0))}</p>
+        <p><strong>Unique tools:</strong> ${escapeHtml(String(summary.unique_tools || 0))}</p>
+        <p><strong>Unique sessions:</strong> ${escapeHtml(String(summary.unique_sessions || 0))}</p>
+        <p><strong>Filters:</strong> ${filterLine}</p>
+        <p>Updated: ${escapeHtml((audit.updated_at || "").slice(0, 10) || "n/a")}</p>
+      </div>
+      <h3>Top tools</h3>
+      ${toolRows || "<p>No tool activity yet.</p>"}
+      <h3>Top sessions</h3>
+      ${sessionRows || "<p>No session activity yet.</p>"}
     </div>
   `;
 }
@@ -1254,6 +1326,67 @@ async function loadAgentToolUsage(agentId) {
   }
 }
 
+async function loadAgentToolAudit(agentId) {
+  if (!agentId) {
+    setStatus("#toolUsageStatus", "agent id is required", "err");
+    return;
+  }
+  const filter = buildToolUsageFilter();
+  try {
+    const params = new URLSearchParams();
+    if (filter.missionId) {
+      params.set("mission_id", filter.missionId);
+    }
+    if (filter.contextType) {
+      params.set("context_type", filter.contextType);
+    }
+    if (filter.contextId) {
+      params.set("context_id", filter.contextId);
+    }
+    if (filter.sessionId) {
+      params.set("session_id", filter.sessionId);
+    }
+    params.set("recent_limit", String(Math.min(200, Math.max(1, Number(filter.limit || 25)))));
+    params.set("tool_limit", "10");
+    params.set("session_limit", "10");
+
+    const query = params.toString();
+    const payload = await fetchJson(`/api/agents/${encodeURIComponent(agentId)}/audit${query ? `?${query}` : ""}`);
+
+    state.selectedAgentAuditId = agentId;
+    state.agentToolAudit = payload;
+    renderAgentToolAudit(payload);
+
+    const recentCalls = Array.isArray(payload.recent_calls) ? payload.recent_calls : [];
+    state.toolUsage = recentCalls;
+    state.toolUsageCount = Number((payload.summary || {}).total_tool_calls || 0);
+    renderToolUsage(recentCalls);
+    setStatus("#toolUsageSummary", buildToolUsageSummary(state.toolUsageCount, {
+      tool_id: "aggregate",
+      agent_id: agentId,
+      context_type: filter.contextType || null,
+      context_id: filter.contextId || null,
+      mission_id: filter.missionId || null,
+      session_id: filter.sessionId || null,
+      mode: "agent audit",
+    }), "ok");
+    setStatus("#toolUsageStatus", `loaded audit for ${agentId}`, "ok");
+    setStatus("#toolUsageLogEntry", "");
+    const targetAgentInput = qs("#toolUsageAgentId");
+    if (targetAgentInput) {
+      targetAgentInput.value = agentId;
+    }
+  } catch (err) {
+    setStatus("#toolUsageStatus", `agent tool audit failed: ${err.message}`, "err");
+    state.toolUsage = [];
+    state.toolUsageCount = 0;
+    state.selectedAgentAuditId = "";
+    state.agentToolAudit = null;
+    renderToolUsage([]);
+    renderAgentToolAudit(null);
+  }
+}
+
 function renderToolUsageLogEntry(entry) {
   const root = qs("#toolUsageLogEntry");
   if (!root) {
@@ -1864,7 +1997,7 @@ async function onTableChange(event) {
 
   if (action === "open-agent-tool-usage") {
     const agentId = target.dataset.id || "";
-    await loadAgentToolUsage(agentId);
+    await loadAgentToolAudit(agentId);
     return;
   }
 

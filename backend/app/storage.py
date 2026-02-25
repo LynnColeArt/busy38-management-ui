@@ -315,6 +315,8 @@ def _ensure_tool_usage_columns(conn: sqlite3.Connection) -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_status ON tool_usage(status)")
     if "idx_tool_usage_tool_id" not in indexes:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_tool_id ON tool_usage(tool_id)")
+    if "idx_tool_usage_agent_id" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_agent_id ON tool_usage(agent_id, created_at)")
 
 
 def _coerce_proxy_value(value: Any | None) -> str:
@@ -1333,6 +1335,114 @@ def count_tool_usage(
         if not row:
             return 0
         return int(row["total"] or 0)
+
+
+def get_agent_tool_audit(
+    agent_id: str,
+    mission_id: Optional[str] = None,
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_limit: int = 5,
+    session_limit: int = 5,
+    recent_limit: int = 25,
+) -> Dict[str, Any]:
+    normalized_agent_id = _normalize_str(agent_id)
+    if not normalized_agent_id:
+        raise KeyError("agent id is required")
+
+    normalized_tool_limit = max(1, min(50, int(tool_limit)))
+    normalized_session_limit = max(1, min(50, int(session_limit)))
+    normalized_recent_limit = max(1, min(200, int(recent_limit)))
+
+    normalized_mission_id = _normalize_str(mission_id)
+    normalized_context_type = _normalize_str(context_type)
+    normalized_context_id = _normalize_str(context_id)
+    normalized_session_id = _normalize_str(session_id)
+
+    with get_connection() as conn:
+        base_filter = ["agent_id = ?"]
+        values: List[Any] = [normalized_agent_id]
+        if normalized_mission_id:
+            base_filter.append("mission_id = ?")
+            values.append(normalized_mission_id)
+        if normalized_context_type:
+            base_filter.append("context_type = ?")
+            values.append(normalized_context_type)
+        if normalized_context_id:
+            base_filter.append("context_id = ?")
+            values.append(normalized_context_id)
+        if normalized_session_id:
+            base_filter.append("session_id = ?")
+            values.append(normalized_session_id)
+
+        where_clause = f"WHERE {' AND '.join(base_filter)}"
+
+        summary = conn.execute(
+            f"SELECT COUNT(1) AS total_tool_calls, COUNT(DISTINCT tool_id) AS unique_tools "
+            f"FROM tool_usage {where_clause}",
+            tuple(values),
+        ).fetchone()
+
+        tool_breakdown = conn.execute(
+            f"SELECT tool_id, COUNT(1) AS call_count, MAX(datetime(created_at)) AS last_used_at "
+            f"FROM tool_usage {where_clause} "
+            f"GROUP BY tool_id ORDER BY call_count DESC, datetime(last_used_at) DESC LIMIT ?",
+            tuple(values + [normalized_tool_limit]),
+        ).fetchall()
+
+        session_breakdown = conn.execute(
+            f"SELECT session_id, COUNT(1) AS call_count, MAX(datetime(created_at)) AS last_used_at "
+            f"FROM tool_usage {where_clause} AND session_id IS NOT NULL AND TRIM(session_id) <> '' "
+            f"GROUP BY session_id ORDER BY call_count DESC, datetime(last_used_at) DESC LIMIT ?",
+            tuple(values + [normalized_session_limit]),
+        ).fetchall()
+
+        recent_usage = conn.execute(
+            f"SELECT * FROM tool_usage {where_clause} "
+            f"ORDER BY datetime(created_at) DESC LIMIT ?",
+            tuple(values + [normalized_recent_limit]),
+        ).fetchall()
+
+    summary_payload = {
+        "total_tool_calls": int(summary["total_tool_calls"] or 0) if summary else 0,
+        "unique_tools": int(summary["unique_tools"] or 0) if summary else 0,
+    }
+    return {
+        "agent_id": normalized_agent_id,
+        "filters": {
+            "mission_id": normalized_mission_id,
+            "context_type": normalized_context_type,
+            "context_id": normalized_context_id,
+            "session_id": normalized_session_id,
+        },
+        "summary": summary_payload,
+        "tool_breakdown": [
+            {
+                "tool_id": row["tool_id"],
+                "call_count": int(row["call_count"] or 0),
+                "last_used_at": row["last_used_at"],
+            }
+            for row in tool_breakdown
+        ],
+        "session_breakdown": [
+            {
+                "session_id": row["session_id"],
+                "call_count": int(row["call_count"] or 0),
+                "last_used_at": row["last_used_at"],
+            }
+            for row in session_breakdown
+        ],
+        "recent_calls": [
+            {
+                **_dict_from_row(entry),
+                "duration_ms": int(entry["duration_ms"]) if entry["duration_ms"] is not None else None,
+                "details": _coerce_json_payload(entry["details"]),
+                "payload": _coerce_json_payload(entry["payload"]),
+            }
+            for entry in recent_usage
+        ],
+    }
 
 
 def get_provider(provider_id: str) -> Optional[Dict[str, Any]]:

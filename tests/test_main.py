@@ -572,6 +572,164 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(agent_payload["count"], 1)
         self.assertEqual(agent_payload["usage"][0]["mission_id"], "mission-beta")
 
+    def test_agent_tool_audit_endpoint_returns_summary_and_breakdowns(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "browser-agent-audit",
+            "name": "Browser agent audit",
+            "source": "integration test",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "metadata": {
+                "tools": [
+                    {
+                        "namespace": "browser",
+                        "action": "open_page",
+                        "description": "Open a URL",
+                    }
+                ]
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        tools = self.client.get(
+            "/api/tools",
+            headers=admin_headers,
+            params={"namespace": "browser", "sort": "updated"},
+        )
+        self.assertEqual(tools.status_code, 200, tools.text)
+        tool = tools.json()["tools"][0]
+        tool_id = tool["id"]
+
+        usage_memory = {
+            "agent_id": "agent-audit",
+            "session_id": "session-a",
+            "mission_id": "mission-a",
+            "status": "executed",
+            "duration_ms": 18,
+            "result_status": "ok",
+            "context_type": "memory",
+            "context_id": "memory-alpha",
+            "details": {"result_count": 1, "confidence": 0.9},
+        }
+        usage_chat = {
+            "agent_id": "agent-audit",
+            "session_id": "session-b",
+            "mission_id": "mission-b",
+            "status": "executed",
+            "duration_ms": 26,
+            "result_status": "ok",
+            "context_type": "chat",
+            "context_id": "chat-beta",
+            "details": {"result_count": 2, "confidence": 0.6},
+        }
+        for payload in (usage_memory, usage_chat):
+            recorded = self.client.post(
+                f"/api/tools/{tool_id}/usage",
+                headers=admin_headers,
+                json=payload,
+            )
+            self.assertEqual(recorded.status_code, 200, recorded.text)
+
+        payload = self.client.get("/api/agents/agent-audit/audit", headers=read_headers).json()
+        self.assertEqual(payload.get("agent_id"), "agent-audit")
+        self.assertEqual(payload.get("summary", {}).get("total_tool_calls"), 2)
+        self.assertEqual(payload.get("summary", {}).get("unique_tools"), 1)
+        self.assertEqual(payload.get("summary", {}).get("unique_sessions"), 2)
+        self.assertEqual(len(payload.get("tool_breakdown") or []), 1)
+        self.assertEqual((payload.get("tool_breakdown") or [{}])[0].get("tool_id"), tool_id)
+        self.assertGreaterEqual(len(payload.get("session_breakdown") or []), 2)
+        self.assertGreaterEqual(len(payload.get("recent_calls") or []), 2)
+
+        mission_beta = self.client.get(
+            "/api/agents/agent-audit/audit",
+            headers=read_headers,
+            params={"mission_id": "mission-b"},
+        ).json()
+        self.assertEqual(mission_beta.get("summary", {}).get("total_tool_calls"), 1)
+        self.assertEqual(mission_beta.get("summary", {}).get("unique_tools"), 1)
+        self.assertEqual(mission_beta.get("summary", {}).get("unique_sessions"), 1)
+        self.assertEqual(mission_beta.get("filters", {}).get("mission_id"), "mission-b")
+
+        unknown = self.client.get("/api/agents/unknown-agent/audit", headers=read_headers).json()
+        self.assertEqual(unknown.get("summary", {}).get("total_tool_calls"), 0)
+        self.assertEqual(unknown.get("summary", {}).get("unique_tools"), 0)
+
+    def test_agent_tool_audit_enforces_viewer_sanitization(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "browser-agent-audit-redaction",
+            "name": "Browser agent audit redaction",
+            "source": "integration test",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "metadata": {
+                "tools": [
+                    {
+                        "namespace": "browser",
+                        "action": "summarize_page",
+                        "description": "Summarize a URL",
+                    }
+                ]
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        tools = self.client.get(
+            "/api/tools",
+            headers=admin_headers,
+            params={"namespace": "browser", "sort": "updated"},
+        )
+        self.assertEqual(tools.status_code, 200, tools.text)
+        tool = tools.json()["tools"][0]
+        tool_id = tool["id"]
+
+        usage = {
+            "agent_id": "agent-audit-redact",
+            "session_id": "session-redact",
+            "mission_id": "mission-redact",
+            "status": "executed",
+            "duration_ms": 31,
+            "result_status": "ok",
+            "context_type": "chat",
+            "context_id": "chat-redact",
+            "request_id": "request-redact",
+            "details": {"secret_token": "abc", "result_count": 3},
+            "payload": {"api_key": "sk-test"},
+        }
+        recorded = self.client.post(f"/api/tools/{tool_id}/usage", headers=admin_headers, json=usage)
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+
+        admin_payload = self.client.get(
+            "/api/agents/agent-audit-redact/audit",
+            headers=admin_headers,
+        ).json()
+        self.assertEqual(admin_payload.get("agent_id"), "agent-audit-redact")
+        self.assertEqual(admin_payload.get("summary", {}).get("total_tool_calls"), 1)
+        admin_calls = admin_payload.get("recent_calls") or []
+        self.assertEqual(admin_calls[0].get("agent_id"), "agent-audit-redact")
+        self.assertEqual(admin_calls[0].get("session_id"), "session-redact")
+        self.assertEqual(admin_calls[0].get("request_id"), "request-redact")
+
+        viewer_payload = self.client.get(
+            "/api/agents/agent-audit-redact/audit",
+            headers=read_headers,
+        ).json()
+        self.assertEqual(viewer_payload.get("agent_id"), "agent-audit-redact")
+        self.assertEqual(viewer_payload.get("summary", {}).get("total_tool_calls"), 1)
+        viewer_calls = viewer_payload.get("recent_calls") or []
+        self.assertEqual(viewer_calls[0].get("agent_id"), "***redacted***");
+        self.assertEqual(viewer_calls[0].get("session_id"), "***redacted***");
+        self.assertEqual(viewer_calls[0].get("request_id"), "***redacted***");
+
     def test_tool_log_entry_lookup(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
