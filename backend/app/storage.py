@@ -1815,6 +1815,7 @@ def get_agent_tool_audit(
     chat_session_id: Optional[str] = None,
     session_id: Optional[str] = None,
     tool_limit: int = 5,
+    mission_limit: int = 5,
     session_limit: int = 5,
     recent_limit: int = 25,
 ) -> Dict[str, Any]:
@@ -1874,6 +1875,15 @@ def get_agent_tool_audit(
             tuple(values + [normalized_tool_limit]),
         ).fetchall()
 
+        mission_breakdown = conn.execute(
+            f"SELECT mission_id, COUNT(1) AS call_count, "
+            f"COUNT(DISTINCT CASE WHEN session_id IS NOT NULL AND TRIM(session_id) <> '' THEN session_id END) AS session_count, "
+            f"MAX(datetime(created_at)) AS last_used_at "
+            f"FROM tool_usage {where_clause} AND mission_id IS NOT NULL AND TRIM(mission_id) <> '' "
+            f"GROUP BY mission_id ORDER BY call_count DESC, datetime(last_used_at) DESC LIMIT ?",
+            tuple(values + [max(1, min(50, int(mission_limit)))]),
+        ).fetchall()
+
         session_breakdown = conn.execute(
             f"SELECT session_id, COUNT(1) AS call_count, MAX(datetime(created_at)) AS last_used_at "
             f"FROM tool_usage {where_clause} AND session_id IS NOT NULL AND TRIM(session_id) <> '' "
@@ -1890,6 +1900,7 @@ def get_agent_tool_audit(
     summary_payload = {
         "total_tool_calls": int(summary["total_tool_calls"] or 0) if summary else 0,
         "unique_tools": int(summary["unique_tools"] or 0) if summary else 0,
+        "unique_missions": len(mission_breakdown),
     }
     return {
         "agent_id": normalized_agent_id,
@@ -1910,6 +1921,15 @@ def get_agent_tool_audit(
                 "last_used_at": row["last_used_at"],
             }
             for row in tool_breakdown
+        ],
+        "mission_breakdown": [
+            {
+                "mission_id": row["mission_id"],
+                "call_count": int(row["call_count"] or 0),
+                "session_count": int(row["session_count"] or 0),
+                "last_used_at": row["last_used_at"],
+            }
+            for row in mission_breakdown
         ],
         "session_breakdown": [
             {
