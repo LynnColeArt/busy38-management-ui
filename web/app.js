@@ -611,6 +611,11 @@ function buildAgentCard(agent) {
           <input type="checkbox" data-action="toggle-agent" data-id="${agent.id}" ${agent.enabled ? "checked" : ""} />
         </label>
       </p>
+      <p>
+        <button type="button" data-action="open-agent-tool-usage" data-id="${agent.id}">
+          Audit tool usage
+        </button>
+      </p>
     </div>
   `;
 }
@@ -1068,53 +1073,216 @@ function buildToolUsageFilter() {
   const agentId = qs("#toolUsageAgentId")?.value.trim() || "";
   const contextType = qs("#toolUsageContextType")?.value.trim() || "";
   const contextId = qs("#toolUsageContextId")?.value.trim() || "";
+  const missionId = qs("#toolUsageMissionId")?.value.trim() || "";
+  const sessionId = qs("#toolUsageSessionId")?.value.trim() || "";
   const limit = Math.min(200, Math.max(1, Number(qs("#toolUsageLimit")?.value || 25)));
   const sortDesc = Boolean(qs("#toolUsageSortDesc")?.checked);
-  return { toolId, agentId, contextType, contextId, limit, sortDesc };
+  return { toolId, agentId, contextType, contextId, missionId, sessionId, limit, sortDesc };
 }
 
-async function loadToolUsage() {
-  const filter = buildToolUsageFilter();
-  const base = {
-    agent_id: filter.agentId,
-    context_type: filter.contextType,
-    context_id: filter.contextId,
-    limit: filter.limit,
-    sort_desc: filter.sortDesc,
-  };
-
+function buildToolUsageParams(filter, overrides = {}) {
   const params = new URLSearchParams();
-  Object.entries(base).forEach(([key, value]) => {
+  const payload = {
+    agent_id: overrides.agentId || filter.agentId,
+    mission_id: overrides.missionId || filter.missionId,
+    context_type: overrides.contextType || filter.contextType,
+    context_id: overrides.contextId || filter.contextId,
+    session_id: overrides.sessionId || filter.sessionId,
+    limit: overrides.limit != null ? overrides.limit : filter.limit,
+    sort_desc: overrides.sortDesc != null ? overrides.sortDesc : filter.sortDesc,
+  };
+  const toolIdOverride = overrides.toolId != null ? overrides.toolId : filter.toolId;
+  if (toolIdOverride) {
+    params.set("tool_id", toolIdOverride);
+  }
+  Object.entries(payload).forEach(([key, value]) => {
     if (value !== "" && value !== undefined && value !== null) {
       params.set(key, String(value));
     }
   });
+  if (payload.sort_desc === false) {
+    params.set("sort_desc", "false");
+  }
+  return params;
+}
 
+function buildToolUsageEndpoint(mode, toolId = "", filter) {
+  if (mode === "agent") {
+    return `/api/agents/${encodeURIComponent(toolId)}/tool_usage`;
+  }
+  if (mode === "global_log") {
+    return "/api/tool-log";
+  }
+  if (mode === "tool_log_by_session") {
+    return `/api/tool-log/session/${encodeURIComponent(toolId)}`;
+  }
+  if (toolId) {
+    return `/api/tools/${encodeURIComponent(toolId)}/usage`;
+  }
+  return "/api/tools/usage";
+}
+
+async function loadToolUsageRows({ toolId = "", filters = {}, mode = "tool", summarySuffix = "usage" }) {
+  const filter = { ...filters };
+  const params = buildToolUsageParams(filter);
+  if (mode === "global_log") {
+    const missionId = filters.missionId || "";
+    if (missionId) {
+      params.set("mission_id", missionId);
+    }
+  }
   const query = params.toString();
-  const toolFilter = filter.toolId;
-  const path = toolFilter
-    ? `/api/tools/${encodeURIComponent(toolFilter)}/usage?${query}`
-    : `/api/tools/usage?${query}`;
+  const path = `${buildToolUsageEndpoint(mode, toolId, filter)}${query ? `?${query}` : ""}`;
+  const payload = await fetchJson(path);
+  const usage = payload.usage || [];
+  state.toolUsage = usage;
+  state.toolUsageCount = Number(payload.count || 0);
+  renderToolUsage(usage);
+  setStatus("#toolUsageSummary", buildToolUsageSummary(state.toolUsageCount, {
+    tool_id: payload.tool_id || toolId || null,
+    agent_id: filter.agentId || null,
+    context_type: filter.contextType || null,
+    context_id: filter.contextId || null,
+    mission_id: filter.missionId || null,
+    session_id: filter.sessionId || null,
+    mode: summarySuffix,
+  }), "ok");
+  setStatus("#toolUsageStatus", `loaded ${usage.length} row(s)`, "ok");
+  if (payload.log_entry) {
+    renderToolUsageLogEntry(payload.log_entry);
+  }
+  if (!usage.length) {
+    qs("#toolUsageLogEntry").innerHTML = "";
+  }
+  return usage;
+}
 
+async function loadToolUsage() {
+  const filter = buildToolUsageFilter();
   try {
-    const payload = await fetchJson(path);
-    const usage = payload.usage || [];
-    state.toolUsage = usage;
-    state.toolUsageCount = Number(payload.count || 0);
-    renderToolUsage(usage);
-    setStatus("#toolUsageSummary", buildToolUsageSummary(state.toolUsageCount, {
-      tool_id: toolFilter,
-      agent_id: filter.agentId,
-      context_type: filter.contextType,
-      context_id: filter.contextId,
-    }), "ok");
-    setStatus("#toolUsageStatus", `loaded ${usage.length} row(s)`, "ok");
+    await loadToolUsageRows({
+      toolId: filter.toolId || "",
+      filters: filter,
+      mode: filter.toolId ? "tool" : "global",
+      summarySuffix: "tool usage",
+    });
   } catch (err) {
     setStatus("#toolUsageStatus", `load failed: ${err.message}`, "err");
     state.toolUsage = [];
     state.toolUsageCount = 0;
     renderToolUsage([]);
   }
+}
+
+async function loadToolLog() {
+  const filter = buildToolUsageFilter();
+  try {
+    await loadToolUsageRows({
+      toolId: "",
+      filters: filter,
+      mode: "global_log",
+      summarySuffix: "tool-log",
+    });
+  } catch (err) {
+    setStatus("#toolUsageStatus", `tool log load failed: ${err.message}`, "err");
+    state.toolUsage = [];
+    state.toolUsageCount = 0;
+    renderToolUsage([]);
+  }
+}
+
+async function loadToolLogBySession(sessionId = "") {
+  const filter = buildToolUsageFilter();
+  const targetSession = sessionId || filter.sessionId;
+  if (!targetSession) {
+    setStatus("#toolUsageStatus", "session id is required", "err");
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/tool-log/session/${encodeURIComponent(targetSession)}`);
+    const usage = payload.usage || [];
+    state.toolUsage = usage;
+    state.toolUsageCount = Number(payload.count || usage.length || 0);
+    renderToolUsage(usage);
+    setStatus("#toolUsageSummary", `Session ${escapeHtml(targetSession)} log: ${state.toolUsageCount} entries`, "ok");
+    setStatus("#toolUsageStatus", `loaded ${usage.length} row(s)`, "ok");
+  } catch (err) {
+    setStatus("#toolUsageStatus", `session log load failed: ${err.message}`, "err");
+    state.toolUsage = [];
+    state.toolUsageCount = 0;
+    renderToolUsage([]);
+  }
+}
+
+async function loadAgentToolUsage(agentId) {
+  if (!agentId) {
+    setStatus("#toolUsageStatus", "agent id is required", "err");
+    return;
+  }
+  const filter = buildToolUsageFilter();
+  try {
+    const params = buildToolUsageParams(filter, {
+      agentId,
+      missionId: filter.missionId,
+      contextType: filter.contextType,
+      contextId: filter.contextId,
+      sessionId: filter.sessionId,
+      limit: filter.limit,
+      sortDesc: filter.sortDesc,
+    });
+    const query = params.toString();
+    const payload = await fetchJson(`/api/agents/${encodeURIComponent(agentId)}/tool_usage?${query}`);
+    const usage = payload.usage || [];
+    state.toolUsage = usage;
+    state.toolUsageCount = Number(payload.count || 0);
+    renderToolUsage(usage);
+    setStatus("#toolUsageSummary", buildToolUsageSummary(state.toolUsageCount, {
+      tool_id: payload.tool_id || null,
+      agent_id: agentId,
+      context_type: filter.contextType || null,
+      context_id: filter.contextId || null,
+      mission_id: filter.missionId || null,
+      session_id: filter.sessionId || null,
+      mode: `agent ${agentId}`,
+    }), "ok");
+    setStatus("#toolUsageStatus", `loaded ${usage.length} row(s)`, "ok");
+  } catch (err) {
+    setStatus("#toolUsageStatus", `agent tool usage failed: ${err.message}`, "err");
+    state.toolUsage = [];
+    state.toolUsageCount = 0;
+    renderToolUsage([]);
+  }
+}
+
+function renderToolUsageLogEntry(entry) {
+  const root = qs("#toolUsageLogEntry");
+  if (!root) {
+    return;
+  }
+  if (!entry) {
+    root.innerHTML = "<p>Select an entry to inspect details.</p>";
+    return;
+  }
+  const metadata = entry.details && typeof entry.details === "object"
+    ? `<pre>${escapeHtml(JSON.stringify(entry.details, null, 2))}</pre>`
+    : `<pre>${formatToolUsageValue(entry.details)}</pre>`;
+  const payload = entry.payload && typeof entry.payload === "object"
+    ? `<pre>${escapeHtml(JSON.stringify(entry.payload, null, 2))}</pre>`
+    : "";
+  root.innerHTML = `
+    <div class="card">
+      <h3>Tool call ${escapeHtml(entry.id || "n/a")}</h3>
+      <p><strong>Tool:</strong> ${escapeHtml(entry.tool_id || "n/a")}</p>
+      <p><strong>Agent:</strong> ${escapeHtml(entry.agent_id || "n/a")}</p>
+      <p><strong>Session:</strong> ${escapeHtml(entry.session_id || "n/a")}</p>
+      <p><strong>Mission:</strong> ${escapeHtml(entry.mission_id || "n/a")}</p>
+      <p><strong>Status:</strong> ${escapeHtml(entry.status || "n/a")}</p>
+      <p><strong>Result:</strong> ${escapeHtml(entry.result_status || "n/a")}</p>
+      <p><strong>Created:</strong> ${escapeHtml(entry.created_at || "n/a")}</p>
+      ${payload}
+      ${metadata}
+    </div>
+  `;
 }
 
 async function openToolUsageContext(contextType, contextId) {
@@ -1134,6 +1302,21 @@ async function openToolUsageContext(contextType, contextId) {
     setStatus("#toolUsageStatus", `no drill-through supported for context ${contextType}`, "err");
   } catch (err) {
     setStatus("#toolUsageStatus", `drill-through failed: ${err.message}`, "err");
+  }
+}
+
+async function openToolLogEntry(toolCallId) {
+  if (!toolCallId) {
+    setStatus("#toolLogEntryStatus", "tool call id is required", "err");
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/tool-log/${encodeURIComponent(toolCallId)}`);
+    renderToolUsageLogEntry(payload.usage || null);
+    setStatus("#toolLogEntryStatus", `loaded tool call ${toolCallId}`, "ok");
+  } catch (err) {
+    setStatus("#toolLogEntryStatus", `tool call lookup failed: ${err.message}`, "err");
+    renderToolUsageLogEntry(null);
   }
 }
 
@@ -1165,6 +1348,16 @@ function renderToolUsage(usageItems) {
       const contextAction = contextType === "memory" || contextType === "chat"
         ? `open-tool-context`
         : "";
+      const sessionAction = entry.session_id ? `open-tool-session` : "";
+      const sessionButton = sessionAction
+        ? `<button
+              type="button"
+              data-action="${sessionAction}"
+              data-session-id="${escapeHtml(entry.session_id)}"
+            >
+              Open session
+            </button>`
+        : "";
       const contextButton = contextAction && contextId
         ? `<button
               type="button"
@@ -1173,6 +1366,15 @@ function renderToolUsage(usageItems) {
               data-context-id="${escapeHtml(contextId)}"
             >
               Open ${escapeHtml(contextType)} context
+            </button>`
+        : "";
+      const entryAction = entry.id
+        ? `<button
+              type="button"
+              data-action="open-tool-log-entry"
+              data-tool-call-id="${escapeHtml(entry.id)}"
+            >
+              View call details
             </button>`
         : "";
       const detail = entry.result_status ? `Result: ${escapeHtml(entry.result_status)} · ` : "";
@@ -1189,6 +1391,8 @@ function renderToolUsage(usageItems) {
           <p><strong>Created:</strong> ${escapeHtml(entry.created_at || "n/a")}</p>
           ${details}
           ${contextButton}
+          ${sessionButton}
+          ${entryAction}
         </div>
       `;
     })
@@ -1203,7 +1407,10 @@ function buildToolUsageSummary(toolUsageCount, toolUsageFilter) {
   const contextText = toolUsageFilter.context_type || "all context types";
   const contextIdText = toolUsageFilter.context_id || "any context";
   const toolText = toolUsageFilter.tool_id || "all tools";
-  return `Showing ${total} usage rows for ${toolText}; ${agentText} · ${contextText} · ${contextIdText}`;
+  const missionText = toolUsageFilter.mission_id || "all missions";
+  const sessionText = toolUsageFilter.session_id || "all sessions";
+  const modeText = toolUsageFilter.mode ? `${toolUsageFilter.mode} ` : "";
+  return `Showing ${total} ${modeText}rows for ${toolText}; ${agentText} · ${contextText} · ${contextIdText} · ${missionText} · ${sessionText}`;
 }
 
 async function loadImportJobs() {
@@ -1626,10 +1833,38 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "refresh-tool-log") {
+    await loadToolLog();
+    return;
+  }
+
+  if (action === "load-tool-log-session") {
+    await loadToolLogBySession();
+    return;
+  }
+
+  if (action === "open-tool-session") {
+    const sessionId = target.dataset.sessionId || "";
+    await loadToolLogBySession(sessionId);
+    return;
+  }
+
   if (action === "open-tool-context") {
     const contextType = target.dataset.contextType || "";
     const contextId = target.dataset.contextId || "";
     await openToolUsageContext(contextType, contextId);
+    return;
+  }
+
+  if (action === "open-tool-log-entry") {
+    const toolCallId = target.dataset.toolCallId || "";
+    await openToolLogEntry(toolCallId);
+    return;
+  }
+
+  if (action === "open-agent-tool-usage") {
+    const agentId = target.dataset.id || "";
+    await loadAgentToolUsage(agentId);
     return;
   }
 
@@ -1967,8 +2202,13 @@ document.body.addEventListener("click", (event) => {
     && action !== "discover-provider-models"
     && action !== "open-import"
     && action !== "refresh-tool-usage"
+    && action !== "refresh-tool-log"
+    && action !== "load-tool-log-session"
     && action !== "rerun-import"
     && action !== "open-tool-context"
+    && action !== "open-tool-session"
+    && action !== "open-tool-log-entry"
+    && action !== "open-agent-tool-usage"
     && action !== "reassign-directory-scope"
     && action !== "apply-discovered-model"
     && action !== "test-provider-models"

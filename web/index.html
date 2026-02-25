@@ -314,6 +314,14 @@
             <input id="toolUsageContextId" type="text" placeholder="optional" />
           </label>
           <label>
+            Mission ID
+            <input id="toolUsageMissionId" type="text" placeholder="optional" />
+          </label>
+          <label>
+            Session ID
+            <input id="toolUsageSessionId" type="text" placeholder="optional" />
+          </label>
+          <label>
             Limit
             <input id="toolUsageLimit" type="number" min="1" max="200" value="25" />
           </label>
@@ -324,9 +332,13 @@
         </div>
         <p>
           <button type="button" data-action="refresh-tool-usage">Load usage</button>
+          <button type="button" data-action="refresh-tool-log">Load tool log</button>
+          <button type="button" data-action="load-tool-log-session">Load by session</button>
         </p>
         <p id="toolUsageStatus" class="status"></p>
         <div id="toolUsage"></div>
+        <p id="toolLogEntryStatus" class="status"></p>
+        <div id="toolUsageLogEntry"></div>
       </section>
 
       <section class="panel">

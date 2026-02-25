@@ -170,6 +170,7 @@ class ChatHistoryCreate(BaseModel):
 class ToolUsageCreate(BaseModel):
     agent_id: Optional[str] = None
     session_id: Optional[str] = None
+    mission_id: Optional[str] = None
     request_id: Optional[str] = None
     context_type: Optional[str] = None
     context_id: Optional[str] = None
@@ -1677,6 +1678,7 @@ async def get_tool_usage_global(
     request: Request,
     tool_id: Optional[str] = Query(default=None),
     agent_id: Optional[str] = Query(default=None),
+    mission_id: Optional[str] = Query(default=None),
     context_type: Optional[str] = Query(default=None),
     context_id: Optional[str] = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
@@ -1687,6 +1689,7 @@ async def get_tool_usage_global(
     usage = storage.list_tool_usage_global(
         tool_id=tool_id,
         agent_id=agent_id,
+        mission_id=mission_id,
         context_type=context_type,
         context_id=context_id,
         limit=limit,
@@ -1696,6 +1699,7 @@ async def get_tool_usage_global(
     count = storage.count_tool_usage(
         tool_id=tool_id,
         agent_id=agent_id,
+        mission_id=mission_id,
         context_type=context_type,
         context_id=context_id,
     )
@@ -1729,6 +1733,7 @@ async def get_tool_usage(
     request: Request,
     tool_id: str,
     agent_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
     limit: int = Query(default=25, ge=1, le=200),
@@ -1741,12 +1746,14 @@ async def get_tool_usage(
     count = storage.count_tool_usage(
         tool_id=tool_id,
         agent_id=agent_id,
+        mission_id=mission_id,
         context_type=context_type,
         context_id=context_id,
     )
     usage = storage.list_tool_usage(
         tool_id=tool_id,
         agent_id=agent_id,
+        mission_id=mission_id,
         context_type=context_type,
         context_id=context_id,
         limit=limit,
@@ -1775,6 +1782,7 @@ async def record_tool_usage(
             tool_id=tool_id,
             agent_id=payload.agent_id,
             session_id=payload.session_id,
+            mission_id=payload.mission_id,
             request_id=payload.request_id,
             context_type=payload.context_type,
             context_id=payload.context_id,
@@ -1787,8 +1795,139 @@ async def record_tool_usage(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
-    _event_for(role, "tool.usage", f"Tool usage recorded: {tool_id}", "info", {"tool_id": tool_id})
+    _event_for(role, "tool.usage", f"Tool usage recorded: {tool_id}", "info", {
+        "tool_id": tool_id,
+        "agent_id": payload.agent_id,
+        "mission_id": payload.mission_id,
+        "session_id": payload.session_id,
+        "request_id": payload.request_id,
+        "context_type": payload.context_type,
+        "context_id": payload.context_id,
+        "result_status": payload.result_status,
+    })
     return {"usage": usage, "updated_at": _now_iso()}
+
+
+@app.get("/api/tool-log")
+async def get_tool_log(
+    request: Request,
+    tool_id: Optional[str] = Query(default=None),
+    agent_id: Optional[str] = Query(default=None),
+    mission_id: Optional[str] = Query(default=None),
+    session_id: Optional[str] = Query(default=None),
+    context_type: Optional[str] = Query(default=None),
+    context_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    sort_desc: bool = True,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    filters = {"tool_id": tool_id, "agent_id": agent_id, "mission_id": mission_id, "context_type": context_type, "context_id": context_id}
+    usage = storage.list_tool_usage_global(
+        tool_id=tool_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        mission_id=mission_id,
+        context_type=context_type,
+        context_id=context_id,
+        limit=limit,
+        offset=offset,
+        sort_desc=sort_desc,
+    )
+    count = storage.count_tool_usage(
+        tool_id=tool_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        mission_id=mission_id,
+        context_type=context_type,
+        context_id=context_id,
+    )
+    return {
+        "tool_id": tool_id,
+        "agent_id": agent_id,
+        "mission_id": mission_id,
+        "session_id": session_id,
+        "context_type": context_type,
+        "context_id": context_id,
+        "count": count,
+        "usage": [_sanitize_tool_usage_payload(entry, role) for entry in usage],
+        "updated_at": _now_iso(),
+        "legacy_filters": filters,
+    }
+
+
+@app.get("/api/tool-log/session/{session_id}")
+async def get_tool_log_by_session(request: Request, session_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    usage = storage.list_tool_usage_global(
+        session_id=session_id,
+        limit=200,
+        sort_desc=True,
+    )
+    return {
+        "session_id": session_id,
+        "count": len(usage),
+        "usage": [_sanitize_tool_usage_payload(entry, role) for entry in usage],
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/tool-log/{tool_call_id}")
+async def get_tool_log_entry(request: Request, tool_call_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    usage = storage.list_tool_usage_global(limit=1000, sort_desc=True)
+    for entry in usage:
+        if entry.get("id") == tool_call_id:
+            return {
+                "tool_call_id": tool_call_id,
+                "usage": _sanitize_tool_usage_payload(entry, role),
+                "updated_at": _now_iso(),
+            }
+    raise HTTPException(status_code=404, detail=f"tool usage '{tool_call_id}' not found")
+
+
+@app.get("/api/agents/{agent_id}/tool_usage")
+async def get_agent_tool_usage(
+    request: Request,
+    agent_id: str,
+    tool_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
+    limit: int = Query(default=25, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    sort_desc: bool = True,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    count = storage.count_tool_usage(
+        tool_id=tool_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        mission_id=mission_id,
+        context_type=context_type,
+        context_id=context_id,
+    )
+    usage = storage.list_tool_usage_global(
+        tool_id=tool_id,
+        agent_id=agent_id,
+        session_id=session_id,
+        mission_id=mission_id,
+        context_type=context_type,
+        context_id=context_id,
+        limit=limit,
+        offset=offset,
+        sort_desc=sort_desc,
+    )
+    return {
+        "agent_id": agent_id,
+        "tool_id": tool_id,
+        "session_id": session_id,
+        "mission_id": mission_id,
+        "count": count,
+        "usage": [_sanitize_tool_usage_payload(entry, role) for entry in usage],
+        "updated_at": _now_iso(),
+    }
 
 
 @app.get("/api/agents")

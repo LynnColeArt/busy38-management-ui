@@ -274,6 +274,7 @@ def _ensure_tool_tables(conn: sqlite3.Connection) -> None:
             tool_id TEXT NOT NULL,
             agent_id TEXT,
             session_id TEXT,
+            mission_id TEXT,
             request_id TEXT,
             context_type TEXT,
             context_id TEXT,
@@ -300,10 +301,18 @@ def _ensure_tool_usage_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE tool_usage ADD COLUMN context_type TEXT")
     if "context_id" not in columns:
         conn.execute("ALTER TABLE tool_usage ADD COLUMN context_id TEXT")
+    if "mission_id" not in columns:
+        conn.execute("ALTER TABLE tool_usage ADD COLUMN mission_id TEXT")
 
     indexes = {row["name"] for row in conn.execute("PRAGMA index_list(tool_usage)")}
     if "idx_tool_usage_context" not in indexes:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_context ON tool_usage(context_type, context_id, created_at)")
+    if "idx_tool_usage_session" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_session ON tool_usage(session_id)")
+    if "idx_tool_usage_mission" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_mission ON tool_usage(mission_id)")
+    if "idx_tool_usage_status" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_status ON tool_usage(status)")
     if "idx_tool_usage_tool_id" not in indexes:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_tool_id ON tool_usage(tool_id)")
 
@@ -1054,6 +1063,7 @@ def append_tool_usage(
     tool_id: str,
     agent_id: Optional[str] = None,
     session_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
     request_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
@@ -1080,6 +1090,7 @@ def append_tool_usage(
                 tool_id,
                 agent_id,
                 session_id,
+                mission_id,
                 request_id,
                 context_type,
                 context_id,
@@ -1090,13 +1101,14 @@ def append_tool_usage(
                 payload,
                 created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 usage_id,
                 sanitized_tool_id,
                 _normalize_str(agent_id) or None,
                 _normalize_str(session_id) or None,
+                _normalize_str(mission_id) or None,
                 _normalize_str(request_id) or None,
                 _normalize_str(context_type) or None,
                 _normalize_str(context_id) or None,
@@ -1120,6 +1132,7 @@ def append_tool_usage(
         "tool_id": sanitized_tool_id,
         "agent_id": _normalize_str(agent_id) or None,
         "session_id": _normalize_str(session_id) or None,
+        "mission_id": _normalize_str(mission_id) or None,
         "request_id": _normalize_str(request_id) or None,
         "context_type": _normalize_str(context_type) or None,
         "context_id": _normalize_str(context_id) or None,
@@ -1163,6 +1176,7 @@ def _collect_tool_usage_rows(
 def list_tool_usage(
     tool_id: str,
     agent_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
     limit: int = 50,
@@ -1194,6 +1208,11 @@ def list_tool_usage(
             if normalized_context_id:
                 filters.append("context_id = ?")
                 values.append(normalized_context_id)
+        if mission_id:
+            normalized_mission_id = _normalize_str(mission_id)
+            if normalized_mission_id:
+                filters.append("mission_id = ?")
+                values.append(normalized_mission_id)
 
         return _collect_tool_usage_rows(
             conn=conn,
@@ -1208,6 +1227,8 @@ def list_tool_usage(
 def list_tool_usage_global(
     tool_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
     limit: int = 50,
@@ -1230,6 +1251,11 @@ def list_tool_usage_global(
             if normalized_agent_id:
                 filters.append("agent_id = ?")
                 values.append(normalized_agent_id)
+        if session_id:
+            normalized_session_id = _normalize_str(session_id)
+            if normalized_session_id:
+                filters.append("session_id = ?")
+                values.append(normalized_session_id)
         if context_type:
             normalized_context_type = _normalize_str(context_type)
             if normalized_context_type:
@@ -1240,6 +1266,11 @@ def list_tool_usage_global(
             if normalized_context_id:
                 filters.append("context_id = ?")
                 values.append(normalized_context_id)
+        if mission_id:
+            normalized_mission_id = _normalize_str(mission_id)
+            if normalized_mission_id:
+                filters.append("mission_id = ?")
+                values.append(normalized_mission_id)
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
         return _collect_tool_usage_rows(
@@ -1255,6 +1286,8 @@ def list_tool_usage_global(
 def count_tool_usage(
     tool_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    mission_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
 ) -> int:
@@ -1274,6 +1307,11 @@ def count_tool_usage(
             if normalized_agent_id:
                 filters.append("agent_id = ?")
                 values.append(normalized_agent_id)
+        if session_id:
+            normalized_session_id = _normalize_str(session_id)
+            if normalized_session_id:
+                filters.append("session_id = ?")
+                values.append(normalized_session_id)
         if context_type:
             normalized_context_type = _normalize_str(context_type)
             if normalized_context_type:
@@ -1284,6 +1322,11 @@ def count_tool_usage(
             if normalized_context_id:
                 filters.append("context_id = ?")
                 values.append(normalized_context_id)
+        if mission_id:
+            normalized_mission_id = _normalize_str(mission_id)
+            if normalized_mission_id:
+                filters.append("mission_id = ?")
+                values.append(normalized_mission_id)
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
         row = conn.execute(f"SELECT COUNT(1) AS total FROM tool_usage {where_clause}", tuple(values)).fetchone()
