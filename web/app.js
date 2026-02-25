@@ -1490,6 +1490,72 @@ function renderToolUsageLogEntry(entry) {
   const payload = entry.payload && typeof entry.payload === "object"
     ? `<pre>${escapeHtml(JSON.stringify(entry.payload, null, 2))}</pre>`
     : "";
+  const contextType = (entry.context_type || "n/a");
+  const contextId = entry.context_id || "";
+  const memoryId = entry.memory_id || "";
+  const chatMessageId = entry.chat_message_id || "";
+  const chatSessionId = entry.chat_session_id || "";
+  const detailContextButtons = [];
+  if (memoryId) {
+    detailContextButtons.push(`
+      <button
+        type="button"
+        data-action="open-tool-context"
+        data-context-type="memory"
+        data-context-id="${escapeHtml(contextId)}"
+        data-memory-id="${escapeHtml(memoryId)}"
+        data-chat-message-id=""
+        data-chat-session-id=""
+      >
+        Open linked memory
+      </button>
+    `);
+  }
+  if (chatSessionId) {
+    detailContextButtons.push(`
+      <button
+        type="button"
+        data-action="open-tool-context"
+        data-context-type="chat_session"
+        data-context-id=""
+        data-memory-id=""
+        data-chat-message-id=""
+        data-chat-session-id="${escapeHtml(chatSessionId)}"
+      >
+        Open chat session
+      </button>
+    `);
+  }
+  if (contextType === "chat" && (chatMessageId || chatSessionId || contextId)) {
+    detailContextButtons.push(`
+      <button
+        type="button"
+        data-action="open-tool-context"
+        data-context-type="chat"
+        data-context-id="${escapeHtml(contextId)}"
+        data-memory-id=""
+        data-chat-message-id="${escapeHtml(chatMessageId)}"
+        data-chat-session-id="${escapeHtml(chatSessionId)}"
+      >
+        Open linked chat context
+      </button>
+    `);
+  }
+  if (!memoryId && !chatSessionId && !chatMessageId && contextType !== "n/a" && contextId) {
+    detailContextButtons.push(`
+      <button
+        type="button"
+        data-action="open-tool-context"
+        data-context-type="${escapeHtml(contextType)}"
+        data-context-id="${escapeHtml(contextId)}"
+        data-memory-id=""
+        data-chat-message-id=""
+        data-chat-session-id=""
+      >
+        Open context
+      </button>
+    `);
+  }
   root.innerHTML = `
     <div class="card">
       <h3>Tool call ${escapeHtml(entry.id || "n/a")}</h3>
@@ -1503,6 +1569,7 @@ function renderToolUsageLogEntry(entry) {
       <p><strong>Status:</strong> ${escapeHtml(entry.status || "n/a")}</p>
       <p><strong>Result:</strong> ${escapeHtml(entry.result_status || "n/a")}</p>
       <p><strong>Created:</strong> ${escapeHtml(entry.created_at || "n/a")}</p>
+      ${detailContextButtons.length ? `<p>${detailContextButtons.join("")}</p>` : ""}
       ${payload}
       ${metadata}
     </div>
@@ -1527,6 +1594,14 @@ async function openToolUsageContext(contextType, contextId, memoryId = "", chatM
         return;
       }
       setStatus("#toolUsageStatus", "memory id is required for memory context drill-through", "err");
+      return;
+    }
+    if (contextType === "chat_session") {
+      if (resolvedChatSessionId) {
+        await loadChatHistory("", "", resolvedChatSessionId);
+        return;
+      }
+      setStatus("#toolUsageStatus", "chat session id is required for chat context drill-through", "err");
       return;
     }
     if (contextType === "chat") {
@@ -1599,9 +1674,6 @@ function renderToolUsage(usageItems) {
       const memoryId = entry.memory_id || "";
       const chatMessageId = entry.chat_message_id || "";
       const chatSessionId = entry.chat_session_id || "";
-      const contextAction = contextType === "memory" || contextType === "chat"
-        ? `open-tool-context`
-        : "";
       const sessionAction = entry.session_id ? `open-tool-session` : "";
       const sessionButton = sessionAction
         ? `<button
@@ -1612,20 +1684,76 @@ function renderToolUsage(usageItems) {
               Open session
             </button>`
         : "";
-      const canOpenContext = contextAction && (contextId || memoryId || chatMessageId || chatSessionId);
-      const contextButton = canOpenContext
-        ? `<button
-              type="button"
-              data-action="${contextAction}"
-              data-context-type="${escapeHtml(contextType)}"
-              data-context-id="${escapeHtml(contextId)}"
-              data-memory-id="${escapeHtml(memoryId)}"
-              data-chat-message-id="${escapeHtml(chatMessageId)}"
-              data-chat-session-id="${escapeHtml(chatSessionId)}"
-            >
-              Open ${escapeHtml(contextType)} context
-            </button>`
-        : "";
+      const contextButtons = [];
+      if (memoryId) {
+        contextButtons.push(`
+          <button
+            type="button"
+            data-action="open-tool-context"
+            data-context-type="memory"
+            data-context-id="${escapeHtml(contextId)}"
+            data-memory-id="${escapeHtml(memoryId)}"
+            data-chat-message-id=""
+            data-chat-session-id=""
+          >
+            Open linked memory
+          </button>
+        `);
+      }
+      if (chatSessionId) {
+        contextButtons.push(`
+          <button
+            type="button"
+            data-action="open-tool-context"
+            data-context-type="chat_session"
+            data-context-id=""
+            data-memory-id=""
+            data-chat-message-id=""
+            data-chat-session-id="${escapeHtml(chatSessionId)}"
+          >
+            Open chat session
+          </button>
+        `);
+      }
+      if (contextType === "chat" && (chatMessageId || contextId) && !chatSessionId) {
+        contextButtons.push(`
+          <button
+            type="button"
+            data-action="open-tool-context"
+            data-context-type="chat"
+            data-context-id="${escapeHtml(contextId)}"
+            data-memory-id=""
+            data-chat-message-id="${escapeHtml(chatMessageId)}"
+            data-chat-session-id="${escapeHtml(chatSessionId)}"
+          >
+            Open chat context
+          </button>
+        `);
+      }
+      if (
+        contextType !== "n/a" &&
+        contextType !== "memory" &&
+        contextType !== "chat" &&
+        contextType !== "chat_session" &&
+        contextId &&
+        !memoryId &&
+        !chatSessionId
+      ) {
+        contextButtons.push(`
+          <button
+            type="button"
+            data-action="open-tool-context"
+            data-context-type="${escapeHtml(contextType)}"
+            data-context-id="${escapeHtml(contextId)}"
+            data-memory-id=""
+            data-chat-message-id=""
+            data-chat-session-id=""
+          >
+            Open context
+          </button>
+        `);
+      }
+      const contextButton = contextButtons.join("");
       const resolvedContextButton = contextButton;
       const entryAction = entry.id
         ? `<button
