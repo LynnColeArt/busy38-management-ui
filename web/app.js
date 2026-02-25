@@ -340,6 +340,30 @@ function renderAgentToolAudit(audit) {
       `,
     )
     .join("");
+  const missionRows = (audit.mission_breakdown || [])
+    .map((row) => {
+      const missionId = row.mission_id || "";
+      const drill = missionId
+        ? `<button
+            type="button"
+            data-action="open-tool-mission"
+            data-mission-id="${escapeHtml(missionId)}"
+            data-agent-id="${escapeHtml(audit.agent_id || "")}"
+          >
+            Open mission trail
+          </button>`
+        : "";
+      return `
+        <div class="card">
+          <h4>${escapeHtml(missionId || "n/a")}</h4>
+          <p><strong>Calls:</strong> ${escapeHtml(String(row.call_count || 0))}</p>
+          <p><strong>Sessions:</strong> ${escapeHtml(String(row.session_count || 0))}</p>
+          <p><strong>Last used:</strong> ${escapeHtml((row.last_used_at || "").slice(0, 10) || "n/a")}</p>
+          ${drill}
+        </div>
+      `;
+    })
+    .join("");
   const sessionRows = (audit.session_breakdown || [])
     .map((row) => {
       const sessionId = row.session_id || "";
@@ -375,12 +399,15 @@ function renderAgentToolAudit(audit) {
         <h3>Agent ${escapeHtml(audit.agent_id)} tool audit</h3>
         <p><strong>Total calls:</strong> ${escapeHtml(String(summary.total_tool_calls || 0))}</p>
         <p><strong>Unique tools:</strong> ${escapeHtml(String(summary.unique_tools || 0))}</p>
+        <p><strong>Unique missions:</strong> ${escapeHtml(String(summary.unique_missions || 0))}</p>
         <p><strong>Unique sessions:</strong> ${escapeHtml(String(summary.unique_sessions || 0))}</p>
         <p><strong>Filters:</strong> ${filterLine}</p>
         <p>Updated: ${escapeHtml((audit.updated_at || "").slice(0, 10) || "n/a")}</p>
       </div>
       <h3>Top tools</h3>
       ${toolRows || "<p>No tool activity yet.</p>"}
+      <h3>Top missions</h3>
+      ${missionRows || "<p>No mission activity yet.</p>"}
       <h3>Top sessions</h3>
       ${sessionRows || "<p>No session activity yet.</p>"}
     </div>
@@ -634,15 +661,23 @@ function buildAgentCard(agent) {
   const overlayFound = Boolean(overlay.found);
   const overlayData = (overlay.overlay && typeof overlay.overlay === "object") ? overlay.overlay : {};
   const isAdmin = state.role === "admin";
+  const lifecycle = agent.lifecycle || "active";
   const overlayContent = isAdmin ? `${overlayData.content || ""}` : `${overlayData.content_preview || ""}`;
   const overlayCap = overlayData.requested_token_cap != null ? String(overlayData.requested_token_cap) : "";
   const overlaySource = overlayData.source || "runtime";
+  const lifecycleMeta = lifecycle === "archived" && agent.archived_at
+    ? ` · archived ${escapeHtml(agent.archived_at.slice(0, 10))}`
+    : "";
+  const lifecycleButton = lifecycle === "archived"
+    ? `<button type="button" data-action="restore-agent" data-id="${agent.id}">Restore</button>`
+    : `<button type="button" data-action="archive-agent" data-id="${agent.id}">Archive</button>`;
 
   return `
     <div class="card">
       <h3>${agent.name}</h3>
       <p><strong>Status:</strong> ${agent.status}</p>
       <p><strong>Role:</strong> ${agent.role}</p>
+      <p><strong>Lifecycle:</strong> ${escapeHtml(lifecycle)}${lifecycleMeta}</p>
       <p><strong>Last active:</strong> ${agent.last_active_at || "unknown"}</p>
       <p><strong>Identity overlay:</strong> ${overlayFound ? "configured" : "not configured"} (${overlaySource})</p>
       ${isAdmin ? `
@@ -687,6 +722,7 @@ function buildAgentCard(agent) {
         <button type="button" data-action="open-agent-tool-usage" data-id="${agent.id}">
           Audit tool usage
         </button>
+        ${isAdmin ? lifecycleButton : ""}
       </p>
     </div>
   `;
@@ -1066,7 +1102,9 @@ async function loadProviderDiagnostics(providerId) {
 }
 
 async function loadAgents() {
-  const payload = await fetchJson("/api/agents");
+  const lifecycle = (qs("#agentLifecycleFilter")?.value || "active").trim() || "active";
+  const query = new URLSearchParams({ lifecycle });
+  const payload = await fetchJson(`/api/agents?${query.toString()}`);
   state.agents = payload.agents || [];
   renderCards("#agents", state.agents, buildAgentCard);
 }
@@ -1359,6 +1397,49 @@ async function loadToolLogBySession(sessionId = "") {
   }
 }
 
+async function loadToolLogByMission(missionId = "", agentId = "") {
+  const filter = buildToolUsageFilter();
+  const targetMission = missionId || filter.missionId;
+  if (!targetMission) {
+    setStatus("#toolUsageStatus", "mission id is required", "err");
+    return;
+  }
+  try {
+    const missionParams = buildToolUsageParams(filter, {
+      missionId: targetMission,
+      agentId: agentId || filter.agentId,
+      contextType: filter.contextType,
+      contextId: filter.contextId,
+      memoryId: filter.memoryId,
+      chatMessageId: filter.chatMessageId,
+      chatSessionId: filter.chatSessionId,
+      sessionId: filter.sessionId,
+      date: filter.date,
+      dateFrom: filter.dateFrom,
+      dateTo: filter.dateTo,
+      sortDesc: filter.sortDesc,
+    });
+    const query = missionParams.toString();
+    const payload = await fetchJson(`/api/tool-log${query ? `?${query}` : ""}`);
+    state.toolUsage = payload.usage || [];
+    state.toolUsageCount = Number(payload.count || state.toolUsage.length || 0);
+    renderToolUsage(state.toolUsage);
+    const missionSummary = `Mission ${escapeHtml(targetMission)} tool log`;
+    const agentText = agentId || filter.agentId ? ` (agent ${escapeHtml(agentId || filter.agentId)})` : "";
+    setStatus("#toolUsageSummary", `${missionSummary}${agentText} · ${state.toolUsageCount} row(s)`, "ok");
+    setStatus("#toolUsageStatus", `loaded ${state.toolUsage.length} row(s)`, "ok");
+    if (payload.log_entry) {
+      renderToolUsageLogEntry(payload.log_entry);
+    }
+  } catch (err) {
+    setStatus("#toolUsageStatus", `mission log load failed: ${err.message}`, "err");
+    state.toolUsage = [];
+    state.toolUsageCount = 0;
+    renderToolUsage([]);
+    renderToolUsageLogEntry(null);
+  }
+}
+
 async function loadAgentToolUsage(agentId) {
   if (!agentId) {
     setStatus("#toolUsageStatus", "agent id is required", "err");
@@ -1495,6 +1576,7 @@ function renderToolUsageLogEntry(entry) {
   const memoryId = entry.memory_id || "";
   const chatMessageId = entry.chat_message_id || "";
   const chatSessionId = entry.chat_session_id || "";
+  const missionId = entry.mission_id || "";
   const detailContextButtons = [];
   if (memoryId) {
     detailContextButtons.push(`
@@ -1538,6 +1620,18 @@ function renderToolUsageLogEntry(entry) {
         data-chat-session-id="${escapeHtml(chatSessionId)}"
       >
         Open linked chat context
+      </button>
+    `);
+  }
+  if (missionId) {
+    detailContextButtons.push(`
+      <button
+        type="button"
+        data-action="open-tool-mission"
+        data-mission-id="${escapeHtml(missionId)}"
+        data-agent-id="${escapeHtml(entry.agent_id || "")}"
+      >
+        Open mission trail
       </button>
     `);
   }
@@ -1674,7 +1768,9 @@ function renderToolUsage(usageItems) {
       const memoryId = entry.memory_id || "";
       const chatMessageId = entry.chat_message_id || "";
       const chatSessionId = entry.chat_session_id || "";
+      const missionId = entry.mission_id || "";
       const sessionAction = entry.session_id ? `open-tool-session` : "";
+      const missionAction = missionId ? `open-tool-mission` : "";
       const sessionButton = sessionAction
         ? `<button
               type="button"
@@ -1682,6 +1778,16 @@ function renderToolUsage(usageItems) {
               data-session-id="${escapeHtml(entry.session_id)}"
             >
               Open session
+            </button>`
+        : "";
+  const missionButton = missionAction
+    ? `<button
+              type="button"
+              data-action="${missionAction}"
+              data-mission-id="${escapeHtml(missionId)}"
+              data-agent-id="${escapeHtml(entry.agent_id || "")}"
+            >
+              Open mission trail
             </button>`
         : "";
       const contextButtons = [];
@@ -1771,6 +1877,7 @@ function renderToolUsage(usageItems) {
           <h3>${escapeHtml(entry.tool_id || "tool")}</h3>
           <p><strong>Entry:</strong> ${escapeHtml(entry.id || "n/a")}</p>
           <p><strong>Agent:</strong> ${escapeHtml(entry.agent_id || "n/a")}</p>
+          ${missionId ? `<p><strong>Mission:</strong> ${escapeHtml(missionId)}</p>` : ""}
           <p><strong>Context:</strong> ${escapeHtml(contextType)} ${contextId ? `( ${escapeHtml(contextId)})` : ""}</p>
           ${memoryId ? `<p><strong>Memory ID:</strong> ${escapeHtml(memoryId)}</p>` : ""}
           ${chatMessageId ? `<p><strong>Chat message:</strong> ${escapeHtml(chatMessageId)}</p>` : ""}
@@ -1782,6 +1889,7 @@ function renderToolUsage(usageItems) {
           ${details}
           ${resolvedContextButton}
           ${sessionButton}
+          ${missionButton}
           ${entryAction}
         </div>
       `;
@@ -2265,6 +2373,13 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "open-tool-mission") {
+    const missionId = target.dataset.missionId || "";
+    const agentId = target.dataset.agentId || "";
+    await loadToolLogByMission(missionId, agentId);
+    return;
+  }
+
   if (action === "open-tool-log-entry") {
     const toolCallId = target.dataset.toolCallId || "";
     await openToolLogEntry(toolCallId);
@@ -2491,6 +2606,20 @@ async function onTableChange(event) {
       return;
     }
 
+    if (action === "archive-agent") {
+      const id = target.dataset.id;
+      await postJson(`/api/agents/${id}/archive`, {});
+      await loadAgents();
+      return;
+    }
+
+    if (action === "restore-agent") {
+      const id = target.dataset.id;
+      await postJson(`/api/agents/${id}/restore`, {});
+      await loadAgents();
+      return;
+    }
+
     if (action === "save-agent-overlay") {
       const id = target.dataset.id;
       if (!id) {
@@ -2602,6 +2731,7 @@ qs("#providerFilterStatus")?.addEventListener("change", loadProviders);
 qs("#providerFilterSecret")?.addEventListener("change", loadProviders);
 qs("#providerSortBy")?.addEventListener("change", loadProviders);
 qs("#providerSortDesc")?.addEventListener("change", loadProviders);
+qs("#agentLifecycleFilter")?.addEventListener("change", loadAgents);
 document.body.addEventListener("change", onTableChange);
 document.body.addEventListener("click", (event) => {
   const target = event.target;
@@ -2630,6 +2760,8 @@ document.body.addEventListener("click", (event) => {
     && action !== "save-agent-overlay"
     && action !== "set-plugin-status"
     && action !== "set-plugin-command"
+    && action !== "archive-agent"
+    && action !== "restore-agent"
   )) {
     return;
   }

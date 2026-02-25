@@ -993,6 +993,10 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(payload.get("summary", {}).get("total_tool_calls"), 2)
         self.assertEqual(payload.get("summary", {}).get("unique_tools"), 1)
         self.assertEqual(payload.get("summary", {}).get("unique_sessions"), 2)
+        self.assertEqual(payload.get("summary", {}).get("unique_missions"), 2)
+        mission_breakdown = payload.get("mission_breakdown") or []
+        self.assertEqual(len(mission_breakdown), 2)
+        self.assertEqual({row.get("mission_id") for row in mission_breakdown}, {"mission-a", "mission-b"})
         self.assertEqual(len(payload.get("tool_breakdown") or []), 1)
         self.assertEqual((payload.get("tool_breakdown") or [{}])[0].get("tool_id"), tool_id)
         self.assertGreaterEqual(len(payload.get("session_breakdown") or []), 2)
@@ -1006,11 +1010,23 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(mission_beta.get("summary", {}).get("total_tool_calls"), 1)
         self.assertEqual(mission_beta.get("summary", {}).get("unique_tools"), 1)
         self.assertEqual(mission_beta.get("summary", {}).get("unique_sessions"), 1)
+        self.assertEqual(mission_beta.get("summary", {}).get("unique_missions"), 1)
+        mission_beta_breakdown = mission_beta.get("mission_breakdown") or []
+        self.assertEqual(len(mission_beta_breakdown), 1)
+        self.assertEqual(mission_beta_breakdown[0].get("mission_id"), "mission-b")
         self.assertEqual(mission_beta.get("filters", {}).get("mission_id"), "mission-b")
+
+        mission_limit = self.client.get(
+            "/api/agents/agent-audit/audit",
+            headers=read_headers,
+            params={"mission_limit": 1},
+        ).json()
+        self.assertEqual(len(mission_limit.get("mission_breakdown") or []), 1)
 
         unknown = self.client.get("/api/agents/unknown-agent/audit", headers=read_headers).json()
         self.assertEqual(unknown.get("summary", {}).get("total_tool_calls"), 0)
         self.assertEqual(unknown.get("summary", {}).get("unique_tools"), 0)
+        self.assertEqual(unknown.get("summary", {}).get("unique_missions"), 0)
 
     def test_agent_tool_audit_enforces_viewer_sanitization(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}

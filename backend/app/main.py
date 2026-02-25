@@ -2073,6 +2073,7 @@ async def get_agent_audit(
     session_id: Optional[str] = None,
     tool_limit: int = Query(default=5, ge=1, le=50),
     session_limit: int = Query(default=5, ge=1, le=50),
+    mission_limit: int = Query(default=5, ge=1, le=50),
     recent_limit: int = Query(default=25, ge=1, le=200),
 ) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
@@ -2088,6 +2089,7 @@ async def get_agent_audit(
             session_id=session_id,
             tool_limit=tool_limit,
             session_limit=session_limit,
+            mission_limit=mission_limit,
             recent_limit=recent_limit,
         )
     except KeyError as exc:
@@ -2095,11 +2097,13 @@ async def get_agent_audit(
 
     payload["summary"] = payload.get("summary", {})
     payload["summary"]["unique_sessions"] = len(payload.get("session_breakdown", []))
+    payload["summary"]["unique_missions"] = len(payload.get("mission_breakdown", []))
     payload["recent_calls"] = [
         _sanitize_tool_usage_payload(entry, role) for entry in payload.get("recent_calls", [])
     ]
     payload["tool_breakdown"] = payload.get("tool_breakdown", [])
     payload["session_breakdown"] = payload.get("session_breakdown", [])
+    payload["mission_breakdown"] = payload.get("mission_breakdown", [])
     payload["updated_at"] = _now_iso()
     return payload
 
