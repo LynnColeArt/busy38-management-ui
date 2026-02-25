@@ -1150,6 +1150,9 @@ function buildToolUsageFilter() {
   const chatSessionId = qs("#toolUsageChatSessionId")?.value.trim() || "";
   const missionId = qs("#toolUsageMissionId")?.value.trim() || "";
   const sessionId = qs("#toolUsageSessionId")?.value.trim() || "";
+  const date = qs("#toolUsageDate")?.value.trim() || "";
+  const dateFrom = qs("#toolUsageDateFrom")?.value.trim() || "";
+  const dateTo = qs("#toolUsageDateTo")?.value.trim() || "";
   const limit = Math.min(200, Math.max(1, Number(qs("#toolUsageLimit")?.value || 25)));
   const sortDesc = Boolean(qs("#toolUsageSortDesc")?.checked);
   return {
@@ -1162,6 +1165,9 @@ function buildToolUsageFilter() {
     chatSessionId,
     missionId,
     sessionId,
+    date,
+    dateFrom,
+    dateTo,
     limit,
     sortDesc,
   };
@@ -1178,6 +1184,9 @@ function buildToolUsageParams(filter, overrides = {}) {
     chat_message_id: overrides.chatMessageId || filter.chatMessageId,
     chat_session_id: overrides.chatSessionId || filter.chatSessionId,
     session_id: overrides.sessionId || filter.sessionId,
+    date: overrides.date || filter.date,
+    date_from: overrides.dateFrom || filter.dateFrom,
+    date_to: overrides.dateTo || filter.dateTo,
     limit: overrides.limit != null ? overrides.limit : filter.limit,
     sort_desc: overrides.sortDesc != null ? overrides.sortDesc : filter.sortDesc,
   };
@@ -1292,7 +1301,42 @@ async function loadToolLogBySession(sessionId = "") {
     return;
   }
   try {
-    const payload = await fetchJson(`/api/tool-log/session/${encodeURIComponent(targetSession)}`);
+    const sessionParams = buildToolUsageParams(filter);
+    sessionParams.delete("session_id");
+    if (filter.contextType) {
+      sessionParams.delete("context_type");
+    }
+    if (filter.contextId) {
+      sessionParams.delete("context_id");
+    }
+    if (filter.memoryId) {
+      sessionParams.delete("memory_id");
+    }
+    if (filter.chatMessageId) {
+      sessionParams.delete("chat_message_id");
+    }
+    if (filter.chatSessionId) {
+      sessionParams.delete("chat_session_id");
+    }
+    if (filter.agentId) {
+      sessionParams.delete("agent_id");
+    }
+    if (filter.missionId) {
+      sessionParams.delete("mission_id");
+    }
+    if (filter.limit != null) {
+      sessionParams.delete("limit");
+    }
+    if (filter.sortDesc != null) {
+      sessionParams.delete("sort_desc");
+    }
+    if (filter.toolId) {
+      sessionParams.delete("tool_id");
+    }
+    const query = sessionParams.toString();
+    const payload = await fetchJson(
+      `/api/tool-log/session/${encodeURIComponent(targetSession)}${query ? `?${query}` : ""}`,
+    );
     const usage = payload.usage || [];
     state.toolUsage = usage;
     state.toolUsageCount = Number(payload.count || usage.length || 0);
@@ -1632,8 +1676,13 @@ function buildToolUsageSummary(toolUsageCount, toolUsageFilter) {
   const chatMessageText = toolUsageFilter.chat_message_id || "all chat messages";
   const chatSessionText = toolUsageFilter.chat_session_id || "all chat sessions";
   const sessionText = toolUsageFilter.session_id || "all sessions";
+  const dateText = toolUsageFilter.date
+    ? `date=${toolUsageFilter.date}`
+    : toolUsageFilter.date_from || toolUsageFilter.date_to
+      ? `date range=${toolUsageFilter.date_from || "unbounded"}..${toolUsageFilter.date_to || "unbounded"}`
+      : "all dates";
   const modeText = toolUsageFilter.mode ? `${toolUsageFilter.mode} ` : "";
-  return `Showing ${total} ${modeText}rows for ${toolText}; ${agentText} · ${contextText} · ${contextIdText} · ${memoryText} · ${chatMessageText} · ${chatSessionText} · ${missionText} · ${sessionText}`;
+  return `Showing ${total} ${modeText}rows for ${toolText}; ${agentText} · ${contextText} · ${contextIdText} · ${memoryText} · ${chatMessageText} · ${chatSessionText} · ${missionText} · ${sessionText} · ${dateText}`;
 }
 
 async function loadImportJobs() {

@@ -64,6 +64,21 @@ def _coerce_json_payload(value: Optional[str]) -> Optional[Any]:
     return parsed
 
 
+def _normalize_day_filter(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    try:
+        # accept YYYY-MM-DD or ISO timestamps and normalize to the date portion
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+        return parsed.date().isoformat()
+    except ValueError:
+        # fast-fail for malformed date values
+        return None
+
+
 DEFAULT_CONTEXT_SCHEMA_VERSION = "2"
 
 
@@ -1492,15 +1507,43 @@ def _collect_tool_usage_rows(
     return out
 
 
+def _append_tool_usage_date_filter(
+    filters: List[str],
+    values: List[Any],
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> None:
+    normalized_date = _normalize_day_filter(date)
+    if normalized_date:
+        filters.append("date(created_at) = ?")
+        values.append(normalized_date)
+        return
+
+    normalized_from = _normalize_day_filter(date_from)
+    if normalized_from:
+        filters.append("datetime(created_at) >= datetime(?)")
+        values.append(f"{normalized_from}T00:00:00Z")
+
+    normalized_to = _normalize_day_filter(date_to)
+    if normalized_to:
+        filters.append("datetime(created_at) < datetime(?)")
+        values.append(f"{normalized_to}T23:59:59Z")
+
+
 def list_tool_usage(
     tool_id: str,
     agent_id: Optional[str] = None,
     mission_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
     memory_id: Optional[str] = None,
     chat_message_id: Optional[str] = None,
     chat_session_id: Optional[str] = None,
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     sort_desc: bool = True,
@@ -1550,6 +1593,12 @@ def list_tool_usage(
             if normalized_mission_id:
                 filters.append("mission_id = ?")
                 values.append(normalized_mission_id)
+        if session_id:
+            normalized_session_id = _normalize_str(session_id)
+            if normalized_session_id:
+                filters.append("session_id = ?")
+                values.append(normalized_session_id)
+        _append_tool_usage_date_filter(filters, values, date=date, date_from=date_from, date_to=date_to)
 
         return _collect_tool_usage_rows(
             conn=conn,
@@ -1571,6 +1620,9 @@ def list_tool_usage_global(
     memory_id: Optional[str] = None,
     chat_message_id: Optional[str] = None,
     chat_session_id: Optional[str] = None,
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     sort_desc: bool = True,
@@ -1626,6 +1678,7 @@ def list_tool_usage_global(
             if normalized_mission_id:
                 filters.append("mission_id = ?")
                 values.append(normalized_mission_id)
+        _append_tool_usage_date_filter(filters, values, date=date, date_from=date_from, date_to=date_to)
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
         return _collect_tool_usage_rows(
@@ -1648,6 +1701,9 @@ def count_tool_usage(
     memory_id: Optional[str] = None,
     chat_message_id: Optional[str] = None,
     chat_session_id: Optional[str] = None,
+    date: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> int:
     filters = []
     values: List[Any] = []
@@ -1700,6 +1756,7 @@ def count_tool_usage(
             if normalized_mission_id:
                 filters.append("mission_id = ?")
                 values.append(normalized_mission_id)
+        _append_tool_usage_date_filter(filters, values, date=date, date_from=date_from, date_to=date_to)
 
         where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
         row = conn.execute(f"SELECT COUNT(1) AS total FROM tool_usage {where_clause}", tuple(values)).fetchone()

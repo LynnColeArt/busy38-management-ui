@@ -1705,6 +1705,9 @@ async def get_tool_usage_global(
     chat_session_id: Optional[str] = Query(default=None),
     context_type: Optional[str] = Query(default=None),
     context_id: Optional[str] = Query(default=None),
+    date: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     sort_desc: bool = True,
@@ -1719,6 +1722,9 @@ async def get_tool_usage_global(
         chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
         limit=limit,
         offset=offset,
         sort_desc=sort_desc,
@@ -1732,6 +1738,9 @@ async def get_tool_usage_global(
         chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
     )
     return {
         "tool_id": tool_id,
@@ -1772,6 +1781,9 @@ async def get_tool_usage(
     chat_session_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
+    date: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     sort_desc: bool = True,
@@ -1788,6 +1800,9 @@ async def get_tool_usage(
         chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
     )
     usage = storage.list_tool_usage(
         tool_id=tool_id,
@@ -1798,6 +1813,9 @@ async def get_tool_usage(
         chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
         limit=limit,
         offset=offset,
         sort_desc=sort_desc,
@@ -1871,6 +1889,9 @@ async def get_tool_log(
     session_id: Optional[str] = Query(default=None),
     context_type: Optional[str] = Query(default=None),
     context_id: Optional[str] = Query(default=None),
+    date: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     sort_desc: bool = True,
@@ -1896,6 +1917,9 @@ async def get_tool_log(
         chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
         limit=limit,
         offset=offset,
         sort_desc=sort_desc,
@@ -1910,6 +1934,9 @@ async def get_tool_log(
         chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
     )
     return {
         "tool_id": tool_id,
@@ -1929,10 +1956,19 @@ async def get_tool_log(
 
 
 @app.get("/api/tool-log/session/{session_id}")
-async def get_tool_log_by_session(request: Request, session_id: str) -> Dict[str, Any]:
+async def get_tool_log_by_session(
+    request: Request,
+    session_id: str,
+    date: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
+) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
     usage = storage.list_tool_usage_global(
         session_id=session_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
         limit=200,
         sort_desc=True,
     )
@@ -1970,6 +2006,9 @@ async def get_agent_tool_usage(
     session_id: Optional[str] = None,
     context_type: Optional[str] = None,
     context_id: Optional[str] = None,
+    date: Optional[str] = Query(default=None),
+    date_from: Optional[str] = Query(default=None),
+    date_to: Optional[str] = Query(default=None),
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     sort_desc: bool = True,
@@ -1985,6 +2024,9 @@ async def get_agent_tool_usage(
         chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
     )
     usage = storage.list_tool_usage_global(
         tool_id=tool_id,
@@ -1996,6 +2038,9 @@ async def get_agent_tool_usage(
         chat_session_id=chat_session_id,
         context_type=context_type,
         context_id=context_id,
+        date=date,
+        date_from=date_from,
+        date_to=date_to,
         limit=limit,
         offset=offset,
         sort_desc=sort_desc,

@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
 from typing import Dict, List, Tuple
@@ -619,6 +620,94 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(filtered_payload["count"], 1)
         self.assertEqual(filtered_payload["usage"][0]["context_type"], "memory")
         self.assertEqual(filtered_payload["usage"][0]["context_id"], "memory-item-1")
+
+    def test_tool_usage_date_filters(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        plugin_payload = {
+            "id": "browser-agent-date-filter",
+            "name": "Browser agent date filter",
+            "source": "integration test",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "metadata": {
+                "tools": [
+                    {
+                        "namespace": "browser",
+                        "action": "open_page",
+                        "description": "Open a URL",
+                    },
+                ]
+            },
+        }
+
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        tools = self.client.get("/api/tools", headers=admin_headers, params={"namespace": "browser", "sort": "updated"})
+        self.assertEqual(tools.status_code, 200, tools.text)
+        self.assertEqual(tools.json()["count"], 1)
+        tool = tools.json()["tools"][0]
+        tool_id = tool["id"]
+
+        usage_payload = {
+            "agent_id": "agent-date-filter",
+            "session_id": "session-date-filter",
+            "status": "executed",
+            "duration_ms": 15,
+            "result_status": "ok",
+            "details": {"result_count": 1},
+        }
+        recorded = self.client.post(f"/api/tools/{tool_id}/usage", headers=admin_headers, json=usage_payload)
+        self.assertEqual(recorded.status_code, 200, recorded.text)
+
+        recorded_payload = recorded.json()["usage"]
+        recorded_created_at = recorded_payload.get("created_at")
+        self.assertIsNotNone(recorded_created_at)
+        normalized_created_at = datetime.fromisoformat(recorded_created_at.replace("Z", "+00:00"))
+        today = normalized_created_at.date().isoformat()
+        impossible = (normalized_created_at.date() + timedelta(days=1)).isoformat()
+
+        exact = self.client.get(
+            f"/api/tools/{tool_id}/usage",
+            headers=admin_headers,
+            params={"date": today},
+        )
+        self.assertEqual(exact.status_code, 200, exact.text)
+        self.assertEqual(exact.json()["count"], 1)
+
+        same_window = self.client.get(
+            f"/api/tools/{tool_id}/usage",
+            headers=admin_headers,
+            params={"date_from": today, "date_to": today},
+        )
+        self.assertEqual(same_window.status_code, 200, same_window.text)
+        self.assertEqual(same_window.json()["count"], 1)
+
+        previous_day = self.client.get(
+            f"/api/tools/{tool_id}/usage",
+            headers=admin_headers,
+            params={"date": impossible},
+        )
+        self.assertEqual(previous_day.status_code, 200, previous_day.text)
+        self.assertEqual(previous_day.json()["count"], 0)
+
+        global_date = self.client.get(
+            "/api/tools/usage",
+            headers=admin_headers,
+            params={"date": today},
+        )
+        self.assertEqual(global_date.status_code, 200, global_date.text)
+        self.assertGreaterEqual(global_date.json()["count"], 1)
+
+        log_window = self.client.get(
+            "/api/tool-log",
+            headers=admin_headers,
+            params={"date": today},
+        )
+        self.assertEqual(log_window.status_code, 200, log_window.text)
+        self.assertGreaterEqual(log_window.json()["count"], 1)
 
     def test_tool_usage_mission_and_session_filters(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
