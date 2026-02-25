@@ -40,6 +40,10 @@ class RuntimeAdapter:
         else:
             self._load_reason = "no runtime adapter configured"
 
+        # Cache lazily-created overlay accessor helpers.
+        self._overlay_store = None
+        self._overlay_error: Optional[str] = None
+
     def _bootstrap_direct(self, runtime_path: str) -> str:
         if not os.path.isdir(runtime_path):
             return f"runtime path does not exist: {runtime_path}"
@@ -95,6 +99,225 @@ class RuntimeAdapter:
             "pid": service_status.pid,
             "pid_file": str(service_status.pid_file),
             "log_file": str(service_status.log_file),
+        }
+
+    @staticmethod
+    def _snapshot_to_overlay_payload(snapshot: Any) -> Dict[str, Any]:
+        return {
+            "overlay_id": str(snapshot.overlay_id),
+            "overlay_version": int(snapshot.overlay_version),
+            "actor_id": str(snapshot.actor_id),
+            "source": str(snapshot.source),
+            "source_hash": str(snapshot.source_hash),
+            "content": str(snapshot.content),
+            "token_count": int(snapshot.token_count),
+            "reduced": bool(snapshot.reduced),
+            "requested_token_cap": int(snapshot.requested_token_cap),
+            "created_by": str(snapshot.created_by),
+            "created_at": str(snapshot.created_at),
+        }
+
+    def _load_overlay_store(self) -> bool:
+        if self._overlay_store is not None:
+            return True
+        if self._overlay_error is not None:
+            return False
+        try:
+            from core.context.actor_overlays import ActorOverlayStore
+        except Exception as exc:  # pragma: no cover
+            self._overlay_error = f"overlay store unavailable: {exc}"
+            return False
+
+        try:
+            self._overlay_store = ActorOverlayStore
+            return True
+        except Exception as exc:  # pragma: no cover
+            self._overlay_store = None
+            self._overlay_error = f"overlay store unavailable: {exc}"
+            return False
+
+    def _serialize_overlay_response(self, actor_id: str, payload: Any, *, success: bool, error: Optional[str] = None) -> Dict[str, Any]:
+        response = {
+            "success": success,
+            "actor_id": actor_id,
+        }
+        if error is not None:
+            response["error"] = error
+            return response
+        if payload is None:
+            response["found"] = False
+            response["overlay"] = None
+            return response
+        if isinstance(payload, dict):
+            response.update(payload)
+            if "overlay" not in payload:
+                response["overlay"] = None
+        else:
+            response["overlay"] = payload
+        return response
+
+    def _bridge_get_overlay(self, actor_id: str) -> Optional[Dict[str, Any]]:
+        if not self.bridge_url:
+            return None
+
+        payload = {"actor_id": actor_id}
+        get_paths = (
+            "/api/overlay/get",
+            "/overlay/get",
+            "/runtime/overlay/get",
+            f"/api/overlay/{actor_id}",
+        )
+        for path in get_paths:
+            if "{" in path:
+                response = self._request_json("GET", path)
+            else:
+                response = self._request_json("POST", path, payload=payload)
+            if isinstance(response, dict) and response:
+                if "success" in response or "overlay" in response or "error" in response:
+                    return response
+        return None
+
+    def _bridge_write_overlay(
+        self,
+        actor_id: str,
+        content: str,
+        *,
+        token_cap: Optional[int] = None,
+        source: str = "management-ui",
+        provenance: Optional[Dict[str, Any]] = None,
+        editor_actor: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not self.bridge_url:
+            return None
+        payload = {
+            "actor_id": actor_id,
+            "content": content,
+            "source": source,
+            "provenance": provenance,
+            "editor_actor": editor_actor,
+        }
+        if token_cap is not None:
+            payload["token_cap"] = int(token_cap)
+        write_paths = (
+            "/api/overlay/write",
+            "/overlay/write",
+            "/runtime/overlay/write",
+        )
+        for path in write_paths:
+            response = self._request_json("POST", path, payload=payload)
+            if isinstance(response, dict) and response:
+                return response
+        return None
+
+    def get_actor_overlay(self, actor_id: str) -> Dict[str, Any]:
+        normalized = str(actor_id or "").strip()
+        if not normalized:
+            return {"success": False, "actor_id": normalized, "found": False, "error": "actor_id is required"}
+
+        if self._core_services is not None and self._load_overlay_store():
+            try:
+                with self._overlay_store() as store:  # type: ignore[operator]
+                    snapshot = store.get_latest_overlay(normalized)
+                if snapshot is None:
+                    return {"success": True, "actor_id": normalized, "found": False, "overlay": None}
+                return self._serialize_overlay_response(
+                    normalized,
+                    {
+                        "found": True,
+                        "overlay": {
+                            **self._snapshot_to_overlay_payload(snapshot),
+                            "truncated": bool(snapshot.reduced),
+                        },
+                    },
+                    success=True,
+                )
+            except Exception as exc:
+                return self._serialize_overlay_response(
+                    normalized,
+                    None,
+                    success=False,
+                    error=str(exc),
+                )
+
+        response = self._bridge_get_overlay(normalized)
+        if isinstance(response, dict):
+            response.setdefault("actor_id", normalized)
+            response.setdefault("success", response.get("success", True))
+            if "overlay" not in response and response.get("found") is True:
+                response["overlay"] = response.get("overlay_data")
+            return response
+
+        return {
+            "success": bool(self.bridge_url),
+            "actor_id": normalized,
+            "found": False,
+            "overlay": None,
+            "error": self._overlay_error,
+        }
+
+    def write_actor_overlay(
+        self,
+        actor_id: str,
+        content: str,
+        *,
+        token_cap: Optional[int] = None,
+        source: str = "management-ui",
+        provenance: Optional[Dict[str, Any]] = None,
+        editor_actor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        normalized_actor = str(actor_id or "").strip()
+        normalized_editor = str(editor_actor or normalized_actor or "management-ui").strip()
+        if not normalized_actor:
+            return {"success": False, "actor_id": normalized_actor, "error": "actor_id is required"}
+
+        if self._core_services is not None and self._load_overlay_store():
+            try:
+                with self._overlay_store() as store:  # type: ignore[operator]
+                    snapshot = store.write_overlay(
+                        actor_id=normalized_actor,
+                        content=content or "",
+                        editor_actor=normalized_editor,
+                        source=str(source or "management-ui").strip() or "management-ui",
+                        provenance=provenance or {},
+                        token_cap=int(token_cap or 5000) if token_cap is not None else 5000,
+                    )
+                return self._serialize_overlay_response(
+                    normalized_actor,
+                    {
+                        "found": True,
+                        "overlay": {
+                            **self._snapshot_to_overlay_payload(snapshot),
+                            "truncated": bool(snapshot.reduced),
+                        },
+                        "requested_token_cap": int(token_cap or 5000),
+                    },
+                    success=True,
+                )
+            except Exception as exc:
+                return self._serialize_overlay_response(
+                    normalized_actor,
+                    None,
+                    success=False,
+                    error=str(exc),
+                )
+
+        response = self._bridge_write_overlay(
+            normalized_actor,
+            content,
+            token_cap=token_cap,
+            source=source,
+            provenance=provenance,
+            editor_actor=normalized_editor,
+        )
+        if isinstance(response, dict):
+            response.setdefault("actor_id", normalized_actor)
+            response.setdefault("success", response.get("success", True))
+            return response
+
+        return {
+            "success": False,
+            "actor_id": normalized_actor,
+            "error": self._overlay_error or "overlay write bridge unavailable",
         }
 
     def is_connected(self) -> bool:

@@ -294,6 +294,42 @@
       </section>
 
       <section class="panel">
+        <h2>Tool usage audit</h2>
+        <p id="toolUsageSummary" class="meta">Load a filter to review logged tool activity.</p>
+        <div class="control-row">
+          <label>
+            Tool ID
+            <input id="toolUsageToolId" type="text" placeholder="optional: filter by tool id" />
+          </label>
+          <label>
+            Agent ID
+            <input id="toolUsageAgentId" type="text" placeholder="optional" />
+          </label>
+          <label>
+            Context type
+            <input id="toolUsageContextType" type="text" placeholder="memory | chat" />
+          </label>
+          <label>
+            Context id
+            <input id="toolUsageContextId" type="text" placeholder="optional" />
+          </label>
+          <label>
+            Limit
+            <input id="toolUsageLimit" type="number" min="1" max="200" value="25" />
+          </label>
+          <label>
+            Newest first
+            <input id="toolUsageSortDesc" type="checkbox" checked />
+          </label>
+        </div>
+        <p>
+          <button type="button" data-action="refresh-tool-usage">Load usage</button>
+        </p>
+        <p id="toolUsageStatus" class="status"></p>
+        <div id="toolUsage"></div>
+      </section>
+
+      <section class="panel">
         <h2>Recent events</h2>
         <ul id="events"></ul>
       </section>

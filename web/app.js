@@ -22,6 +22,8 @@ const state = {
   agentDirectoryArtifact: null,
   selectedImportId: "",
   rerunImportId: "",
+  toolUsage: [],
+  toolUsageCount: 0,
 };
 let eventSocket = null;
 
@@ -556,12 +558,53 @@ function buildProviderCard(provider) {
 }
 
 function buildAgentCard(agent) {
+  const overlay = agent.overlay || {};
+  const overlayFound = Boolean(overlay.found);
+  const overlayData = (overlay.overlay && typeof overlay.overlay === "object") ? overlay.overlay : {};
+  const isAdmin = state.role === "admin";
+  const overlayContent = isAdmin ? `${overlayData.content || ""}` : `${overlayData.content_preview || ""}`;
+  const overlayCap = overlayData.requested_token_cap != null ? String(overlayData.requested_token_cap) : "";
+  const overlaySource = overlayData.source || "runtime";
+
   return `
     <div class="card">
       <h3>${agent.name}</h3>
       <p><strong>Status:</strong> ${agent.status}</p>
       <p><strong>Role:</strong> ${agent.role}</p>
       <p><strong>Last active:</strong> ${agent.last_active_at || "unknown"}</p>
+      <p><strong>Identity overlay:</strong> ${overlayFound ? "configured" : "not configured"} (${overlaySource})</p>
+      ${isAdmin ? `
+      <p>
+        <label>
+          Overlay token cap:
+          <input
+            type="number"
+            data-action="agent-overlay-token-cap"
+            data-id="${agent.id}"
+            value="${escapeHtml(overlayCap)}"
+            min="1"
+          />
+        </label>
+      </p>
+      <p>
+        <label>
+          Overlay identity:
+          <textarea
+            data-action="agent-overlay-content"
+            data-id="${agent.id}"
+            rows="6"
+            placeholder="Optional overlay text for this agent"
+          >${escapeHtml(overlayContent)}</textarea>
+        </label>
+      </p>
+      <p>
+        <button type="button" data-action="save-agent-overlay" data-id="${agent.id}">
+          Save overlay
+        </button>
+      </p>
+      ` : `
+      <p><strong>Overlay preview:</strong> ${overlayFound ? escapeHtml(overlayContent || "none") : "none"}</p>
+      `}
       <p>
         <label>
           Enabled:
@@ -981,14 +1024,186 @@ async function loadRuntime() {
   }
 }
 
-async function loadMemory() {
-  const payload = await fetchJson("/api/memory");
+async function loadMemory(scope = "", type = "", itemId = "") {
+  const params = new URLSearchParams();
+  if (scope) {
+    params.set("scope", scope);
+  }
+  if (type) {
+    params.set("type", type);
+  }
+  if (itemId) {
+    params.set("item_id", itemId);
+  }
+  const query = params.toString();
+  const payload = await fetchJson(query ? `/api/memory?${query}` : "/api/memory");
   renderMemory(payload.memory || []);
+  if (itemId) {
+    setStatus("#memoryStatus", `memory filtered by item ${itemId}`, "ok");
+  } else {
+    setStatus("#memoryStatus", "", "");
+  }
 }
 
-async function loadChatHistory() {
-  const payload = await fetchJson("/api/chat_history");
+async function loadChatHistory(agentId = "", itemId = "") {
+  const params = new URLSearchParams();
+  if (agentId) {
+    params.set("agent_id", agentId);
+  }
+  if (itemId) {
+    params.set("item_id", itemId);
+  }
+  const query = params.toString();
+  const payload = await fetchJson(query ? `/api/chat_history?${query}` : "/api/chat_history");
   renderChat(payload.chat_history || []);
+  if (itemId) {
+    setStatus("#chatStatus", `chat filtered by item ${itemId}`, "ok");
+  } else {
+    setStatus("#chatStatus", "", "");
+  }
+}
+
+function buildToolUsageFilter() {
+  const toolId = qs("#toolUsageToolId")?.value.trim() || "";
+  const agentId = qs("#toolUsageAgentId")?.value.trim() || "";
+  const contextType = qs("#toolUsageContextType")?.value.trim() || "";
+  const contextId = qs("#toolUsageContextId")?.value.trim() || "";
+  const limit = Math.min(200, Math.max(1, Number(qs("#toolUsageLimit")?.value || 25)));
+  const sortDesc = Boolean(qs("#toolUsageSortDesc")?.checked);
+  return { toolId, agentId, contextType, contextId, limit, sortDesc };
+}
+
+async function loadToolUsage() {
+  const filter = buildToolUsageFilter();
+  const base = {
+    agent_id: filter.agentId,
+    context_type: filter.contextType,
+    context_id: filter.contextId,
+    limit: filter.limit,
+    sort_desc: filter.sortDesc,
+  };
+
+  const params = new URLSearchParams();
+  Object.entries(base).forEach(([key, value]) => {
+    if (value !== "" && value !== undefined && value !== null) {
+      params.set(key, String(value));
+    }
+  });
+
+  const query = params.toString();
+  const toolFilter = filter.toolId;
+  const path = toolFilter
+    ? `/api/tools/${encodeURIComponent(toolFilter)}/usage?${query}`
+    : `/api/tools/usage?${query}`;
+
+  try {
+    const payload = await fetchJson(path);
+    const usage = payload.usage || [];
+    state.toolUsage = usage;
+    state.toolUsageCount = Number(payload.count || 0);
+    renderToolUsage(usage);
+    setStatus("#toolUsageSummary", buildToolUsageSummary(state.toolUsageCount, {
+      tool_id: toolFilter,
+      agent_id: filter.agentId,
+      context_type: filter.contextType,
+      context_id: filter.contextId,
+    }), "ok");
+    setStatus("#toolUsageStatus", `loaded ${usage.length} row(s)`, "ok");
+  } catch (err) {
+    setStatus("#toolUsageStatus", `load failed: ${err.message}`, "err");
+    state.toolUsage = [];
+    state.toolUsageCount = 0;
+    renderToolUsage([]);
+  }
+}
+
+async function openToolUsageContext(contextType, contextId) {
+  if (!contextId) {
+    setStatus("#toolUsageStatus", "context id is required for drill-through", "err");
+    return;
+  }
+  try {
+    if (contextType === "memory") {
+      await loadMemory("", "", contextId);
+      return;
+    }
+    if (contextType === "chat") {
+      await loadChatHistory("", contextId);
+      return;
+    }
+    setStatus("#toolUsageStatus", `no drill-through supported for context ${contextType}`, "err");
+  } catch (err) {
+    setStatus("#toolUsageStatus", `drill-through failed: ${err.message}`, "err");
+  }
+}
+
+function formatToolUsageValue(value) {
+  if (value === null || value === undefined) {
+    return "n/a";
+  }
+  if (typeof value === "object") {
+    return escapeHtml(JSON.stringify(value));
+  }
+  return escapeHtml(String(value));
+}
+
+function renderToolUsage(usageItems) {
+  const root = qs("#toolUsage");
+  if (!root) {
+    return;
+  }
+  const entries = Array.isArray(usageItems) ? usageItems : [];
+  if (!entries.length) {
+    root.innerHTML = "<p>No usage records match your filters.</p>";
+    return;
+  }
+
+  const rows = entries
+    .map((entry) => {
+      const contextType = (entry.context_type || "n/a");
+      const contextId = entry.context_id || "";
+      const contextAction = contextType === "memory" || contextType === "chat"
+        ? `open-tool-context`
+        : "";
+      const contextButton = contextAction && contextId
+        ? `<button
+              type="button"
+              data-action="${contextAction}"
+              data-context-type="${escapeHtml(contextType)}"
+              data-context-id="${escapeHtml(contextId)}"
+            >
+              Open ${escapeHtml(contextType)} context
+            </button>`
+        : "";
+      const detail = entry.result_status ? `Result: ${escapeHtml(entry.result_status)} · ` : "";
+      const details = entry.details ? `<pre>${formatToolUsageValue(entry.details)}</pre>` : "";
+      return `
+        <div class="card">
+          <h3>${escapeHtml(entry.tool_id || "tool")}</h3>
+          <p><strong>Entry:</strong> ${escapeHtml(entry.id || "n/a")}</p>
+          <p><strong>Agent:</strong> ${escapeHtml(entry.agent_id || "n/a")}</p>
+          <p><strong>Context:</strong> ${escapeHtml(contextType)} ${contextId ? `( ${escapeHtml(contextId)})` : ""}</p>
+          <p><strong>Status:</strong> ${escapeHtml(entry.status || "n/a")} · ${detail}duration ${
+            typeof entry.duration_ms === "number" ? `${entry.duration_ms}ms` : "n/a"
+          }</p>
+          <p><strong>Created:</strong> ${escapeHtml(entry.created_at || "n/a")}</p>
+          ${details}
+          ${contextButton}
+        </div>
+      `;
+    })
+    .join("");
+
+  root.innerHTML = `<div class="card-list">${rows}</div>`;
+}
+
+function buildToolUsageSummary(toolUsageCount, toolUsageFilter) {
+  const total = Number(toolUsageCount || 0);
+  const agentText = toolUsageFilter.agent_id || "all agents";
+  const contextText = toolUsageFilter.context_type || "all context types";
+  const contextIdText = toolUsageFilter.context_id || "any context";
+  const toolText = toolUsageFilter.tool_id || "all tools";
+  return `Showing ${total} usage rows for ${toolText}; ${agentText} · ${contextText} · ${contextIdText}`;
 }
 
 async function loadImportJobs() {
@@ -1406,6 +1621,18 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "refresh-tool-usage") {
+    await loadToolUsage();
+    return;
+  }
+
+  if (action === "open-tool-context") {
+    const contextType = target.dataset.contextType || "";
+    const contextId = target.dataset.contextId || "";
+    await openToolUsageContext(contextType, contextId);
+    return;
+  }
+
   if (action === "show-provider-diagnostics") {
     const diagnosticsId = target.dataset.id;
     const diagnosticsRoot = qs("#providerDiagnostics");
@@ -1620,6 +1847,42 @@ async function onTableChange(event) {
       return;
     }
 
+    if (action === "save-agent-overlay") {
+      const id = target.dataset.id;
+      if (!id) {
+        setStatus("#healthState", "agent id missing", "err");
+        return;
+      }
+      const card = target.closest(".card");
+      if (!card) {
+        setStatus("#healthState", "agent overlay card missing", "err");
+        return;
+      }
+      const overlayTextarea = card.querySelector(`textarea[data-action="agent-overlay-content"][data-id="${id}"]`);
+      const tokenCapInput = card.querySelector(`input[data-action="agent-overlay-token-cap"][data-id="${id}"]`);
+      if (!overlayTextarea) {
+        setStatus("#healthState", "agent overlay content field missing", "err");
+        return;
+      }
+
+      const overlayContent = String(overlayTextarea.value || "");
+      const capText = tokenCapInput?.value?.trim();
+      const payload = { overlay_content: overlayContent };
+      if (capText) {
+        const normalizedCap = Number(capText);
+        if (!Number.isFinite(normalizedCap) || normalizedCap <= 0 || !Number.isInteger(normalizedCap)) {
+          setStatus("#healthState", "overlay token cap must be a positive integer", "err");
+          return;
+        }
+        payload.overlay_token_cap = normalizedCap;
+      }
+      setStatus("#healthState", `saving overlay for ${id}...`, "");
+      await patchJson(`/api/agents/${id}`, payload);
+      setStatus("#healthState", `overlay saved for ${id}`, "ok");
+      await loadAgents();
+      return;
+    }
+
     if (action === "toggle-plugin") {
       const id = target.dataset.id;
       await patchJson(`/api/plugins/${id}`, { enabled: target.checked });
@@ -1667,6 +1930,7 @@ async function boot() {
       loadEvents(),
       loadMemory(),
       loadChatHistory(),
+      loadToolUsage(),
       loadRuntime(),
     ]);
     connectEvents();
@@ -1702,7 +1966,9 @@ document.body.addEventListener("click", (event) => {
     !action.startsWith("runtime-")
     && action !== "discover-provider-models"
     && action !== "open-import"
+    && action !== "refresh-tool-usage"
     && action !== "rerun-import"
+    && action !== "open-tool-context"
     && action !== "reassign-directory-scope"
     && action !== "apply-discovered-model"
     && action !== "test-provider-models"
@@ -1712,6 +1978,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "import-item-decision"
     && action !== "show-provider-diagnostics"
     && action !== "toggle-plugin"
+    && action !== "save-agent-overlay"
     && action !== "set-plugin-status"
     && action !== "set-plugin-command"
   )) {

@@ -275,6 +275,8 @@ def _ensure_tool_tables(conn: sqlite3.Connection) -> None:
             agent_id TEXT,
             session_id TEXT,
             request_id TEXT,
+            context_type TEXT,
+            context_id TEXT,
             status TEXT NOT NULL,
             duration_ms INTEGER,
             result_status TEXT,
@@ -290,6 +292,20 @@ def _ensure_tool_tables(conn: sqlite3.Connection) -> None:
             ON tool_usage(created_at);
         """
     )
+
+
+def _ensure_tool_usage_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(tool_usage)")}
+    if "context_type" not in columns:
+        conn.execute("ALTER TABLE tool_usage ADD COLUMN context_type TEXT")
+    if "context_id" not in columns:
+        conn.execute("ALTER TABLE tool_usage ADD COLUMN context_id TEXT")
+
+    indexes = {row["name"] for row in conn.execute("PRAGMA index_list(tool_usage)")}
+    if "idx_tool_usage_context" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_context ON tool_usage(context_type, context_id, created_at)")
+    if "idx_tool_usage_tool_id" not in indexes:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_usage_tool_id ON tool_usage(tool_id)")
 
 
 def _coerce_proxy_value(value: Any | None) -> str:
@@ -378,6 +394,7 @@ def ensure_schema() -> None:
         _ensure_settings_columns(conn)
         _ensure_plugin_table(conn)
         _ensure_tool_tables(conn)
+        _ensure_tool_usage_columns(conn)
         conn.commit()
 
         row = conn.execute("SELECT 1 FROM settings WHERE id='singleton'").fetchone()
@@ -1038,6 +1055,8 @@ def append_tool_usage(
     agent_id: Optional[str] = None,
     session_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
     status: str = "executed",
     duration_ms: Optional[int] = None,
     result_status: Optional[str] = None,
@@ -1062,6 +1081,8 @@ def append_tool_usage(
                 agent_id,
                 session_id,
                 request_id,
+                context_type,
+                context_id,
                 status,
                 duration_ms,
                 result_status,
@@ -1069,7 +1090,7 @@ def append_tool_usage(
                 payload,
                 created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 usage_id,
@@ -1077,6 +1098,8 @@ def append_tool_usage(
                 _normalize_str(agent_id) or None,
                 _normalize_str(session_id) or None,
                 _normalize_str(request_id) or None,
+                _normalize_str(context_type) or None,
+                _normalize_str(context_id) or None,
                 _normalize_str(status) or "executed",
                 int(duration_ms) if duration_ms is not None else None,
                 _normalize_str(result_status) or None,
@@ -1098,6 +1121,8 @@ def append_tool_usage(
         "agent_id": _normalize_str(agent_id) or None,
         "session_id": _normalize_str(session_id) or None,
         "request_id": _normalize_str(request_id) or None,
+        "context_type": _normalize_str(context_type) or None,
+        "context_id": _normalize_str(context_id) or None,
         "status": _normalize_str(status) or "executed",
         "duration_ms": int(duration_ms) if duration_ms is not None else None,
         "result_status": _normalize_str(result_status) or None,
@@ -1110,8 +1135,36 @@ def append_tool_usage(
     return usage
 
 
+def _collect_tool_usage_rows(
+    conn: sqlite3.Connection,
+    where_clause: str,
+    values: List[Any],
+    sort_desc: bool = True,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    normalized_limit = max(1, min(200, int(limit)))
+    normalized_offset = max(0, int(offset))
+    order = "datetime(created_at) DESC" if sort_desc else "datetime(created_at) ASC"
+    rows = conn.execute(
+        f"SELECT * FROM tool_usage {where_clause} ORDER BY {order} LIMIT ? OFFSET ?",
+        tuple(values + [normalized_limit, normalized_offset]),
+    ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for usage in rows:
+        payload = _dict_from_row(usage)
+        payload["duration_ms"] = int(payload["duration_ms"]) if payload["duration_ms"] is not None else None
+        payload["details"] = _coerce_json_payload(payload.get("details"))
+        payload["payload"] = _coerce_json_payload(payload.get("payload"))
+        out.append(payload)
+    return out
+
+
 def list_tool_usage(
     tool_id: str,
+    agent_id: Optional[str] = None,
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
     limit: int = 50,
     offset: int = 0,
     sort_desc: bool = True,
@@ -1123,21 +1176,120 @@ def list_tool_usage(
         row = conn.execute("SELECT id FROM tool_registry WHERE id = ?", (normalized_tool_id,)).fetchone()
         if not row:
             raise KeyError(f"tool '{tool_id}' not found")
-        normalized_limit = max(1, min(200, int(limit)))
-        normalized_offset = max(0, int(offset))
-        order = "datetime(created_at) DESC" if sort_desc else "datetime(created_at) ASC"
-        rows = conn.execute(
-            f"SELECT * FROM tool_usage WHERE tool_id = ? ORDER BY {order} LIMIT ? OFFSET ?",
-            (normalized_tool_id, normalized_limit, normalized_offset),
-        ).fetchall()
-        out: List[Dict[str, Any]] = []
-        for usage in rows:
-            payload = _dict_from_row(usage)
-            payload["duration_ms"] = int(payload["duration_ms"]) if payload["duration_ms"] is not None else None
-            payload["details"] = _coerce_json_payload(payload.get("details"))
-            payload["payload"] = _coerce_json_payload(payload.get("payload"))
-            out.append(payload)
-        return out
+
+        filters = ["tool_id = ?"]
+        values: List[Any] = [normalized_tool_id]
+        if agent_id:
+            normalized_agent_id = _normalize_str(agent_id)
+            if normalized_agent_id:
+                filters.append("agent_id = ?")
+                values.append(normalized_agent_id)
+        if context_type:
+            normalized_context_type = _normalize_str(context_type)
+            if normalized_context_type:
+                filters.append("context_type = ?")
+                values.append(normalized_context_type)
+        if context_id:
+            normalized_context_id = _normalize_str(context_id)
+            if normalized_context_id:
+                filters.append("context_id = ?")
+                values.append(normalized_context_id)
+
+        return _collect_tool_usage_rows(
+            conn=conn,
+            where_clause=f"WHERE {' AND '.join(filters)}",
+            values=values,
+            sort_desc=sort_desc,
+            limit=limit,
+            offset=offset,
+        )
+
+
+def list_tool_usage_global(
+    tool_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    sort_desc: bool = True,
+) -> List[Dict[str, Any]]:
+    filters = []
+    values: List[Any] = []
+    with get_connection() as conn:
+        if tool_id:
+            normalized_tool_id = _normalize_str(tool_id)
+            if normalized_tool_id:
+                row = conn.execute("SELECT id FROM tool_registry WHERE id = ?", (normalized_tool_id,)).fetchone()
+                if not row:
+                    raise KeyError(f"tool '{tool_id}' not found")
+                filters.append("tool_id = ?")
+                values.append(normalized_tool_id)
+        if agent_id:
+            normalized_agent_id = _normalize_str(agent_id)
+            if normalized_agent_id:
+                filters.append("agent_id = ?")
+                values.append(normalized_agent_id)
+        if context_type:
+            normalized_context_type = _normalize_str(context_type)
+            if normalized_context_type:
+                filters.append("context_type = ?")
+                values.append(normalized_context_type)
+        if context_id:
+            normalized_context_id = _normalize_str(context_id)
+            if normalized_context_id:
+                filters.append("context_id = ?")
+                values.append(normalized_context_id)
+
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        return _collect_tool_usage_rows(
+            conn=conn,
+            where_clause=where_clause,
+            values=values,
+            sort_desc=sort_desc,
+            limit=limit,
+            offset=offset,
+        )
+
+
+def count_tool_usage(
+    tool_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
+) -> int:
+    filters = []
+    values: List[Any] = []
+    with get_connection() as conn:
+        if tool_id:
+            normalized_tool_id = _normalize_str(tool_id)
+            if normalized_tool_id:
+                row = conn.execute("SELECT id FROM tool_registry WHERE id = ?", (normalized_tool_id,)).fetchone()
+                if not row:
+                    raise KeyError(f"tool '{tool_id}' not found")
+                filters.append("tool_id = ?")
+                values.append(normalized_tool_id)
+        if agent_id:
+            normalized_agent_id = _normalize_str(agent_id)
+            if normalized_agent_id:
+                filters.append("agent_id = ?")
+                values.append(normalized_agent_id)
+        if context_type:
+            normalized_context_type = _normalize_str(context_type)
+            if normalized_context_type:
+                filters.append("context_type = ?")
+                values.append(normalized_context_type)
+        if context_id:
+            normalized_context_id = _normalize_str(context_id)
+            if normalized_context_id:
+                filters.append("context_id = ?")
+                values.append(normalized_context_id)
+
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        row = conn.execute(f"SELECT COUNT(1) AS total FROM tool_usage {where_clause}", tuple(values)).fetchone()
+        if not row:
+            return 0
+        return int(row["total"] or 0)
 
 
 def get_provider(provider_id: str) -> Optional[Dict[str, Any]]:
@@ -2286,7 +2438,11 @@ def list_import_jobs(limit: int = 50) -> List[Dict[str, Any]]:
         return out
 
 
-def list_memory(scope: Optional[str], item_type: Optional[str]) -> List[Dict]:
+def list_memory(
+    scope: Optional[str],
+    item_type: Optional[str],
+    item_id: Optional[str] = None,
+) -> List[Dict]:
     with get_connection() as conn:
         query = "SELECT * FROM memory"
         args: list[str] = []
@@ -2297,8 +2453,11 @@ def list_memory(scope: Optional[str], item_type: Optional[str]) -> List[Dict]:
         if item_type:
             clauses.append("type = ?")
             args.append(item_type)
+        if item_id:
+            clauses.append("id = ?")
+            args.append(item_id)
         if clauses:
-            query += " WHERE " + " AND ".join(clauses)
+            query += f" WHERE {' AND '.join(clauses)}"
         query += " ORDER BY datetime(timestamp) DESC"
         rows = conn.execute(query, tuple(args)).fetchall()
         return [_dict_from_row(row) for row in rows]
@@ -2323,17 +2482,21 @@ def add_memory(scope: str, memory_type: str, content: str) -> Dict:
     return payload
 
 
-def list_chat_history(agent_id: Optional[str]) -> List[Dict]:
+def list_chat_history(agent_id: Optional[str], item_id: Optional[str] = None) -> List[Dict]:
+    filters: list[str] = []
+    args: list[str] = []
+    if agent_id:
+        filters.append("agent_id = ?")
+        args.append(agent_id)
+    if item_id:
+        filters.append("id = ?")
+        args.append(item_id)
+    where = f" WHERE {' AND '.join(filters)}" if filters else ""
     with get_connection() as conn:
-        if agent_id:
-            rows = conn.execute(
-                "SELECT * FROM chat_history WHERE agent_id = ? ORDER BY datetime(timestamp) DESC",
-                (agent_id,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM chat_history ORDER BY datetime(timestamp) DESC"
-            ).fetchall()
+        rows = conn.execute(
+            f"SELECT * FROM chat_history{where} ORDER BY datetime(timestamp) DESC",
+            tuple(args),
+        ).fetchall()
         return [_dict_from_row(row) for row in rows]
 
 
