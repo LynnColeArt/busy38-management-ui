@@ -117,6 +117,13 @@ class RuntimeAdapter:
             "created_at": str(snapshot.created_at),
         }
 
+    def _coerce_limit(self, value: Any, *, default: int = 20, max_limit: int = 200) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = default
+        return max(1, min(parsed, max_limit))
+
     def _load_overlay_store(self) -> bool:
         if self._overlay_store is not None:
             return True
@@ -174,6 +181,29 @@ class RuntimeAdapter:
                 response = self._request_json("POST", path, payload=payload)
             if isinstance(response, dict) and response:
                 if "success" in response or "overlay" in response or "error" in response:
+                    return response
+        return None
+
+    def _bridge_get_overlay_history(self, actor_id: str, *, limit: int) -> Optional[Dict[str, Any]]:
+        if not self.bridge_url:
+            return None
+
+        payload = {"actor_id": actor_id, "limit": int(limit)}
+        get_paths = (
+            "/api/overlay/history",
+            "/overlay/history",
+            "/runtime/overlay/history",
+            f"/api/overlay/{actor_id}/history",
+            f"/overlay/{actor_id}/history",
+            f"/runtime/overlay/{actor_id}/history",
+        )
+        for path in get_paths:
+            if "{" in path:
+                response = self._request_json("GET", path)
+            else:
+                response = self._request_json("POST", path, payload=payload)
+            if isinstance(response, dict) and response:
+                if "success" in response or "history" in response or "error" in response:
                     return response
         return None
 
@@ -252,6 +282,58 @@ class RuntimeAdapter:
             "actor_id": normalized,
             "found": False,
             "overlay": None,
+            "error": self._overlay_error,
+        }
+
+    def get_actor_overlay_history(self, actor_id: str, *, limit: int = 20) -> Dict[str, Any]:
+        normalized = str(actor_id or "").strip()
+        if not normalized:
+            return {
+                "success": False,
+                "actor_id": normalized,
+                "history": [],
+                "error": "actor_id is required",
+            }
+
+        normalized_limit = self._coerce_limit(limit, default=20, max_limit=200)
+
+        if self._core_services is not None and self._load_overlay_store():
+            try:
+                with self._overlay_store() as store:  # type: ignore[operator]
+                    snapshots = store.list_overlays(normalized, limit=normalized_limit)
+                return {
+                    "success": True,
+                    "actor_id": normalized,
+                    "history": [
+                        {
+                            **self._snapshot_to_overlay_payload(snapshot),
+                            "truncated": bool(snapshot.reduced),
+                        }
+                        for snapshot in snapshots
+                    ],
+                    "count": len(snapshots),
+                }
+            except Exception as exc:
+                return {
+                    "success": False,
+                    "actor_id": normalized,
+                    "history": [],
+                    "error": str(exc),
+                }
+
+        response = self._bridge_get_overlay_history(normalized, limit=normalized_limit)
+        if isinstance(response, dict):
+            response.setdefault("actor_id", normalized)
+            response.setdefault("success", response.get("success", True))
+            response.setdefault("count", len(response.get("history", []) if isinstance(response.get("history"), list) else []))
+            response.setdefault("history", [])
+            return response
+
+        return {
+            "success": bool(self.bridge_url),
+            "actor_id": normalized,
+            "history": [],
+            "count": 0,
             "error": self._overlay_error,
         }
 

@@ -534,6 +534,21 @@ def _sanitize_agent_overlay(overlay_result: Any, role: str) -> Dict[str, Any]:
     }
 
 
+def _sanitize_overlay_history_record(overlay_record: Any, role: str) -> Dict[str, Any]:
+    if not isinstance(overlay_record, dict):
+        return {}
+    payload = dict(overlay_record)
+    payload.pop("source_hash", None)
+
+    if role != "admin":
+        content = str(payload.get("content", ""))
+        if content:
+            payload["content_preview"] = content[:240] + ("…" if len(content) > 240 else "")
+        payload.pop("content", None)
+
+    return payload
+
+
 def _agent_with_overlay(agent: Dict[str, Any], role: str) -> Dict[str, Any]:
     payload = dict(agent)
     try:
@@ -2151,6 +2166,38 @@ async def get_agent_audit(
     payload["mission_breakdown"] = payload.get("mission_breakdown", [])
     payload["updated_at"] = _now_iso()
     return payload
+
+
+@app.get("/api/agents/{agent_id}/overlay/history")
+async def get_agent_overlay_history(
+    request: Request,
+    agent_id: str,
+    limit: int = Query(default=20, ge=1, le=200),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    normalized_agent_id = str(agent_id or "").strip()
+    history_payload = runtime.get_actor_overlay_history(normalized_agent_id, limit=limit)
+    if not isinstance(history_payload, dict):
+        raise HTTPException(status_code=502, detail="agent overlay history runtime response invalid")
+
+    history = history_payload.get("history", [])
+    sanitized = []
+    if isinstance(history, list):
+        sanitized = [
+            _sanitize_overlay_history_record(item, role)
+            for item in history
+            if isinstance(item, dict)
+        ]
+
+    response = {
+        "success": bool(history_payload.get("success", True)),
+        "actor_id": str(history_payload.get("actor_id", normalized_agent_id)),
+        "history": sanitized,
+        "count": int(history_payload.get("count", len(sanitized))),
+    }
+    if isinstance(history_payload.get("error"), str):
+        response["error"] = history_payload.get("error")
+    return response
 
 
 @app.get("/api/agents")

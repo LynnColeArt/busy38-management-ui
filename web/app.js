@@ -23,9 +23,12 @@ const state = {
   selectedImportId: "",
   rerunImportId: "",
   selectedAgentAuditId: "",
+  selectedAgentOverlayHistoryId: "",
   agentToolAudit: null,
   toolUsage: [],
   toolUsageCount: 0,
+  agentOverlayHistory: [],
+  agentOverlayHistoryCount: 0,
 };
 let eventSocket = null;
 
@@ -414,6 +417,55 @@ function renderAgentToolAudit(audit) {
   `;
 }
 
+function renderAgentOverlayHistory(payload) {
+  const root = qs("#agentOverlayHistory");
+  if (!root) {
+    return;
+  }
+  if (!payload || !payload.actor_id) {
+    root.innerHTML = "<p>Select an agent to load overlay history.</p>";
+    return;
+  }
+
+  const history = Array.isArray(payload.history) ? payload.history : [];
+  const rows = history
+    .map((entry) => {
+      const createdAt = entry.created_at || "n/a";
+      const source = entry.source || "n/a";
+      const content = entry.content || "";
+      const contentPreview = entry.content_preview || "";
+      const preview = content ? content : contentPreview ? contentPreview : "no content captured";
+      const reduced = entry.reduced ? "reduced" : "full";
+      const createdBy = entry.created_by || "n/a";
+      const overlayId = entry.overlay_id || "";
+      const overlayVersion = entry.overlay_version != null ? String(entry.overlay_version) : "n/a";
+      const tokenCap = entry.requested_token_cap != null ? String(entry.requested_token_cap) : "default";
+      return `
+        <div class="card">
+          <h4>${escapeHtml(overlayId || `${entry.actor_id || payload.actor_id}:v${overlayVersion}`)}</h4>
+          <p><strong>Version:</strong> ${escapeHtml(overlayVersion)}</p>
+          <p><strong>Source:</strong> ${escapeHtml(source)}</p>
+          <p><strong>Created by:</strong> ${escapeHtml(createdBy)}</p>
+          <p><strong>Token cap:</strong> ${escapeHtml(tokenCap)} · <strong>Storage:</strong> ${escapeHtml(reduced)}</p>
+          <p><strong>Created:</strong> ${escapeHtml(createdAt)}</p>
+          <p><strong>Content:</strong> ${escapeHtml(preview)}</p>
+        </div>
+      `;
+    })
+    .join("");
+
+  root.innerHTML = `
+    <div class="card-list">
+      <div class="card">
+        <h3>Overlay history for ${escapeHtml(payload.actor_id)}</h3>
+        <p><strong>Entries:</strong> ${escapeHtml(String(payload.count || history.length || 0))}</p>
+        ${payload.error ? `<p class="status err">Backend warning: ${escapeHtml(payload.error)}</p>` : ""}
+      </div>
+      ${rows || "<p>No overlay history available.</p>"}
+    </div>
+  `;
+}
+
 function getProviderFilterState() {
   return {
     kind: qs("#providerFilterKind")?.value || "",
@@ -721,6 +773,9 @@ function buildAgentCard(agent) {
       <p>
         <button type="button" data-action="open-agent-tool-usage" data-id="${agent.id}">
           Audit tool usage
+        </button>
+        <button type="button" data-action="open-agent-overlay-history" data-id="${agent.id}">
+          Overlay history
         </button>
         ${isAdmin ? lifecycleButton : ""}
       </p>
@@ -1740,6 +1795,43 @@ async function openToolLogEntry(toolCallId) {
   }
 }
 
+function _overlayHistoryLimit() {
+  const requested = Number(qs("#agentOverlayHistoryLimit")?.value || 20);
+  const sanitized = Number.isFinite(requested) ? requested : 20;
+  return Math.min(200, Math.max(1, Math.floor(sanitized)));
+}
+
+async function loadAgentOverlayHistory(agentId) {
+  const targetAgentId = String(agentId || "").trim();
+  if (!targetAgentId) {
+    setStatus("#agentOverlayHistoryStatus", "agent id is required", "err");
+    return;
+  }
+  const limit = _overlayHistoryLimit();
+  try {
+    const payload = await fetchJson(
+      `/api/agents/${encodeURIComponent(targetAgentId)}/overlay/history?${new URLSearchParams({
+        limit: String(limit),
+      }).toString()}`,
+    );
+    state.selectedAgentOverlayHistoryId = targetAgentId;
+    state.agentOverlayHistory = payload.history || [];
+    state.agentOverlayHistoryCount = Number(payload.count || 0);
+    renderAgentOverlayHistory(payload);
+    const label = qs("#agentOverlayHistoryHeader");
+    if (label) {
+      label.textContent = `Overlay history for ${targetAgentId} (last ${Math.min(limit, state.agentOverlayHistoryCount)} entries)`;
+    }
+    setStatus("#agentOverlayHistoryStatus", `loaded ${state.agentOverlayHistory.length} entry(ies)`, "ok");
+  } catch (err) {
+    state.selectedAgentOverlayHistoryId = targetAgentId;
+    state.agentOverlayHistory = [];
+    state.agentOverlayHistoryCount = 0;
+    renderAgentOverlayHistory(null);
+    setStatus("#agentOverlayHistoryStatus", `load overlay history failed: ${err.message}`, "err");
+  }
+}
+
 function formatToolUsageValue(value) {
   if (value === null || value === undefined) {
     return "n/a";
@@ -2392,6 +2484,17 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "open-agent-overlay-history") {
+    const agentId = target.dataset.id || "";
+    await loadAgentOverlayHistory(agentId);
+    return;
+  }
+
+  if (action === "refresh-agent-overlay-history") {
+    await loadAgentOverlayHistory(state.selectedAgentOverlayHistoryId || "");
+    return;
+  }
+
   if (action === "show-provider-diagnostics") {
     const diagnosticsId = target.dataset.id;
     const diagnosticsRoot = qs("#providerDiagnostics");
@@ -2763,6 +2866,8 @@ document.body.addEventListener("click", (event) => {
     && action !== "open-tool-session"
     && action !== "open-tool-log-entry"
     && action !== "open-agent-tool-usage"
+    && action !== "open-agent-overlay-history"
+    && action !== "refresh-agent-overlay-history"
     && action !== "reassign-directory-scope"
     && action !== "apply-discovered-model"
     && action !== "test-provider-models"

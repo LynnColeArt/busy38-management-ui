@@ -308,6 +308,20 @@
       </section>
 
       <section class="panel">
+        <h2>Agent overlay history</h2>
+        <p id="agentOverlayHistoryHeader" class="meta">Select an agent to inspect identity overlay history.</p>
+        <div class="control-row">
+          <label>
+            Limit
+            <input id="agentOverlayHistoryLimit" type="number" min="1" max="200" value="20" />
+          </label>
+          <button type="button" data-action="refresh-agent-overlay-history">Reload</button>
+        </div>
+        <p id="agentOverlayHistoryStatus" class="status"></p>
+        <div id="agentOverlayHistory"></div>
+      </section>
+
+      <section class="panel">
         <h2>Tool usage audit</h2>
         <p id="toolUsageSummary" class="meta">Load a filter to review logged tool activity.</p>
         <div class="control-row">

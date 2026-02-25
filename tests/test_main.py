@@ -66,6 +66,8 @@ class _MockRuntime:
     def __init__(self) -> None:
         self.actions: List[Tuple[str, str]] = []
         self.overlay_writes: List[Tuple[str, str, int | None]] = []
+        self.overlay_history_calls: List[Tuple[str, int]] = []
+        self.overlay_histories: Dict[str, list[dict[str, object]]] = {}
 
     def get_status(self) -> Dict[str, object]:
         return {"connected": True, "source": "mock"}
@@ -121,6 +123,20 @@ class _MockRuntime:
                 "created_by": "management-ui",
                 "created_at": "2026-01-01T00:00:00Z",
             },
+        }
+
+    def get_actor_overlay_history(self, actor_id: str, limit: int = 20) -> Dict[str, object]:
+        normalized_actor_id = str(actor_id or "").strip()
+        normalized_limit = int(limit or 20)
+        self.overlay_history_calls.append((normalized_actor_id, normalized_limit))
+        history = list(self.overlay_histories.get(normalized_actor_id, []))
+        if normalized_limit > 0:
+            history = history[:normalized_limit]
+        return {
+            "success": True,
+            "actor_id": normalized_actor_id,
+            "history": history,
+            "count": len(history),
         }
 
     def control_service(self, service_name: str, action: str) -> RuntimeActionResult:
@@ -1310,6 +1326,76 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400, response.text)
         self.assertEqual(response.json()["detail"], "overlay_token_cap must be a positive integer")
+
+    def test_agents_overlay_history_requires_sanitized_roles(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+        target_agent = "orchestrator-core"
+        full_content = (
+            "The orchestrator prefers low-noise updates and short-lived tasks "
+            "when resources are constrained, with a focus on deterministic progress."
+        )
+        self.runtime.overlay_histories[target_agent] = [
+            {
+                "overlay_id": "ov-1",
+                "overlay_version": 1,
+                "actor_id": target_agent,
+                "source": "runtime",
+                "source_hash": "abc",
+                "content": full_content,
+                "token_count": 32,
+                "reduced": False,
+                "requested_token_cap": 4096,
+                "created_by": "builder",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+            {
+                "overlay_id": "ov-0",
+                "overlay_version": 0,
+                "actor_id": target_agent,
+                "source": "runtime",
+                "source_hash": "def",
+                "content": "Legacy baseline identity prompt.",
+                "token_count": 16,
+                "reduced": True,
+                "requested_token_cap": 2048,
+                "created_by": "migration",
+                "created_at": "2025-12-31T00:00:00Z",
+            },
+        ]
+
+        admin_response = self.client.get(
+            f"/api/agents/{target_agent}/overlay/history",
+            headers=admin_headers,
+            params={"limit": 1},
+        )
+        self.assertEqual(admin_response.status_code, 200, admin_response.text)
+        admin_payload = admin_response.json()
+        self.assertEqual(admin_payload["actor_id"], target_agent)
+        self.assertEqual(admin_payload["count"], 1)
+        self.assertEqual(len(admin_payload["history"]), 1)
+        admin_entry = admin_payload["history"][0]
+        self.assertEqual(admin_entry["overlay_id"], "ov-1")
+        self.assertEqual(admin_entry["content"], full_content)
+        self.assertNotIn("source_hash", admin_entry)
+        self.assertEqual(self.runtime.overlay_history_calls[-1], (target_agent, 1))
+
+        reader_response = self.client.get(
+            f"/api/agents/{target_agent}/overlay/history",
+            headers=read_headers,
+            params={"limit": 1},
+        )
+        self.assertEqual(reader_response.status_code, 200, reader_response.text)
+        read_payload = reader_response.json()
+        self.assertEqual(read_payload["actor_id"], target_agent)
+        self.assertEqual(read_payload["count"], 1)
+        self.assertEqual(len(read_payload["history"]), 1)
+        read_entry = read_payload["history"][0]
+        self.assertEqual(read_entry["overlay_id"], "ov-1")
+        self.assertNotIn("content", read_entry)
+        self.assertIn("content_preview", read_entry)
+        self.assertNotIn("source_hash", read_entry)
+        self.assertEqual(self.runtime.overlay_history_calls[-1], (target_agent, 1))
 
     def test_agents_list_filter_by_lifecycle(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
