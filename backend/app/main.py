@@ -171,6 +171,8 @@ class ToolUsageCreate(BaseModel):
     agent_id: Optional[str] = None
     session_id: Optional[str] = None
     request_id: Optional[str] = None
+    context_type: Optional[str] = None
+    context_id: Optional[str] = None
     status: str = "executed"
     duration_ms: Optional[int] = None
     result_status: Optional[str] = None
@@ -1670,8 +1672,48 @@ async def search_tools(
     )
 
 
+@app.get("/api/tools/usage")
+async def get_tool_usage_global(
+    request: Request,
+    tool_id: Optional[str] = Query(default=None),
+    agent_id: Optional[str] = Query(default=None),
+    context_type: Optional[str] = Query(default=None),
+    context_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    sort_desc: bool = True,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    usage = storage.list_tool_usage_global(
+        tool_id=tool_id,
+        agent_id=agent_id,
+        context_type=context_type,
+        context_id=context_id,
+        limit=limit,
+        offset=offset,
+        sort_desc=sort_desc,
+    )
+    count = storage.count_tool_usage(
+        tool_id=tool_id,
+        agent_id=agent_id,
+        context_type=context_type,
+        context_id=context_id,
+    )
+    return {
+        "tool_id": tool_id,
+        "agent_id": agent_id,
+        "context_type": context_type,
+        "context_id": context_id,
+        "count": count,
+        "usage": [_sanitize_tool_usage_payload(entry, role) for entry in usage],
+        "updated_at": _now_iso(),
+    }
+
+
 @app.get("/api/tools/{tool_id}")
 async def get_tool(request: Request, tool_id: str) -> Dict[str, Any]:
+    if tool_id in {"usage", "search"}:
+        raise HTTPException(status_code=404, detail=f"tool '{tool_id}' not found")
     role = _require_role(request, required="viewer")
     tool = storage.get_tool_registry(tool_id)
     if not tool:
@@ -1686,19 +1728,34 @@ async def get_tool(request: Request, tool_id: str) -> Dict[str, Any]:
 async def get_tool_usage(
     request: Request,
     tool_id: str,
+    agent_id: Optional[str] = None,
+    context_type: Optional[str] = None,
+    context_id: Optional[str] = None,
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     sort_desc: bool = True,
 ) -> Dict[str, Any]:
+    if tool_id in {"usage", "search"}:
+        raise HTTPException(status_code=404, detail=f"tool '{tool_id}' not found")
     role = _require_role(request, required="viewer")
+    count = storage.count_tool_usage(
+        tool_id=tool_id,
+        agent_id=agent_id,
+        context_type=context_type,
+        context_id=context_id,
+    )
     usage = storage.list_tool_usage(
         tool_id=tool_id,
+        agent_id=agent_id,
+        context_type=context_type,
+        context_id=context_id,
         limit=limit,
         offset=offset,
         sort_desc=sort_desc,
     )
     return {
         "tool_id": tool_id,
+        "count": count,
         "usage": [_sanitize_tool_usage_payload(entry, role) for entry in usage],
         "updated_at": _now_iso(),
     }
@@ -1710,6 +1767,8 @@ async def record_tool_usage(
     tool_id: str,
     payload: ToolUsageCreate,
 ) -> Dict[str, Any]:
+    if tool_id in {"usage", "search"}:
+        raise HTTPException(status_code=404, detail=f"tool '{tool_id}' not found")
     role = _require_role(request, required="admin")
     try:
         usage = storage.append_tool_usage(
@@ -1717,6 +1776,8 @@ async def record_tool_usage(
             agent_id=payload.agent_id,
             session_id=payload.session_id,
             request_id=payload.request_id,
+            context_type=payload.context_type,
+            context_id=payload.context_id,
             status=payload.status,
             duration_ms=payload.duration_ms,
             result_status=payload.result_status,
@@ -2430,9 +2491,10 @@ async def get_memory(
     request: Request,
     scope: Optional[str] = None,
     item_type: Optional[str] = Query(default=None, alias="type"),
+    item_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
-    rows = storage.list_memory(scope=scope, item_type=item_type)
+    rows = storage.list_memory(scope=scope, item_type=item_type, item_id=item_id)
     return {"memory": rows, "updated_at": _now_iso()}
 
 
@@ -2445,9 +2507,13 @@ async def add_memory_entry(request: Request, payload: MemoryCreate) -> Dict[str,
 
 
 @app.get("/api/chat_history")
-async def get_chat_history(request: Request, agent_id: Optional[str] = None) -> Dict[str, Any]:
+async def get_chat_history(
+    request: Request,
+    agent_id: Optional[str] = None,
+    item_id: Optional[str] = None,
+) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
-    rows = storage.list_chat_history(agent_id=agent_id)
+    rows = storage.list_chat_history(agent_id=agent_id, item_id=item_id)
     return {"chat_history": rows, "updated_at": _now_iso()}
 
 

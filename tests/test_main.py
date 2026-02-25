@@ -384,6 +384,141 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(viewer_entry["session_id"], "***redacted***")
         self.assertEqual(viewer_entry["details"]["result_count"], 1)
 
+    def test_tool_usage_filtering(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "browser-agent-filtered",
+            "name": "Browser agent filtered",
+            "source": "integration test",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "metadata": {
+                "tools": [
+                    {
+                        "namespace": "browser",
+                        "action": "open_page",
+                        "description": "Open a URL",
+                    },
+                ]
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        tools = self.client.get("/api/tools", headers=admin_headers, params={"namespace": "browser", "sort": "updated"})
+        self.assertEqual(tools.status_code, 200, tools.text)
+        self.assertEqual(tools.json()["count"], 1)
+        tool = tools.json()["tools"][0]
+        tool_id = tool["id"]
+
+        memory_usage_payload = {
+            "agent_id": "agent-memory",
+            "session_id": "session-mem",
+            "request_id": "req-mem",
+            "status": "executed",
+            "duration_ms": 32,
+            "result_status": "ok",
+            "context_type": "memory",
+            "context_id": "memory-item-1",
+            "details": {"result_count": 3},
+            "payload": {"url": "https://example.org/memory"},
+        }
+        chat_usage_payload = {
+            "agent_id": "agent-chat",
+            "session_id": "session-chat",
+            "request_id": "req-chat",
+            "status": "executed",
+            "duration_ms": 64,
+            "result_status": "ok",
+            "context_type": "chat",
+            "context_id": "chat-item-1",
+            "details": {"result_count": 2},
+            "payload": {"url": "https://example.org/chat"},
+        }
+
+        recorded_memory = self.client.post(f"/api/tools/{tool_id}/usage", headers=admin_headers, json=memory_usage_payload)
+        self.assertEqual(recorded_memory.status_code, 200, recorded_memory.text)
+        recorded_chat = self.client.post(f"/api/tools/{tool_id}/usage", headers=admin_headers, json=chat_usage_payload)
+        self.assertEqual(recorded_chat.status_code, 200, recorded_chat.text)
+
+        filtered_by_agent = self.client.get(f"/api/tools/{tool_id}/usage", headers=admin_headers, params={"agent_id": "agent-memory"})
+        self.assertEqual(filtered_by_agent.status_code, 200, filtered_by_agent.text)
+        payload_by_agent = filtered_by_agent.json()
+        self.assertEqual(payload_by_agent["count"], 1)
+        usage_by_agent = payload_by_agent["usage"]
+        self.assertEqual(len(usage_by_agent), 1)
+        self.assertEqual(usage_by_agent[0]["context_type"], "memory")
+        self.assertEqual(usage_by_agent[0]["context_id"], "memory-item-1")
+
+        global_filter = self.client.get(
+            "/api/tools/usage",
+            headers=read_headers,
+            params={"context_type": "chat"},
+        )
+        self.assertEqual(global_filter.status_code, 200, global_filter.text)
+        global_payload = global_filter.json()
+        self.assertEqual(global_payload["count"], 1)
+        self.assertEqual(global_payload["usage"][0]["context_type"], "chat")
+        self.assertEqual(global_payload["usage"][0]["agent_id"], "***redacted***")
+
+        global_context_id_filter = self.client.get(
+            "/api/tools/usage",
+            headers=read_headers,
+            params={"context_type": "memory", "context_id": "memory-item-1"},
+        )
+        self.assertEqual(global_context_id_filter.status_code, 200, global_context_id_filter.text)
+        filtered_payload = global_context_id_filter.json()
+        self.assertEqual(filtered_payload["count"], 1)
+        self.assertEqual(filtered_payload["usage"][0]["context_type"], "memory")
+        self.assertEqual(filtered_payload["usage"][0]["context_id"], "memory-item-1")
+
+    def test_memory_and_chat_item_id_filters(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        mem_a = self.client.post("/api/memory", headers=admin_headers, json={
+            "scope": "global",
+            "type": "note",
+            "content": "Memory entry for item filter assertions.",
+        })
+        self.assertEqual(mem_a.status_code, 200, mem_a.text)
+        mem_a_payload = mem_a.json()["memory"]
+
+        mem_b = self.client.post("/api/memory", headers=admin_headers, json={
+            "scope": "global",
+            "type": "note",
+            "content": "Second memory entry for unrelated check.",
+        })
+        self.assertEqual(mem_b.status_code, 200, mem_b.text)
+
+        memory_item = self.client.get("/api/memory", headers=read_headers, params={"item_id": mem_a_payload["id"]})
+        self.assertEqual(memory_item.status_code, 200, memory_item.text)
+        memory_rows = memory_item.json()["memory"]
+        self.assertEqual(len(memory_rows), 1)
+        self.assertEqual(memory_rows[0]["id"], mem_a_payload["id"])
+
+        chat_a = self.client.post("/api/chat_history", headers=admin_headers, json={
+            "agent_id": "agent-memory",
+            "summary": "First chat summary.",
+        })
+        self.assertEqual(chat_a.status_code, 200, chat_a.text)
+        chat_payload = chat_a.json()["chat"]
+
+        chat_b = self.client.post("/api/chat_history", headers=admin_headers, json={
+            "agent_id": "agent-memory",
+            "summary": "Second chat summary.",
+        })
+        self.assertEqual(chat_b.status_code, 200, chat_b.text)
+
+        chat_item = self.client.get("/api/chat_history", headers=read_headers, params={"item_id": chat_payload["id"]})
+        self.assertEqual(chat_item.status_code, 200, chat_item.text)
+        chat_rows = chat_item.json()["chat_history"]
+        self.assertEqual(len(chat_rows), 1)
+        self.assertEqual(chat_rows[0]["id"], chat_payload["id"])
+
     def test_runtime_actions_require_admin(self):
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
