@@ -1500,6 +1500,183 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("invalid agent lifecycle", response.json()["detail"])
 
+    def test_gm_ticket_routes_and_permissions(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        created = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={
+                "title": "Launch plan checkpoint review",
+                "requested_by": "founder",
+                "status": "open",
+                "priority": "normal",
+                "agent_scope": "ops",
+                "metadata": {
+                    "source": "review-flow",
+                    "api_key": "gm-secret",
+                    "notes": "first draft",
+                },
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        created_payload = created.json()
+        created_ticket = created_payload["ticket"]
+        ticket_id = created_ticket["id"]
+        self.assertEqual(created_ticket["title"], "Launch plan checkpoint review")
+        self.assertEqual(created_ticket["requested_by"], "founder")
+        self.assertEqual(created_ticket["status"], "open")
+        self.assertEqual(created_ticket["priority"], "normal")
+        self.assertEqual(created_ticket["metadata"]["api_key"], "gm-secret")
+
+        read_only_create = self.client.post(
+            "/api/gm-tickets",
+            headers=read_headers,
+            json={"title": "Viewer block", "requested_by": "viewer"},
+        )
+        self.assertEqual(read_only_create.status_code, 403)
+
+        ticket_view = self.client.get(f"/api/gm-tickets/{ticket_id}", headers=read_headers)
+        self.assertEqual(ticket_view.status_code, 200, ticket_view.text)
+        viewer_ticket = ticket_view.json()["ticket"]
+        self.assertEqual(viewer_ticket["id"], ticket_id)
+        self.assertEqual(viewer_ticket["metadata"]["api_key"], "***redacted***")
+        self.assertEqual(viewer_ticket["metadata"]["notes"], "first draft")
+
+        list_view = self.client.get("/api/gm-tickets", headers=read_headers, params={"status": "open"})
+        self.assertEqual(list_view.status_code, 200, list_view.text)
+        viewer_tickets = list_view.json()["tickets"]
+        self.assertEqual(viewer_tickets[0]["id"], ticket_id)
+        self.assertEqual(viewer_tickets[0]["metadata"]["api_key"], "***redacted***")
+
+        list_admin = self.client.get("/api/gm-tickets", headers=admin_headers, params={"status": "open"})
+        self.assertEqual(list_admin.status_code, 200, list_admin.text)
+        admin_tickets = list_admin.json()["tickets"]
+        self.assertEqual(admin_tickets[0]["id"], ticket_id)
+        self.assertEqual(admin_tickets[0]["metadata"]["api_key"], "gm-secret")
+
+        updated = self.client.patch(
+            f"/api/gm-tickets/{ticket_id}",
+            headers=admin_headers,
+            json={"status": "resolved", "priority": "high", "assigned_to": "ops-notify"},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        updated_ticket = updated.json()["ticket"]
+        self.assertEqual(updated_ticket["status"], "resolved")
+        self.assertEqual(updated_ticket["priority"], "high")
+        self.assertEqual(updated_ticket["assigned_to"], "ops-notify")
+        self.assertIsNotNone(updated_ticket["closed_at"])
+
+        admin_messages = self.client.get(f"/api/gm-tickets/{ticket_id}/messages", headers=admin_headers)
+        self.assertEqual(admin_messages.status_code, 200, admin_messages.text)
+        self.assertEqual(admin_messages.json()["count"], 0)
+
+        message = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/messages",
+            headers=admin_headers,
+            json={
+                "sender": "gm-ui",
+                "content": "Escalated to core planner",
+                "message_type": "comment",
+                "metadata": {"api_key": "message-secret"},
+            },
+        )
+        self.assertEqual(message.status_code, 200, message.text)
+        message_payload = message.json()["message"]
+        self.assertEqual(message_payload["sender"], "gm-ui")
+        self.assertEqual(message_payload["message_type"], "comment")
+
+        read_only_message = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/messages",
+            headers=read_headers,
+            json={"sender": "viewer", "content": "viewer block"},
+        )
+        self.assertEqual(read_only_message.status_code, 403)
+
+        list_admin_messages = self.client.get(f"/api/gm-tickets/{ticket_id}/messages", headers=admin_headers)
+        self.assertEqual(list_admin_messages.status_code, 200, list_admin_messages.text)
+        admin_messages_payload = list_admin_messages.json()["messages"]
+        self.assertEqual(admin_messages_payload[0]["metadata"]["api_key"], "message-secret")
+        self.assertEqual(admin_messages_payload[0]["content"], "Escalated to core planner")
+
+        list_view_messages = self.client.get(f"/api/gm-tickets/{ticket_id}/messages", headers=read_headers)
+        self.assertEqual(list_view_messages.status_code, 200, list_view_messages.text)
+        view_messages_payload = list_view_messages.json()["messages"]
+        self.assertEqual(view_messages_payload[0]["metadata"]["api_key"], "***redacted***")
+
+        events = self.client.get("/api/events", headers=admin_headers).json()["events"]
+        create_events = [event for event in events if event.get("type") == "gm_ticket.created"]
+        update_events = [event for event in events if event.get("type") == "gm_ticket.updated"]
+        message_events = [event for event in events if event.get("type") == "gm_ticket.message"]
+        self.assertTrue(create_events)
+        self.assertTrue(update_events)
+        self.assertTrue(message_events)
+        self.assertIn("gm_ticket_id", create_events[0]["payload"])
+        self.assertIn("gm_ticket_id", update_events[0]["payload"])
+        self.assertIn("gm_ticket_id", message_events[0]["payload"])
+
+    def test_gm_ticket_routes_reject_bad_inputs(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        missing_title = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={"requested_by": "founder"},
+        )
+        self.assertEqual(missing_title.status_code, 422, missing_title.text)
+
+        invalid_create = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={"title": "invalid ticket", "requested_by": "founder", "status": "bogus-status"},
+        )
+        self.assertEqual(invalid_create.status_code, 400, invalid_create.text)
+
+        created = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={"title": "Invalid update test", "requested_by": "founder"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        ticket_id = created.json()["ticket"]["id"]
+
+        bad_update = self.client.patch(
+            f"/api/gm-tickets/{ticket_id}",
+            headers=admin_headers,
+            json={"status": "bogus"},
+        )
+        self.assertEqual(bad_update.status_code, 400, bad_update.text)
+
+        empty_update = self.client.patch(
+            f"/api/gm-tickets/{ticket_id}",
+            headers=admin_headers,
+            json={},
+        )
+        self.assertEqual(empty_update.status_code, 400, empty_update.text)
+        self.assertEqual(empty_update.json()["detail"], "No ticket fields provided")
+
+        bad_message_type = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/messages",
+            headers=admin_headers,
+            json={"sender": "gm-ui", "content": "Bad type", "message_type": "invalid"},
+        )
+        self.assertEqual(bad_message_type.status_code, 400, bad_message_type.text)
+
+        viewer_update = self.client.patch(
+            f"/api/gm-tickets/{ticket_id}",
+            headers=read_headers,
+            json={"status": "resolved"},
+        )
+        self.assertEqual(viewer_update.status_code, 403)
+
+        not_found = self.client.get("/api/gm-tickets/does-not-exist", headers=admin_headers)
+        self.assertEqual(not_found.status_code, 404, not_found.text)
+
+        not_found_message = self.client.get("/api/gm-tickets/does-not-exist/messages", headers=admin_headers)
+        self.assertEqual(not_found_message.status_code, 404, not_found_message.text)
+
     def test_provider_discovery_success_stores_model_metadata(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
 
