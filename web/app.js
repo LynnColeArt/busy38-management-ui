@@ -161,6 +161,20 @@ async function patchJson(path, body) {
   });
 }
 
+function downloadTextFile(filename, content, mimeType = "application/json") {
+  const body = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  const blob = new Blob([body], { type: `${mimeType};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
+}
+
 function renderCards(targetId, items, renderRow) {
   const container = qs(targetId);
   if (!container) {
@@ -1180,6 +1194,7 @@ function renderGmTicketDetail(ticket) {
         </label>
         <button type="button" data-action="save-gm-ticket-update" data-ticket-id="${escapeHtml(ticket.id)}">Save</button>
         ${ticket.status === "closed" ? "" : `<button type="button" data-action="close-gm-ticket" data-ticket-id="${escapeHtml(ticket.id)}">Close now</button>`}
+        <button type="button" data-action="export-gm-ticket-audit" data-ticket-id="${escapeHtml(ticket.id)}">Export audit</button>
       </div>
     </div>
   `;
@@ -2424,6 +2439,22 @@ async function loadGmTicketAudit(ticketId) {
   }
 }
 
+async function exportGmTicketAudit(ticketId) {
+  const targetId = ticketId || state.selectedGmTicketId;
+  if (!targetId) {
+    setStatus("#gmTicketAuditStatus", "select a GM ticket before exporting audit", "err");
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/gm-tickets/${encodeURIComponent(targetId)}/audit/export`);
+    const filename = `gm-ticket-${targetId}-audit-${Date.now()}.json`;
+    downloadTextFile(filename, payload);
+    setStatus("#gmTicketAuditStatus", `exported audit for ${targetId}`, "ok");
+  } catch (err) {
+    setStatus("#gmTicketAuditStatus", `failed to export ticket audit: ${err.message}`, "err");
+  }
+}
+
 function _buildGmTicketUpdatePayload() {
   const ticketId = state.selectedGmTicketId;
   if (!ticketId) {
@@ -3162,6 +3193,12 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "export-gm-ticket-audit") {
+    const ticketId = target.dataset.ticketId;
+    await exportGmTicketAudit(ticketId);
+    return;
+  }
+
   if (action === "rerun-import") {
     const importId = target.dataset.id;
     const rerunInput = qs("#importRerunFile");
@@ -3511,6 +3548,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "gm-ticket-assigned-to"
     && action !== "save-gm-ticket-update"
     && action !== "close-gm-ticket"
+    && action !== "export-gm-ticket-audit"
     && action !== "reassign-directory-scope"
     && action !== "apply-discovered-model"
     && action !== "test-provider-models"

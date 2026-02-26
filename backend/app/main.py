@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -473,6 +474,37 @@ def _sanitize_gm_ticket_payload(ticket: Dict[str, Any], role: str) -> Dict[str, 
 
 def _sanitize_gm_ticket_messages(messages: List[Dict[str, Any]], role: str) -> List[Dict[str, Any]]:
     return [dict(msg, metadata=_redact_metadata(msg.get("metadata"), role)) for msg in messages]
+
+
+def _sanitize_gm_ticket_events(events: List[Dict[str, Any]], role: str) -> List[Dict[str, Any]]:
+    return [
+        dict(event, payload=_redact_metadata(event.get("payload"), role))
+        for event in events
+    ]
+
+
+def _build_gm_ticket_audit_payload(
+    ticket_id: str,
+    role: str,
+    *,
+    event_limit: int = 100,
+) -> Dict[str, Any]:
+    ticket = storage.get_gm_ticket(ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
+
+    messages = _sanitize_gm_ticket_messages(storage.list_gm_ticket_messages(ticket_id), role)
+    events = _sanitize_gm_ticket_events(storage.list_events(event_limit, gm_ticket_id=ticket_id), role)
+    return {
+        "ticket": _sanitize_gm_ticket_payload(ticket, role),
+        "messages": messages,
+        "events": events,
+        "summary": {
+            "message_count": len(messages),
+            "event_count": len(events),
+        },
+        "updated_at": _now_iso(),
+    }
 
 
 def _sanitize_provider(provider: Dict[str, Any], role: str) -> Dict[str, Any]:
@@ -2460,22 +2492,35 @@ async def get_gm_ticket_audit(
     if not normalized_ticket_id:
         raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
 
-    ticket = storage.get_gm_ticket(normalized_ticket_id)
-    if not ticket:
-        raise HTTPException(status_code=404, detail=f"ticket '{normalized_ticket_id}' not found")
+    return _build_gm_ticket_audit_payload(normalized_ticket_id, role, event_limit=event_limit)
 
-    messages = _sanitize_gm_ticket_messages(storage.list_gm_ticket_messages(normalized_ticket_id), role)
-    events = storage.list_events(event_limit, gm_ticket_id=normalized_ticket_id)
-    return {
-        "ticket": _sanitize_gm_ticket_payload(ticket, role),
-        "messages": messages,
-        "events": events,
-        "summary": {
-            "message_count": len(messages),
-            "event_count": len(events),
-        },
-        "updated_at": _now_iso(),
+
+@app.get("/api/gm-tickets/{ticket_id}/audit/export")
+async def export_gm_ticket_audit(
+    request: Request,
+    ticket_id: str,
+    event_limit: int = Query(default=100, ge=1, le=1000),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    normalized_ticket_id = str(ticket_id).strip()
+    if not normalized_ticket_id:
+        raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
+
+    audit = _build_gm_ticket_audit_payload(normalized_ticket_id, role, event_limit=event_limit)
+    generated_at = _now_iso()
+    updated_at = _now_iso()
+    export_payload = {
+        "export_format": "gm-ticket-audit-v1",
+        "ticket_id": normalized_ticket_id,
+        "generated_at": generated_at,
+        "generated_by": role,
+        "role": role,
+        "audit": audit,
+        "updated_at": updated_at,
     }
+    canonical = json.dumps(export_payload, sort_keys=True, separators=(",", ":"))
+    export_payload["audit_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return export_payload
 
 
 @app.patch("/api/gm-tickets/{ticket_id}")

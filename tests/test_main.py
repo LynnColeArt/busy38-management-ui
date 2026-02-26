@@ -6,6 +6,7 @@ import importlib
 import os
 import sys
 import json
+import hashlib
 import tempfile
 from datetime import datetime, timedelta, timezone
 import unittest
@@ -1698,6 +1699,73 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(viewer_message["metadata"]["api_key"], "***redacted***")
 
         not_found = self.client.get("/api/gm-tickets/missing/audit", headers=admin_headers)
+        self.assertEqual(not_found.status_code, 404, not_found.text)
+
+    def test_gm_ticket_audit_export_endpoint_returns_signed_snapshot(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        created = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={
+                "title": "Audit export validation",
+                "requested_by": "founder",
+                "status": "queued",
+                "priority": "high",
+                "agent_scope": "global",
+                "metadata": {
+                    "api_key": "gm-ticket-secret",
+                    "notes": "audit export",
+                },
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        ticket_id = created.json()["ticket"]["id"]
+
+        message = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/messages",
+            headers=admin_headers,
+            json={
+                "sender": "gm-ui",
+                "content": "Export sanity check",
+                "message_type": "comment",
+                "metadata": {"api_key": "gm-message-secret", "channel": "audit"},
+            },
+        )
+        self.assertEqual(message.status_code, 200, message.text)
+
+        admin_export = self.client.get(
+            f"/api/gm-tickets/{ticket_id}/audit/export",
+            headers=admin_headers,
+        )
+        self.assertEqual(admin_export.status_code, 200, admin_export.text)
+        admin_payload = admin_export.json()
+        self.assertEqual(admin_payload["export_format"], "gm-ticket-audit-v1")
+        self.assertEqual(admin_payload["ticket_id"], ticket_id)
+        self.assertEqual(admin_payload["audit"]["ticket"]["metadata"]["api_key"], "gm-ticket-secret")
+        self.assertTrue(admin_payload["audit_hash"])
+        recomputed = hashlib.sha256(
+            json.dumps(
+                {k: admin_payload[k] for k in admin_payload if k != "audit_hash"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+        ).hexdigest()
+        self.assertEqual(admin_payload["audit_hash"], recomputed)
+
+        viewer_export = self.client.get(
+            f"/api/gm-tickets/{ticket_id}/audit/export",
+            headers=read_headers,
+        )
+        self.assertEqual(viewer_export.status_code, 200, viewer_export.text)
+        viewer_payload = viewer_export.json()
+        self.assertEqual(viewer_payload["audit"]["ticket"]["metadata"]["api_key"], "***redacted***")
+        first_message = (viewer_payload["audit"]["messages"] or [])[0]
+        self.assertEqual(first_message["metadata"]["api_key"], "***redacted***")
+        self.assertIn("summary", viewer_payload["audit"])
+
+        not_found = self.client.get("/api/gm-tickets/missing/audit/export", headers=admin_headers)
         self.assertEqual(not_found.status_code, 404, not_found.text)
 
     def test_gm_ticket_routes_reject_bad_inputs(self):
