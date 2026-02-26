@@ -4,6 +4,19 @@ const API_BASE = (() => {
 })();
 
 const TOKEN_KEY = "busy38-management-token";
+const GM_TICKET_STATUS_OPTIONS = [
+  "requested",
+  "queued",
+  "open",
+  "in_progress",
+  "blocked",
+  "complete",
+  "resolved",
+  "closed",
+  "archived",
+];
+const GM_TICKET_PRIORITY_OPTIONS = ["low", "normal", "high", "critical"];
+const GM_TICKET_MESSAGE_TYPES = ["comment", "status", "request"];
 const state = {
   settings: {},
   providers: [],
@@ -29,6 +42,12 @@ const state = {
   toolUsageCount: 0,
   agentOverlayHistory: [],
   agentOverlayHistoryCount: 0,
+  gmTickets: [],
+  selectedGmTicketId: "",
+  selectedGmTicket: null,
+  gmTicketMessages: [],
+  gmTicketMessageCount: 0,
+  gmTicketAudit: null,
 };
 let eventSocket = null;
 
@@ -1038,6 +1057,221 @@ function renderChat(rows) {
       return `<li><strong>${escapeHtml(row.agent_id)}</strong> (${escapeHtml(row.id)}): ${escapeHtml(row.summary)}${sessionText} — <small>${escapeHtml(row.timestamp)}</small></li>`;
     })
     .join("");
+}
+
+function renderGmTickets(tickets) {
+  const root = qs("#gmTickets");
+  if (!root) {
+    return;
+  }
+  if (!Array.isArray(tickets) || tickets.length === 0) {
+    root.innerHTML = "<p>No GM tickets to display.</p>";
+    return;
+  }
+
+  const cards = tickets
+    .map((ticket) => {
+      const isSelected = state.selectedGmTicketId === ticket.id;
+      const status = escapeHtml(ticket.status || "open");
+      const priority = escapeHtml(ticket.priority || "normal");
+      const assigned = escapeHtml(ticket.assigned_to || "unassigned");
+      const createdAt = escapeHtml(ticket.created_at || ticket.createdAt || "n/a");
+      const updatedAt = escapeHtml(ticket.updated_at || ticket.updatedAt || "n/a");
+      const requestedBy = escapeHtml(ticket.requested_by || "unknown");
+      return `
+        <div class="card${isSelected ? " selected" : ""}">
+          <h3>${escapeHtml(ticket.title || "untitled")}</h3>
+          <p><strong>ID:</strong> ${escapeHtml(ticket.id || "unknown")}</p>
+          <p><strong>Status:</strong> ${status}</p>
+          <p><strong>Priority:</strong> ${priority}</p>
+          <p><strong>Assigned to:</strong> ${assigned}</p>
+          <p><strong>Requested by:</strong> ${requestedBy}</p>
+          <p><strong>Phase:</strong> ${escapeHtml(ticket.phase || "n/a")}</p>
+          <p><strong>Created:</strong> ${createdAt}</p>
+          <p><strong>Updated:</strong> ${updatedAt}</p>
+          <p>
+            <button type="button" data-action="open-gm-ticket" data-id="${escapeHtml(ticket.id || "")}">
+              Open
+            </button>
+          </p>
+        </div>
+      `;
+    })
+    .join("");
+
+  root.innerHTML = `<div class="card-list">${cards}</div>`;
+}
+
+function _gmTicketStatusOptions(currentStatus) {
+  const statusList = GM_TICKET_STATUS_OPTIONS;
+  return statusList
+    .map(
+      (status) => `<option value="${status}"${status === currentStatus ? " selected" : ""}>${status}</option>`,
+    )
+    .join("");
+}
+
+function _gmTicketPriorityOptions(currentPriority) {
+  const priorityList = GM_TICKET_PRIORITY_OPTIONS;
+  return priorityList
+    .map(
+      (priority) => `<option value="${priority}"${priority === currentPriority ? " selected" : ""}>${priority}</option>`,
+    )
+    .join("");
+}
+
+function renderGmTicketDetail(ticket) {
+  const root = qs("#gmTicketDetail");
+  if (!root) {
+    return;
+  }
+  if (!ticket || !ticket.id) {
+    root.innerHTML = "<p>Select a ticket from the GM ticket list to inspect details.</p>";
+    return;
+  }
+  const metadata = ticket.metadata || {};
+  const metadataText = Object.keys(metadata).length ? escapeHtml(JSON.stringify(metadata)) : "none";
+  const assigned = escapeHtml(ticket.assigned_to || "");
+  const phase = escapeHtml(ticket.phase || "");
+  const scope = escapeHtml(ticket.agent_scope || "global");
+  const requestedBy = escapeHtml(ticket.requested_by || "unknown");
+  const closedAt = ticket.closed_at ? escapeHtml(ticket.closed_at) : "open";
+
+  root.innerHTML = `
+    <div class="card">
+      <h3>${escapeHtml(ticket.title || "untitled")}</h3>
+      <p><strong>ID:</strong> ${escapeHtml(ticket.id)}</p>
+      <p><strong>Requested by:</strong> ${requestedBy}</p>
+      <p><strong>Current status:</strong> ${escapeHtml(ticket.status || "open")}</p>
+      <p><strong>Current priority:</strong> ${escapeHtml(ticket.priority || "normal")}</p>
+      <p><strong>Current scope:</strong> ${scope}</p>
+      <p><strong>Current phase:</strong> ${escapeHtml(ticket.phase || "n/a")}</p>
+      <p><strong>Assigned to:</strong> ${assigned || "unassigned"}</p>
+      <p><strong>Metadata:</strong> ${metadataText}</p>
+      <p><strong>Closed:</strong> ${closedAt}</p>
+      <p><strong>Created:</strong> ${escapeHtml(ticket.created_at || ticket.createdAt || "n/a")}</p>
+      <p><strong>Updated:</strong> ${escapeHtml(ticket.updated_at || ticket.updatedAt || "n/a")}</p>
+      <div class="control-row">
+        <label>
+          Status
+          <select data-action="gm-ticket-status" data-ticket-id="${escapeHtml(ticket.id)}">
+            ${_gmTicketStatusOptions(ticket.status || "open")}
+          </select>
+        </label>
+        <label>
+          Priority
+          <select data-action="gm-ticket-priority" data-ticket-id="${escapeHtml(ticket.id)}">
+            ${_gmTicketPriorityOptions(ticket.priority || "normal")}
+          </select>
+        </label>
+        <label>
+          Agent scope
+          <input type="text" data-action="gm-ticket-scope" data-ticket-id="${escapeHtml(ticket.id)}" value="${scope}" />
+        </label>
+        <label>
+          Phase
+          <input type="text" data-action="gm-ticket-phase" data-ticket-id="${escapeHtml(ticket.id)}" value="${phase}" />
+        </label>
+      </div>
+      <div class="control-row">
+        <label>
+          Assigned to
+          <input type="text" data-action="gm-ticket-assigned-to" data-ticket-id="${escapeHtml(ticket.id)}" value="${assigned}" />
+        </label>
+        <button type="button" data-action="save-gm-ticket-update" data-ticket-id="${escapeHtml(ticket.id)}">Save</button>
+        ${ticket.status === "closed" ? "" : `<button type="button" data-action="close-gm-ticket" data-ticket-id="${escapeHtml(ticket.id)}">Close now</button>`}
+      </div>
+    </div>
+  `;
+}
+
+function renderGmTicketMessages(messages) {
+  const root = qs("#gmTicketMessages");
+  if (!root) {
+    return;
+  }
+  if (!Array.isArray(messages) || messages.length === 0) {
+    root.innerHTML = "<p>No messages yet.</p>";
+    return;
+  }
+
+  const cards = messages
+    .map((message) => {
+      const metadata = message.metadata || {};
+      const metadataText = Object.keys(metadata).length ? `<pre>${escapeHtml(JSON.stringify(metadata, null, 2))}</pre>` : "";
+      return `
+        <div class="card">
+          <h4>${escapeHtml(message.sender || "sender unknown")}</h4>
+          <p><strong>Type:</strong> ${escapeHtml(message.message_type || "comment")}</p>
+          <p><strong>Message:</strong> ${escapeHtml(message.content || "")}</p>
+          <p><strong>At:</strong> ${escapeHtml(message.created_at || "n/a")}</p>
+          ${metadataText}
+        </div>
+      `;
+    })
+    .join("");
+
+  root.innerHTML = `<div class="card-list">${cards}</div>`;
+}
+
+function renderGmTicketAudit(audit) {
+  const root = qs("#gmTicketAudit");
+  if (!root) {
+    return;
+  }
+  if (!audit || !audit.ticket || !audit.ticket.id) {
+    root.innerHTML = "<p>Open a ticket to inspect its audit trail.</p>";
+    return;
+  }
+
+  const messages = Array.isArray(audit.messages) ? audit.messages : [];
+  const events = Array.isArray(audit.events) ? audit.events : [];
+  const summary = audit.summary || {};
+  const eventRows = events
+    .map(
+      (event) => {
+        const eventPayload = event.payload || {};
+        const payloadText = Object.keys(eventPayload).length
+          ? `<pre>${escapeHtml(JSON.stringify(eventPayload, null, 2))}</pre>`
+          : "";
+        return `
+          <div class="card">
+            <p><strong>${escapeHtml(event.type || "event")}</strong> <span>(${escapeHtml(event.level || "info")})</span></p>
+            <p><strong>At:</strong> ${escapeHtml(event.created_at || "n/a")}</p>
+            <p>${escapeHtml(event.message || "")}</p>
+            ${payloadText}
+          </div>
+        `;
+      },
+    )
+    .join("");
+
+  const messageRows = messages
+    .map(
+      (message) => `
+        <div class="card">
+          <p><strong>${escapeHtml(message.sender || "sender unknown")}</strong> — ${escapeHtml(message.message_type || "comment")}</p>
+          <p>${escapeHtml(message.content || "")}</p>
+          <p><strong>At:</strong> ${escapeHtml(message.created_at || "n/a")}</p>
+        </div>
+      `,
+    )
+    .join("");
+
+  root.innerHTML = `
+    <div class="card-list">
+      <div class="card">
+        <h3>Ticket ${escapeHtml(audit.ticket.id)}</h3>
+        <p><strong>Title:</strong> ${escapeHtml(audit.ticket.title || "untitled")}</p>
+        <p><strong>Thread messages:</strong> ${escapeHtml(String(summary.message_count || messages.length || 0))}</p>
+        <p><strong>Linked events:</strong> ${escapeHtml(String(summary.event_count || events.length || 0))}</p>
+      </div>
+      <h3>Ticket messages</h3>
+      ${messageRows || "<p>No messages yet.</p>"}
+      <h3>Audit events</h3>
+      ${eventRows || "<p>No audit events yet.</p>"}
+    </div>
+  `;
 }
 
 function connectEvents() {
@@ -2062,6 +2296,325 @@ async function loadImportAudit(importId) {
   }
 }
 
+function _readGmTicketFilters() {
+  return {
+    status: (qs("#gmTicketFilterStatus")?.value || "").trim(),
+    priority: (qs("#gmTicketFilterPriority")?.value || "").trim(),
+    assignedTo: (qs("#gmTicketFilterAssignedTo")?.value || "").trim(),
+    phase: (qs("#gmTicketFilterPhase")?.value || "").trim(),
+    limit: Math.min(200, Math.max(1, Number(qs("#gmTicketFilterLimit")?.value || 20))),
+    offset: Math.max(0, Number(qs("#gmTicketFilterOffset")?.value || 0)),
+  };
+}
+
+function _gmTicketPayloadFromList(filters) {
+  const params = new URLSearchParams();
+  if (filters.status) {
+    params.set("status", filters.status);
+  }
+  if (filters.priority) {
+    params.set("priority", filters.priority);
+  }
+  if (filters.assignedTo) {
+    params.set("assigned_to", filters.assignedTo);
+  }
+  if (filters.phase) {
+    params.set("phase", filters.phase);
+  }
+  if (filters.limit != null) {
+    params.set("limit", String(filters.limit));
+  }
+  if (filters.offset != null) {
+    params.set("offset", String(filters.offset));
+  }
+  return params;
+}
+
+async function loadGmTickets() {
+  const filters = _readGmTicketFilters();
+  const params = _gmTicketPayloadFromList(filters);
+  const query = params.toString();
+  setStatus("#gmTicketStatus", "loading GM tickets...", "");
+  try {
+    const payload = await fetchJson(`/api/gm-tickets${query ? `?${query}` : ""}`);
+    state.gmTickets = payload.tickets || payload.items || [];
+    if (state.selectedGmTicketId) {
+      const selectedTicketStillPresent = state.gmTickets.some((ticket) => ticket.id === state.selectedGmTicketId);
+      if (!selectedTicketStillPresent) {
+        state.selectedGmTicketId = "";
+        state.selectedGmTicket = null;
+        state.gmTicketMessages = [];
+        state.gmTicketAudit = null;
+        renderGmTicketDetail(null);
+        renderGmTicketMessages([]);
+        renderGmTicketAudit(null);
+      }
+    }
+    renderGmTickets(state.gmTickets);
+    setStatus("#gmTicketStatus", `loaded ${state.gmTickets.length} GM ticket(s)`, "ok");
+  } catch (err) {
+    state.gmTickets = [];
+    renderGmTickets([]);
+    setStatus("#gmTicketStatus", `failed to load GM tickets: ${err.message}`, "err");
+  }
+}
+
+async function loadGmTicket(ticketId) {
+  if (!ticketId) {
+    setStatus("#gmTicketDetailStatus", "ticket id required", "err");
+    return;
+  }
+  setStatus("#gmTicketDetailStatus", "loading ticket details...", "");
+  setStatus("#gmTicketAuditStatus", "loading audit trail...", "");
+  try {
+    const payload = await fetchJson(`/api/gm-tickets/${encodeURIComponent(ticketId)}`);
+    const ticket = payload.ticket || payload;
+    state.selectedGmTicketId = ticket.id || ticketId;
+    state.selectedGmTicket = ticket;
+    renderGmTicketDetail(ticket);
+    await loadGmTicketMessages(ticket.id || ticketId);
+    await loadGmTicketAudit(ticket.id || ticketId);
+    setStatus("#gmTicketDetailStatus", "ticket loaded", "ok");
+    setStatus("#gmTicketAuditStatus", "audit trail loaded", "ok");
+  } catch (err) {
+    state.selectedGmTicket = null;
+    renderGmTicketDetail(null);
+    renderGmTicketMessages([]);
+    renderGmTicketAudit(null);
+    state.gmTicketAudit = null;
+    setStatus("#gmTicketAuditStatus", `failed to load ticket audit: ${err.message}`, "err");
+    setStatus("#gmTicketDetailStatus", `failed to load ticket: ${err.message}`, "err");
+  }
+}
+
+async function loadGmTicketMessages(ticketId) {
+  if (!ticketId) {
+    state.gmTicketMessages = [];
+    renderGmTicketMessages([]);
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/gm-tickets/${encodeURIComponent(ticketId)}/messages`);
+    state.gmTicketMessages = payload.messages || [];
+    state.gmTicketMessageCount = Number(payload.count || state.gmTicketMessages.length || 0);
+    renderGmTicketMessages(state.gmTicketMessages);
+  } catch (err) {
+    state.gmTicketMessages = [];
+    state.gmTicketMessageCount = 0;
+    renderGmTicketMessages([]);
+    setStatus("#gmTicketMessageStatus", `failed to load messages: ${err.message}`, "err");
+  }
+}
+
+async function loadGmTicketAudit(ticketId) {
+  if (!ticketId) {
+    state.gmTicketAudit = null;
+    renderGmTicketAudit(null);
+    return;
+  }
+  try {
+    const payload = await fetchJson(`/api/gm-tickets/${encodeURIComponent(ticketId)}/audit`);
+    state.gmTicketAudit = payload;
+    renderGmTicketAudit(payload);
+    setStatus("#gmTicketAuditStatus", `loaded ${payload.summary?.event_count || 0} events`, "ok");
+  } catch (err) {
+    state.gmTicketAudit = null;
+    renderGmTicketAudit(null);
+    setStatus("#gmTicketAuditStatus", `failed to load ticket audit: ${err.message}`, "err");
+  }
+}
+
+function _buildGmTicketUpdatePayload() {
+  const ticketId = state.selectedGmTicketId;
+  if (!ticketId) {
+    return { ticketId: "", payload: null };
+  }
+  const ticket = state.selectedGmTicket || {};
+  const root = qs("#gmTicketDetail");
+  if (!root) {
+    return { ticketId, payload: null };
+  }
+  const statusNode = root.querySelector(`select[data-action="gm-ticket-status"][data-ticket-id="${ticketId}"]`);
+  const priorityNode = root.querySelector(`select[data-action="gm-ticket-priority"][data-ticket-id="${ticketId}"]`);
+  const scopeNode = root.querySelector(`input[data-action="gm-ticket-scope"][data-ticket-id="${ticketId}"]`);
+  const phaseNode = root.querySelector(`input[data-action="gm-ticket-phase"][data-ticket-id="${ticketId}"]`);
+  const assignedNode = root.querySelector(`input[data-action="gm-ticket-assigned-to"][data-ticket-id="${ticketId}"]`);
+
+  const next = {
+    status: statusNode?.value?.trim() || ticket.status || "open",
+    priority: priorityNode?.value?.trim() || ticket.priority || "normal",
+    agent_scope: scopeNode?.value?.trim() || ticket.agent_scope || "global",
+    phase: phaseNode?.value?.trim() || ticket.phase || null,
+    assigned_to: assignedNode?.value?.trim() || null,
+  };
+
+  return { ticketId, payload: next };
+}
+
+async function submitGmTicket(event) {
+  event.preventDefault();
+  const title = qs('input[name="gmTicketTitle"]')?.value.trim() || "";
+  const requestedBy = qs('input[name="gmTicketRequestedBy"]')?.value.trim() || "";
+  const status = qs('select[name="gmTicketStatus"]')?.value.trim() || undefined;
+  const priority = qs('select[name="gmTicketPriority"]')?.value.trim() || undefined;
+  const agentScope = qs('input[name="gmTicketAgentScope"]')?.value.trim() || undefined;
+  const phase = qs('input[name="gmTicketPhase"]')?.value.trim() || undefined;
+  const assignedTo = qs('input[name="gmTicketAssignedTo"]')?.value.trim() || undefined;
+  const metadataRaw = qs('textarea[name="gmTicketMetadata"]')?.value.trim() || "";
+
+  if (!title || !requestedBy) {
+    setStatus("#gmTicketCreateStatus", "title and requested by are required", "err");
+    return;
+  }
+
+  let metadata = undefined;
+  if (metadataRaw) {
+    try {
+      metadata = JSON.parse(metadataRaw);
+    } catch (err) {
+      setStatus("#gmTicketCreateStatus", "metadata must be valid JSON if provided", "err");
+      return;
+    }
+  }
+
+  const payload = {
+    title,
+    requested_by: requestedBy,
+  };
+  if (status) {
+    payload.status = status;
+  }
+  if (priority) {
+    payload.priority = priority;
+  }
+  if (agentScope) {
+    payload.agent_scope = agentScope;
+  }
+  if (phase) {
+    payload.phase = phase;
+  }
+  if (assignedTo) {
+    payload.assigned_to = assignedTo;
+  }
+  if (metadata != null) {
+    payload.metadata = metadata;
+  }
+
+  setStatus("#gmTicketCreateStatus", "creating GM ticket...", "");
+  try {
+    const created = await postJson("/api/gm-tickets", payload);
+    setStatus("#gmTicketCreateStatus", `created ${created.ticket_id || created.id || title}`, "ok");
+    if (qs('input[name="gmTicketTitle"]')) qs('input[name="gmTicketTitle"]').value = "";
+    if (qs('input[name="gmTicketRequestedBy"]')) qs('input[name="gmTicketRequestedBy"]').value = "";
+    if (qs('select[name="gmTicketStatus"]')) qs('select[name="gmTicketStatus"]').value = "";
+    if (qs('select[name="gmTicketPriority"]')) qs('select[name="gmTicketPriority"]').value = "normal";
+    if (qs('input[name="gmTicketAgentScope"]')) qs('input[name="gmTicketAgentScope"]').value = "";
+    if (qs('input[name="gmTicketPhase"]')) qs('input[name="gmTicketPhase"]').value = "";
+    if (qs('input[name="gmTicketAssignedTo"]')) qs('input[name="gmTicketAssignedTo"]').value = "";
+    if (qs('textarea[name="gmTicketMetadata"]')) qs('textarea[name="gmTicketMetadata"]').value = "";
+
+    await loadGmTickets();
+    const createdId = created.id || created.ticket_id || created.ticket?.id;
+    if (createdId) {
+      await loadGmTicket(createdId);
+    }
+  } catch (err) {
+    setStatus("#gmTicketCreateStatus", `create failed: ${err.message}`, "err");
+  }
+}
+
+async function saveGmTicketUpdate(event) {
+  if (event) {
+    event.preventDefault();
+  }
+  const { ticketId, payload } = _buildGmTicketUpdatePayload();
+  if (!ticketId || !payload) {
+    setStatus("#gmTicketDetailStatus", "select a ticket before saving", "err");
+    return;
+  }
+
+  setStatus("#gmTicketDetailStatus", "saving ticket update...", "");
+  try {
+    await patchJson(`/api/gm-tickets/${encodeURIComponent(ticketId)}`, payload);
+    setStatus("#gmTicketDetailStatus", "ticket updated", "ok");
+    await loadGmTickets();
+    await loadGmTicket(ticketId);
+  } catch (err) {
+    setStatus("#gmTicketDetailStatus", `update failed: ${err.message}`, "err");
+  }
+}
+
+async function closeGmTicket(ticketId = "") {
+  const target = String(ticketId || state.selectedGmTicketId || "").trim();
+  if (!target) {
+    setStatus("#gmTicketDetailStatus", "select a ticket before closing", "err");
+    return;
+  }
+  setStatus("#gmTicketDetailStatus", "closing ticket...", "");
+  try {
+    await patchJson(`/api/gm-tickets/${encodeURIComponent(target)}`, {
+      status: "closed",
+      closed_at: new Date().toISOString(),
+    });
+    setStatus("#gmTicketDetailStatus", "ticket closed", "ok");
+    await loadGmTickets();
+    await loadGmTicket(target);
+  } catch (err) {
+    setStatus("#gmTicketDetailStatus", `close failed: ${err.message}`, "err");
+  }
+}
+
+async function submitGmTicketMessage(event) {
+  event.preventDefault();
+  const ticketId = state.selectedGmTicketId;
+  if (!ticketId) {
+    setStatus("#gmTicketMessageStatus", "select a ticket first", "err");
+    return;
+  }
+  const sender = qs('input[name="gmTicketMessageSender"]')?.value.trim() || "";
+  const messageType = qs('select[name="gmTicketMessageType"]')?.value.trim() || GM_TICKET_MESSAGE_TYPES[0];
+  const content = qs('textarea[name="gmTicketMessageContent"]')?.value.trim() || "";
+  const metadataRaw = qs('textarea[name="gmTicketMessageMetadata"]')?.value.trim() || "";
+
+  if (!sender || !content) {
+    setStatus("#gmTicketMessageStatus", "sender and message content are required", "err");
+    return;
+  }
+
+  let metadata = undefined;
+  if (metadataRaw) {
+    try {
+      metadata = JSON.parse(metadataRaw);
+    } catch (err) {
+      setStatus("#gmTicketMessageStatus", "message metadata must be valid JSON if provided", "err");
+      return;
+    }
+  }
+
+  const payload = { sender, content, message_type: messageType };
+  if (metadata != null) {
+    payload.metadata = metadata;
+  }
+
+  setStatus("#gmTicketMessageStatus", "posting message...", "");
+  try {
+    await postJson(`/api/gm-tickets/${encodeURIComponent(ticketId)}/messages`, payload);
+    setStatus("#gmTicketMessageStatus", "message posted", "ok");
+    const contentInput = qs('textarea[name="gmTicketMessageContent"]');
+    if (contentInput) {
+      contentInput.value = "";
+    }
+  const metadataInput = qs('textarea[name="gmTicketMessageMetadata"]');
+  if (metadataInput) {
+    metadataInput.value = "";
+  }
+    await loadGmTicketMessages(ticketId);
+    await loadGmTicket(ticketId);
+  } catch (err) {
+    setStatus("#gmTicketMessageStatus", `message failed: ${err.message}`, "err");
+  }
+}
+
 async function saveSettings(event) {
   event.preventDefault();
   const autoRestart = qs('input[name="auto_restart"]').checked;
@@ -2444,6 +2997,11 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "refresh-gm-tickets") {
+    await loadGmTickets();
+    return;
+  }
+
   if (action === "load-tool-log-session") {
     await loadToolLogBySession();
     return;
@@ -2526,6 +3084,81 @@ async function onTableChange(event) {
     state.selectedImportId = importId;
     await loadImportItems(importId);
     await loadImportAudit(importId);
+    return;
+  }
+
+  if (action === "open-gm-ticket") {
+    const ticketId = target.dataset.id;
+    if (!ticketId) {
+      setStatus("#gmTicketDetailStatus", "ticket id missing", "err");
+      return;
+    }
+    await loadGmTicket(ticketId);
+    return;
+  }
+
+  if (action === "gm-ticket-status") {
+    const ticketId = target.dataset.ticketId;
+    if (!state.selectedGmTicket || state.selectedGmTicket.id !== ticketId) {
+      setStatus("#gmTicketDetailStatus", "open ticket before updating", "err");
+      return;
+    }
+    state.selectedGmTicket.status = target.value;
+    return;
+  }
+
+  if (action === "gm-ticket-priority") {
+    const ticketId = target.dataset.ticketId;
+    if (!state.selectedGmTicket || state.selectedGmTicket.id !== ticketId) {
+      setStatus("#gmTicketDetailStatus", "open ticket before updating", "err");
+      return;
+    }
+    state.selectedGmTicket.priority = target.value;
+    return;
+  }
+
+  if (action === "gm-ticket-scope") {
+    const ticketId = target.dataset.ticketId;
+    if (!state.selectedGmTicket || state.selectedGmTicket.id !== ticketId) {
+      setStatus("#gmTicketDetailStatus", "open ticket before updating", "err");
+      return;
+    }
+    state.selectedGmTicket.agent_scope = target.value;
+    return;
+  }
+
+  if (action === "gm-ticket-phase") {
+    const ticketId = target.dataset.ticketId;
+    if (!state.selectedGmTicket || state.selectedGmTicket.id !== ticketId) {
+      setStatus("#gmTicketDetailStatus", "open ticket before updating", "err");
+      return;
+    }
+    state.selectedGmTicket.phase = target.value;
+    return;
+  }
+
+  if (action === "gm-ticket-assigned-to") {
+    const ticketId = target.dataset.ticketId;
+    if (!state.selectedGmTicket || state.selectedGmTicket.id !== ticketId) {
+      setStatus("#gmTicketDetailStatus", "open ticket before updating", "err");
+      return;
+    }
+    state.selectedGmTicket.assigned_to = target.value;
+    return;
+  }
+
+  if (action === "save-gm-ticket-update") {
+    const ticketId = target.dataset.ticketId;
+    if (ticketId) {
+      state.selectedGmTicketId = ticketId;
+    }
+    await saveGmTicketUpdate();
+    return;
+  }
+
+  if (action === "close-gm-ticket") {
+    const ticketId = target.dataset.ticketId;
+    await closeGmTicket(ticketId);
     return;
   }
 
@@ -2818,6 +3451,7 @@ async function boot() {
       loadImportJobs(),
       loadAgents(),
       loadAgentDirectory(),
+      loadGmTickets(),
       loadEvents(),
       loadMemory(),
       loadChatHistory(),
@@ -2861,6 +3495,8 @@ document.body.addEventListener("click", (event) => {
     && action !== "refresh-tool-usage"
     && action !== "refresh-tool-log"
     && action !== "load-tool-log-session"
+    && action !== "refresh-gm-tickets"
+    && action !== "open-gm-ticket"
     && action !== "rerun-import"
     && action !== "open-tool-context"
     && action !== "open-tool-session"
@@ -2868,6 +3504,13 @@ document.body.addEventListener("click", (event) => {
     && action !== "open-agent-tool-usage"
     && action !== "open-agent-overlay-history"
     && action !== "refresh-agent-overlay-history"
+    && action !== "gm-ticket-status"
+    && action !== "gm-ticket-priority"
+    && action !== "gm-ticket-scope"
+    && action !== "gm-ticket-phase"
+    && action !== "gm-ticket-assigned-to"
+    && action !== "save-gm-ticket-update"
+    && action !== "close-gm-ticket"
     && action !== "reassign-directory-scope"
     && action !== "apply-discovered-model"
     && action !== "test-provider-models"
@@ -2888,6 +3531,14 @@ document.body.addEventListener("click", (event) => {
   onTableChange(event);
 });
 qs("#importRerunFile")?.addEventListener("change", submitImportRerun);
+qs("#gmTicketCreateForm")?.addEventListener("submit", submitGmTicket);
+qs("#gmTicketMessageForm")?.addEventListener("submit", submitGmTicketMessage);
+qs("#gmTicketFilterStatus")?.addEventListener("change", loadGmTickets);
+qs("#gmTicketFilterPriority")?.addEventListener("change", loadGmTickets);
+qs("#gmTicketFilterAssignedTo")?.addEventListener("change", loadGmTickets);
+qs("#gmTicketFilterPhase")?.addEventListener("change", loadGmTickets);
+qs("#gmTicketFilterLimit")?.addEventListener("change", loadGmTickets);
+qs("#gmTicketFilterOffset")?.addEventListener("change", loadGmTickets);
 
 boot();
 setInterval(boot, 15000);

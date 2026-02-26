@@ -1616,6 +1616,90 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertIn("gm_ticket_id", update_events[0]["payload"])
         self.assertIn("gm_ticket_id", message_events[0]["payload"])
 
+    def test_gm_ticket_audit_endpoint_returns_thread_and_linked_events(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        created = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={
+                "title": "Audit trail validation",
+                "requested_by": "founder",
+                "status": "requested",
+                "priority": "high",
+                "agent_scope": "global",
+                "metadata": {
+                    "api_key": "gm-ticket-secret",
+                    "notes": "audit flow",
+                },
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        ticket_id = created.json()["ticket"]["id"]
+
+        update = self.client.patch(
+            f"/api/gm-tickets/{ticket_id}",
+            headers=admin_headers,
+            json={"status": "queued"},
+        )
+        self.assertEqual(update.status_code, 200, update.text)
+
+        message = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/messages",
+            headers=admin_headers,
+            json={
+                "sender": "gm-ui",
+                "content": "Route to platform team.",
+                "message_type": "request",
+                "metadata": {"api_key": "gm-message-secret"},
+            },
+        )
+        self.assertEqual(message.status_code, 200, message.text)
+
+        created_secondary = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={"title": "Different ticket", "requested_by": "founder"},
+        )
+        self.assertEqual(created_secondary.status_code, 200, created_secondary.text)
+        second_id = created_secondary.json()["ticket"]["id"]
+        _ = self.client.patch(
+            f"/api/gm-tickets/{second_id}",
+            headers=admin_headers,
+            json={"status": "queued"},
+        )
+
+        admin_audit = self.client.get(f"/api/gm-tickets/{ticket_id}/audit", headers=admin_headers)
+        self.assertEqual(admin_audit.status_code, 200, admin_audit.text)
+        payload = admin_audit.json()
+        self.assertEqual(payload["ticket"]["id"], ticket_id)
+        self.assertEqual(payload["ticket"]["metadata"]["api_key"], "gm-ticket-secret")
+        self.assertEqual(payload["summary"].get("message_count"), len(payload.get("messages") or []))
+        self.assertGreaterEqual(payload["summary"].get("event_count", 0), 2)
+
+        events = payload.get("events") or []
+        self.assertTrue(events)
+        self.assertTrue(
+            all((ev.get("payload") or {}).get("gm_ticket_id") == ticket_id for ev in events),
+            "audit should only include events for this gm ticket",
+        )
+        event_count = len([ev for ev in events if (ev.get("payload") or {}).get("gm_ticket_id") == ticket_id])
+        self.assertEqual(payload["summary"]["event_count"], event_count)
+
+        admin_message = (payload.get("messages") or [])[0]
+        self.assertEqual(admin_message["metadata"]["api_key"], "gm-message-secret")
+
+        viewer_audit = self.client.get(f"/api/gm-tickets/{ticket_id}/audit", headers=read_headers)
+        self.assertEqual(viewer_audit.status_code, 200, viewer_audit.text)
+        viewer_payload = viewer_audit.json()
+        self.assertEqual(viewer_payload["ticket"]["metadata"]["api_key"], "***redacted***")
+        viewer_message = (viewer_payload.get("messages") or [])[0]
+        self.assertEqual(viewer_message["metadata"]["api_key"], "***redacted***")
+
+        not_found = self.client.get("/api/gm-tickets/missing/audit", headers=admin_headers)
+        self.assertEqual(not_found.status_code, 404, not_found.text)
+
     def test_gm_ticket_routes_reject_bad_inputs(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}

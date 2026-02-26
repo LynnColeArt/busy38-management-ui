@@ -21,6 +21,7 @@ flowchart LR
     Tools["Tool APIs<br/>/api/tools*"]
     Imports["Import APIs<br/>/api/agents/import*"]
     Agents["Agent APIs<br/>/api/agents*"]
+    GmTickets["GM Ticket APIs<br/>/api/gm-tickets*"]
     RuntimeAPI["Runtime APIs<br/>/api/runtime/*"]
     Memory["Memory & chat APIs<br/>/api/memory, /api/chat_history"]
     Events["Event APIs<br/>/api/events, /api/events/ws"]
@@ -41,7 +42,7 @@ flowchart LR
 
   subgraph "Persistence (backend/app/storage.py)"
     Schema["SQLite schema bootstrap"]
-    DB["management.db<br/>settings / providers / plugins / tools / agents / events / imports / memory / chat_history"]
+    DB["management.db<br/>settings / providers / plugins / tools / agents / events / imports / memory / chat_history / gm_tickets / gm_ticket_messages"]
     PluginSync["plugin->tool_registry sync"]
   end
 
@@ -63,6 +64,7 @@ flowchart LR
   Auth --> Tools
   Auth --> Imports
   Auth --> Agents
+  Auth --> GmTickets
   Auth --> RuntimeAPI
   Auth --> Memory
   Auth --> Events
@@ -105,6 +107,7 @@ flowchart LR
 
   RuntimeAPI --> Runtime
   RuntimeAPI --> DB
+  GmTickets --> DB
   ToolUsage["tool usage writes<br/>/api/tools/{id}/usage"]
   ToolUsage --> DB
 

@@ -57,6 +57,7 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - Seeded defaults are loaded on first run and persisted in local SQLite storage.
 - Persistence is now backed by SQLite in `backend/data/management.db` (auto-created).
 - API is versioned by endpoint conventions and can be swapped behind a proxy later.
+- GM ticket workflow now has a management-plane interface for creation, filtering, assignment, status updates, and threaded operator notes.
 
 ## API surface (MVP)
 
@@ -82,6 +83,13 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `POST /api/agents/import/{import_id}/decision`
 - `GET /api/agents`
 - `PATCH /api/agents/{agent_id}`
+- `POST /api/gm-tickets`
+- `GET /api/gm-tickets`
+- `GET /api/gm-tickets/{ticket_id}`
+- `PATCH /api/gm-tickets/{ticket_id}`
+- `POST /api/gm-tickets/{ticket_id}/messages`
+- `GET /api/gm-tickets/{ticket_id}/messages`
+- `GET /api/gm-tickets/{ticket_id}/audit`
 - `GET /api/events` for latest event list
 - `GET /api/events/ws` for live websocket event stream (role included in each frame)
 - `GET /api/memory`

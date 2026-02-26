@@ -84,6 +84,30 @@ AGENT_LIFECYCLE_ACTIVE = "active"
 AGENT_LIFECYCLE_ARCHIVED = "archived"
 AGENT_LIFECYCLE_ALL = "all"
 _AGENT_LIFECYCLE_VALUES = {AGENT_LIFECYCLE_ACTIVE, AGENT_LIFECYCLE_ARCHIVED}
+_GOTICKET_STATUSES = {
+    "requested",
+    "queued",
+    "open",
+    "in_progress",
+    "blocked",
+    "complete",
+    "resolved",
+    "closed",
+    "archived",
+}
+_GOTICKET_PRIORITIES = {"low", "normal", "high", "critical"}
+_GOTICKET_CLOSED_STATUSES = {"complete", "resolved", "closed", "archived"}
+_GOTICKET_STATUS_TRANSITIONS = {
+    "requested": {"queued", "in_progress", "blocked", "archived"},
+    "queued": {"in_progress", "blocked", "archived", "requested"},
+    "open": {"queued", "in_progress", "blocked", "resolved", "closed", "archived"},
+    "in_progress": {"blocked", "complete", "resolved", "closed", "archived"},
+    "blocked": {"queued", "in_progress", "closed", "resolved", "archived"},
+    "complete": {"resolved", "closed", "archived"},
+    "resolved": {"closed", "archived"},
+    "closed": {"archived"},
+    "archived": set(),
+}
 
 
 def _normalize_import_metadata(source_metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -233,6 +257,53 @@ def _ensure_import_tables(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(import_id) REFERENCES import_jobs(id) ON DELETE CASCADE,
             FOREIGN KEY(import_item_id) REFERENCES import_items(id) ON DELETE CASCADE
         );
+        """
+    )
+
+
+def _ensure_gm_ticket_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS gm_tickets (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            agent_scope TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            requested_by TEXT NOT NULL,
+            assigned_to TEXT NOT NULL,
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS gm_ticket_messages (
+            id TEXT PRIMARY KEY,
+            gm_ticket_id TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            content TEXT NOT NULL,
+            message_type TEXT NOT NULL,
+            metadata TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(gm_ticket_id) REFERENCES gm_tickets(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_gm_tickets_status
+            ON gm_tickets(status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_gm_tickets_priority
+            ON gm_tickets(priority);
+        CREATE INDEX IF NOT EXISTS idx_gm_tickets_agent_scope
+            ON gm_tickets(agent_scope);
+        CREATE INDEX IF NOT EXISTS idx_gm_tickets_phase
+            ON gm_tickets(phase);
+        CREATE INDEX IF NOT EXISTS idx_gm_tickets_assigned_to
+            ON gm_tickets(assigned_to);
+        CREATE INDEX IF NOT EXISTS idx_gm_ticket_messages_ticket
+            ON gm_ticket_messages(gm_ticket_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_gm_ticket_messages_sender
+            ON gm_ticket_messages(sender);
         """
     )
 
@@ -479,6 +550,7 @@ def ensure_schema() -> None:
         _ensure_tool_tables(conn)
         _ensure_tool_usage_columns(conn)
         _ensure_chat_history_columns(conn)
+        _ensure_gm_ticket_tables(conn)
         conn.commit()
 
         row = conn.execute("SELECT 1 FROM settings WHERE id='singleton'").fetchone()
@@ -2204,19 +2276,346 @@ def restore_agent(agent_id: str) -> Dict:
         return payload
 
 
-def list_events(limit: int = 25) -> List[Dict]:
+def list_events(limit: int = 25, *, gm_ticket_id: Optional[str] = None) -> List[Dict]:
     normalized_limit = max(1, min(limit, 100))
+    normalized_ticket_id = str(gm_ticket_id).strip() if gm_ticket_id is not None else ""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT * FROM events ORDER BY datetime(created_at) DESC LIMIT ?",
-            (normalized_limit,),
+            (1000,),
         ).fetchall()
-        out = []
-        for row in rows:
-            payload = _dict_from_row(row)
-            payload["payload"] = _coerce_json_payload(payload.get("payload"))
-            out.append(payload)
-        return out
+
+    out = []
+    for row in rows:
+        payload = _dict_from_row(row)
+        parsed_payload = _coerce_json_payload(payload.get("payload"))
+        payload["payload"] = parsed_payload
+
+        if normalized_ticket_id:
+            event_payload = parsed_payload
+            if not isinstance(event_payload, dict):
+                continue
+            if str(event_payload.get("gm_ticket_id") or "").strip() != normalized_ticket_id:
+                continue
+
+        out.append(payload)
+        if len(out) >= normalized_limit:
+            break
+
+    return out
+
+
+def _normalize_gm_ticket_status(value: Optional[str]) -> str:
+    normalized = str(value or "open").strip().lower()
+    if not normalized:
+        normalized = "open"
+    if normalized not in _GOTICKET_STATUSES:
+        raise ValueError(f"unsupported ticket status: {value!r}")
+    return normalized
+
+
+def _validate_gm_status_transition(current_status: str, requested_status: str) -> None:
+    normalized_current = _normalize_gm_ticket_status(current_status)
+    normalized_requested = _normalize_gm_ticket_status(requested_status)
+    allowed = _GOTICKET_STATUS_TRANSITIONS.get(normalized_current, set())
+    if normalized_requested == normalized_current:
+        return
+    if normalized_requested not in allowed:
+        raise ValueError(
+            f"invalid GM ticket status transition: {normalized_current!r} -> {normalized_requested!r}"
+        )
+
+
+def _normalize_gm_ticket_priority(value: Optional[str]) -> str:
+    normalized = str(value or "normal").strip().lower()
+    if not normalized:
+        normalized = "normal"
+    if normalized not in _GOTICKET_PRIORITIES:
+        raise ValueError(f"unsupported ticket priority: {value!r}")
+    return normalized
+
+
+def create_gm_ticket(values: Dict[str, Any]) -> Dict[str, Any]:
+    title = str(values.get("title", "")).strip()
+    if not title:
+        raise ValueError("title is required")
+
+    ticket_id = str(values.get("id") or f"gm-ticket-{uuid.uuid4().hex[:12]}").strip()
+    if not ticket_id:
+        raise ValueError("ticket id is required")
+
+    status = _normalize_gm_ticket_status(values.get("status"))
+    priority = _normalize_gm_ticket_priority(values.get("priority"))
+    agent_scope = str(values.get("agent_scope", "global")).strip() or "global"
+    phase = str(values.get("phase", "active")).strip() or "active"
+    requested_by = str(values.get("requested_by", "")).strip()
+    if not requested_by:
+        raise ValueError("requested_by is required")
+    assigned_to = str(values.get("assigned_to", "")).strip() or "unassigned"
+
+    now = _now_iso()
+    with get_connection() as conn:
+        existing = conn.execute("SELECT 1 FROM gm_tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if existing:
+            raise ValueError(f"ticket '{ticket_id}' already exists")
+
+        metadata = _coerce_metadata_for_storage(values.get("metadata"))
+        conn.execute(
+            """
+            INSERT INTO gm_tickets(
+                id,
+                title,
+                status,
+                priority,
+                agent_scope,
+                phase,
+                requested_by,
+                assigned_to,
+                metadata,
+                created_at,
+                updated_at,
+                closed_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ticket_id,
+                title,
+                status,
+                priority,
+                agent_scope,
+                phase,
+                requested_by,
+                assigned_to,
+                metadata,
+                now,
+                now,
+                None,
+            ),
+        )
+        conn.commit()
+
+    payload = get_gm_ticket(ticket_id)
+    if payload is None:
+        raise RuntimeError(f"failed to create ticket '{ticket_id}'")
+    return payload
+
+
+def list_gm_tickets(
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    phase: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    normalized_limit = max(1, min(1000, int(limit)))
+    normalized_offset = max(0, int(offset))
+    filters: List[str] = []
+    args: List[Any] = []
+
+    if status is not None:
+        normalized_status = _normalize_gm_ticket_status(status)
+        filters.append("status = ?")
+        args.append(normalized_status)
+    if priority is not None:
+        filters.append("priority = ?")
+        args.append(_normalize_gm_ticket_priority(priority))
+    if assigned_to is not None:
+        normalized_assigned_to = str(assigned_to).strip()
+        if normalized_assigned_to:
+            filters.append("assigned_to = ?")
+            args.append(normalized_assigned_to)
+    if phase is not None:
+        normalized_phase = str(phase).strip()
+        if normalized_phase:
+            filters.append("phase = ?")
+            args.append(normalized_phase)
+
+    where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM gm_tickets {where_clause} ORDER BY datetime(updated_at) DESC LIMIT ? OFFSET ?",
+            tuple(args + [normalized_limit, normalized_offset]),
+        ).fetchall()
+
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        payload = _dict_from_row(row)
+        payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
+        out.append(payload)
+    return out
+
+
+def get_gm_ticket(ticket_id: str) -> Optional[Dict[str, Any]]:
+    normalized_ticket_id = str(ticket_id).strip()
+    if not normalized_ticket_id:
+        return None
+
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM gm_tickets WHERE id = ?", (normalized_ticket_id,)).fetchone()
+        if not row:
+            return None
+        payload = _dict_from_row(row)
+        payload["metadata"] = _coerce_json_payload(payload.get("metadata"))
+        return payload
+
+
+def update_gm_ticket(ticket_id: str, values: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_ticket_id = str(ticket_id).strip()
+    if not normalized_ticket_id:
+        raise ValueError("ticket id is required")
+
+    payload: Dict[str, Any] = {}
+    title = values.get("title")
+    if title is not None:
+        payload["title"] = str(title).strip()
+        if not payload["title"]:
+            raise ValueError("title cannot be empty")
+
+    if values.get("status") is not None:
+        payload["status"] = _normalize_gm_ticket_status(values.get("status"))
+
+    if values.get("priority") is not None:
+        payload["priority"] = _normalize_gm_ticket_priority(values.get("priority"))
+
+    if values.get("assigned_to") is not None:
+        payload["assigned_to"] = str(values.get("assigned_to", "")).strip() or "unassigned"
+
+    if values.get("agent_scope") is not None:
+        payload["agent_scope"] = str(values.get("agent_scope", "")).strip() or "global"
+
+    if values.get("phase") is not None:
+        payload["phase"] = str(values.get("phase", "")).strip()
+
+    if values.get("metadata") is not None:
+        payload["metadata"] = _coerce_metadata_for_storage(values.get("metadata"))
+
+    if values.get("closed_at") is not None:
+        payload["closed_at"] = str(values.get("closed_at")).strip() or None
+
+    if not payload:
+        return get_gm_ticket(ticket_id)  # type: ignore[return-value]
+
+    now = _now_iso()
+    updated_status = payload.get("status")
+    with get_connection() as conn:
+        existing = conn.execute("SELECT * FROM gm_tickets WHERE id = ?", (normalized_ticket_id,)).fetchone()
+        if not existing:
+            raise KeyError(f"ticket '{normalized_ticket_id}' not found")
+
+        if updated_status is not None:
+            existing_status = _normalize_gm_ticket_status(existing["status"])
+            _validate_gm_status_transition(existing_status, updated_status)
+
+        if updated_status in _GOTICKET_CLOSED_STATUSES:
+            payload.setdefault("closed_at", now)
+        elif updated_status in _GOTICKET_STATUSES:
+            payload["closed_at"] = None
+
+        updates = [f"{key} = ?" for key in payload]
+        updates.append("updated_at = ?")
+        args = [payload[key] for key in payload]
+        args.append(now)
+        args.append(normalized_ticket_id)
+
+        conn.execute(
+            f"UPDATE gm_tickets SET {', '.join(updates)} WHERE id = ?",
+            tuple(args),
+        )
+        conn.commit()
+
+    updated = get_gm_ticket(normalized_ticket_id)
+    if updated is None:
+        raise RuntimeError(f"failed to read ticket '{normalized_ticket_id}'")
+    return updated
+
+
+def append_gm_ticket_message(
+    ticket_id: str,
+    sender: str,
+    content: str,
+    message_type: str = "comment",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    normalized_ticket_id = str(ticket_id).strip()
+    if not normalized_ticket_id:
+        raise ValueError("ticket id is required")
+    normalized_sender = str(sender).strip()
+    if not normalized_sender:
+        raise ValueError("sender is required")
+    normalized_content = str(content).strip()
+    if not normalized_content:
+        raise ValueError("content is required")
+
+    normalized_message_type = str(message_type).strip() or "comment"
+    if normalized_message_type not in {"comment", "status", "request"}:
+        raise ValueError(f"unsupported message_type: {message_type!r}")
+
+    now = _now_iso()
+    message_id = f"gm-msg-{uuid.uuid4().hex[:12]}"
+    with get_connection() as conn:
+        existing = conn.execute("SELECT 1 FROM gm_tickets WHERE id = ?", (normalized_ticket_id,)).fetchone()
+        if not existing:
+            raise KeyError(f"ticket '{normalized_ticket_id}' not found")
+
+        conn.execute(
+            """
+            INSERT INTO gm_ticket_messages(
+                id,
+                gm_ticket_id,
+                sender,
+                content,
+                message_type,
+                metadata,
+                created_at
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message_id,
+                normalized_ticket_id,
+                normalized_sender,
+                normalized_content,
+                normalized_message_type,
+                _coerce_metadata_for_storage(metadata),
+                now,
+            ),
+        )
+        conn.commit()
+
+    row = get_gm_ticket(normalized_ticket_id)
+    if row is None:
+        raise RuntimeError(f"ticket '{normalized_ticket_id}' not found")
+    return {
+        "id": message_id,
+        "gm_ticket_id": normalized_ticket_id,
+        "sender": normalized_sender,
+        "content": normalized_content,
+        "message_type": normalized_message_type,
+        "metadata": metadata,
+        "created_at": now,
+    }
+
+
+def list_gm_ticket_messages(ticket_id: str) -> List[Dict[str, Any]]:
+    normalized_ticket_id = str(ticket_id).strip()
+    if not normalized_ticket_id:
+        return []
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM gm_ticket_messages WHERE gm_ticket_id = ? ORDER BY datetime(created_at) ASC",
+            (normalized_ticket_id,),
+        ).fetchall()
+
+    return [
+        {
+            **_dict_from_row(row),
+            "metadata": _coerce_json_payload(row["metadata"]),
+        }
+        for row in rows
+    ]
 
 
 def append_event(event_type: str, message: str, level: str = "info", payload: Optional[Dict[str, Any]] = None) -> Dict:

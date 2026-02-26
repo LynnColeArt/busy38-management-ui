@@ -208,6 +208,35 @@ class DirectoryScopeReassignRequest(BaseModel):
     note: Optional[str] = None
 
 
+class GmTicketCreate(BaseModel):
+    title: str
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    agent_scope: Optional[str] = None
+    phase: Optional[str] = None
+    requested_by: str
+    assigned_to: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class GmTicketUpdate(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    agent_scope: Optional[str] = None
+    phase: Optional[str] = None
+    assigned_to: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    closed_at: Optional[str] = None
+
+
+class GmTicketMessageCreate(BaseModel):
+    sender: str
+    content: str
+    message_type: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     storage.ensure_schema()
@@ -434,6 +463,16 @@ def _coerce_iso_datetime(value: Optional[str]) -> Optional[datetime]:
         return dt
     except ValueError:
         return None
+
+
+def _sanitize_gm_ticket_payload(ticket: Dict[str, Any], role: str) -> Dict[str, Any]:
+    payload = dict(ticket)
+    payload["metadata"] = _redact_metadata(payload.get("metadata"), role)
+    return payload
+
+
+def _sanitize_gm_ticket_messages(messages: List[Dict[str, Any]], role: str) -> List[Dict[str, Any]]:
+    return [dict(msg, metadata=_redact_metadata(msg.get("metadata"), role)) for msg in messages]
 
 
 def _sanitize_provider(provider: Dict[str, Any], role: str) -> Dict[str, Any]:
@@ -2338,6 +2377,186 @@ async def restore_agent(
         payload={"agent_id": str(agent_id), **payload},
     )
     return {"agent": _agent_with_overlay(agent, role), "updated_at": _now_iso()}
+
+
+@app.post("/api/gm-tickets")
+async def create_gm_ticket(request: Request, payload: GmTicketCreate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(status_code=400, detail="ticket payload is required")
+    try:
+        ticket = storage.create_gm_ticket(values)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    ticket = _sanitize_gm_ticket_payload(ticket, role)
+    _event_for(
+        role,
+        "gm_ticket.created",
+        f"GM ticket created: {ticket['id']}",
+        "info",
+        payload={
+            "gm_ticket_id": str(ticket.get("id")),
+            "status": ticket.get("status"),
+            "priority": ticket.get("priority"),
+            "actor": role,
+        },
+    )
+    return {"ticket": ticket, "updated_at": _now_iso()}
+
+
+@app.get("/api/gm-tickets")
+async def list_gm_tickets(
+    request: Request,
+    status: Optional[str] = Query(default=None),
+    priority: Optional[str] = Query(default=None),
+    assigned_to: Optional[str] = Query(default=None),
+    phase: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    try:
+        tickets = storage.list_gm_tickets(
+            status=status,
+            priority=priority,
+            assigned_to=assigned_to,
+            phase=phase,
+            limit=limit,
+            offset=offset,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    sanitized = [_sanitize_gm_ticket_payload(ticket, role) for ticket in tickets]
+    return {
+        "tickets": sanitized,
+        "count": len(sanitized),
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/gm-tickets/{ticket_id}")
+async def get_gm_ticket(request: Request, ticket_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    ticket = storage.get_gm_ticket(ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
+    return {
+        "ticket": _sanitize_gm_ticket_payload(ticket, role),
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/gm-tickets/{ticket_id}/audit")
+async def get_gm_ticket_audit(
+    request: Request,
+    ticket_id: str,
+    event_limit: int = Query(default=100, ge=1, le=1000),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    normalized_ticket_id = str(ticket_id).strip()
+    if not normalized_ticket_id:
+        raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
+
+    ticket = storage.get_gm_ticket(normalized_ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail=f"ticket '{normalized_ticket_id}' not found")
+
+    messages = _sanitize_gm_ticket_messages(storage.list_gm_ticket_messages(normalized_ticket_id), role)
+    events = storage.list_events(event_limit, gm_ticket_id=normalized_ticket_id)
+    return {
+        "ticket": _sanitize_gm_ticket_payload(ticket, role),
+        "messages": messages,
+        "events": events,
+        "summary": {
+            "message_count": len(messages),
+            "event_count": len(events),
+        },
+        "updated_at": _now_iso(),
+    }
+
+
+@app.patch("/api/gm-tickets/{ticket_id}")
+async def update_gm_ticket(request: Request, ticket_id: str, payload: GmTicketUpdate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    values = payload.model_dump(exclude_unset=True)
+    if not values:
+        raise HTTPException(status_code=400, detail="No ticket fields provided")
+    try:
+        ticket = storage.update_gm_ticket(ticket_id, values)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    ticket = _sanitize_gm_ticket_payload(ticket, role)
+    _event_for(
+        role,
+        "gm_ticket.updated",
+        f"GM ticket updated: {ticket_id}",
+        "info",
+        payload={
+            "gm_ticket_id": str(ticket_id),
+            "fields": sorted(values.keys()),
+            "actor": role,
+        },
+    )
+    return {"ticket": ticket, "updated_at": _now_iso()}
+
+
+@app.post("/api/gm-tickets/{ticket_id}/messages")
+async def create_gm_ticket_message(
+    request: Request,
+    ticket_id: str,
+    payload: GmTicketMessageCreate,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    values = payload.model_dump(exclude_unset=True)
+    try:
+        message = storage.append_gm_ticket_message(
+            ticket_id,
+            sender=values["sender"],
+            content=values["content"],
+            message_type=values.get("message_type") or "comment",
+            metadata=values.get("metadata"),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    _event_for(
+        role,
+        "gm_ticket.message",
+        f"Message added to GM ticket: {ticket_id}",
+        "info",
+        payload={
+            "gm_ticket_id": str(ticket_id),
+            "sender": message.get("sender"),
+            "message_type": message.get("message_type"),
+            "actor": role,
+        },
+    )
+    return {
+        "message": dict(message, metadata=_redact_metadata(message.get("metadata"), role)),
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/gm-tickets/{ticket_id}/messages")
+async def list_gm_ticket_messages(request: Request, ticket_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    if not storage.get_gm_ticket(ticket_id):
+        raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
+    messages = _sanitize_gm_ticket_messages(storage.list_gm_ticket_messages(ticket_id), role)
+    return {
+        "ticket_id": str(ticket_id).strip(),
+        "messages": messages,
+        "count": len(messages),
+        "updated_at": _now_iso(),
+    }
 
 
 def _normalise_source_type(source_type: str) -> str:

@@ -226,6 +226,151 @@
       </section>
 
       <section class="panel">
+        <h2>GM tickets</h2>
+        <div class="control-row">
+          <label>
+            Status
+            <select id="gmTicketFilterStatus">
+              <option value="">all</option>
+              <option value="requested">requested</option>
+              <option value="queued">queued</option>
+              <option value="open">open</option>
+              <option value="in_progress">in_progress</option>
+              <option value="blocked">blocked</option>
+              <option value="complete">complete</option>
+              <option value="resolved">resolved</option>
+              <option value="closed">closed</option>
+              <option value="archived">archived</option>
+            </select>
+          </label>
+          <label>
+            Priority
+            <select id="gmTicketFilterPriority">
+              <option value="">all</option>
+              <option value="low">low</option>
+              <option value="normal">normal</option>
+              <option value="high">high</option>
+              <option value="critical">critical</option>
+            </select>
+          </label>
+          <label>
+            Assigned to
+            <input id="gmTicketFilterAssignedTo" type="text" placeholder="optional" />
+          </label>
+          <label>
+            Phase
+            <input id="gmTicketFilterPhase" type="text" placeholder="optional" />
+          </label>
+          <label>
+            Limit
+            <input id="gmTicketFilterLimit" type="number" min="1" max="200" value="20" />
+          </label>
+          <label>
+            Offset
+            <input id="gmTicketFilterOffset" type="number" min="0" value="0" />
+          </label>
+          <button type="button" data-action="refresh-gm-tickets">Refresh</button>
+        </div>
+        <p id="gmTicketStatus" class="status"></p>
+        <div id="gmTickets"></div>
+
+        <h3>Open a GM ticket</h3>
+        <form id="gmTicketCreateForm">
+          <label>
+            Title
+            <input name="gmTicketTitle" type="text" placeholder="Investigate onboarding edge case" required />
+          </label>
+          <label>
+            Requested by
+            <input name="gmTicketRequestedBy" type="text" placeholder="operator id" required />
+          </label>
+          <label>
+            Status
+            <select name="gmTicketStatus">
+              <option value="">default</option>
+              <option value="requested">requested</option>
+              <option value="queued">queued</option>
+              <option value="open">open</option>
+              <option value="in_progress">in_progress</option>
+              <option value="blocked">blocked</option>
+              <option value="complete">complete</option>
+              <option value="resolved">resolved</option>
+              <option value="closed">closed</option>
+              <option value="archived">archived</option>
+            </select>
+          </label>
+          <label>
+            Priority
+            <select name="gmTicketPriority">
+              <option value="">default</option>
+              <option value="low">low</option>
+              <option value="normal" selected>normal</option>
+              <option value="high">high</option>
+              <option value="critical">critical</option>
+            </select>
+          </label>
+          <label>
+            Agent scope
+            <input name="gmTicketAgentScope" type="text" placeholder="global" />
+          </label>
+          <label>
+            Phase
+            <input name="gmTicketPhase" type="text" placeholder="planning" />
+          </label>
+          <label>
+            Assigned to
+            <input name="gmTicketAssignedTo" type="text" placeholder="orchestrator-core" />
+          </label>
+          <label>
+            Metadata (optional JSON)
+            <textarea name="gmTicketMetadata" rows="4" placeholder='{"notes":"optional metadata"}'></textarea>
+          </label>
+          <button type="submit">Create ticket</button>
+        </form>
+        <p id="gmTicketCreateStatus" class="status"></p>
+      </section>
+
+      <section class="panel">
+        <h2>GM ticket detail</h2>
+        <p id="gmTicketDetailStatus" class="status"></p>
+        <div id="gmTicketDetail">
+          <p>Select a ticket from the GM ticket list to inspect details.</p>
+        </div>
+        <h3>GM ticket thread</h3>
+        <div id="gmTicketMessages"></div>
+        <form id="gmTicketMessageForm">
+          <label>
+            Sender
+            <input name="gmTicketMessageSender" type="text" placeholder="gm" value="human" />
+          </label>
+          <label>
+            Message type
+            <select name="gmTicketMessageType">
+              <option value="comment">comment</option>
+              <option value="status">status</option>
+              <option value="request">request</option>
+            </select>
+          </label>
+          <label>
+            Message
+            <textarea name="gmTicketMessageContent" rows="4" required placeholder="Add a note..."></textarea>
+          </label>
+          <label>
+            Metadata (optional JSON)
+            <textarea name="gmTicketMessageMetadata" rows="2" placeholder='{"intent":"optional metadata"}'></textarea>
+          </label>
+          <button type="submit">Add message</button>
+        </form>
+        <p id="gmTicketMessageStatus" class="status"></p>
+      </section>
+
+      <section class="panel">
+        <h2>GM ticket audit trail</h2>
+        <p id="gmTicketAuditStatus" class="status"></p>
+        <div id="gmTicketAudit"></div>
+      </section>
+
+      <section class="panel">
         <h2>Intake imports</h2>
         <form id="importForm">
           <label>
