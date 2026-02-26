@@ -84,6 +84,7 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `GET /api/agents`
 - `PATCH /api/agents/{agent_id}`
 - `POST /api/gm-tickets`
+- `POST /api/gm/message`
 - `GET /api/gm-tickets`
 - `GET /api/gm-tickets/{ticket_id}`
 - `PATCH /api/gm-tickets/{ticket_id}`

@@ -238,6 +238,15 @@ class GmTicketMessageCreate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class GmDirectMessageCreate(BaseModel):
+    sender: str
+    content: str
+    ticket_id: Optional[str] = None
+    title: Optional[str] = None
+    message_type: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     storage.ensure_schema()
@@ -2436,6 +2445,91 @@ async def create_gm_ticket(request: Request, payload: GmTicketCreate) -> Dict[st
         },
     )
     return {"ticket": ticket, "updated_at": _now_iso()}
+
+
+@app.post("/api/gm/message")
+async def send_direct_gm_message(request: Request, payload: GmDirectMessageCreate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    values = payload.model_dump(exclude_unset=True)
+
+    sender = str(values.get("sender", "")).strip()
+    if not sender:
+        raise HTTPException(status_code=400, detail="sender is required")
+    content = str(values.get("content", "")).strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content is required")
+
+    ticket_id = str(values.get("ticket_id") or "").strip()
+    message_type = str(values.get("message_type") or "comment").strip() or "comment"
+    metadata = values.get("metadata")
+
+    created_ticket = False
+    resolved_ticket_id = ticket_id
+    if not resolved_ticket_id:
+        created_ticket = True
+        title = str(values.get("title") or "").strip() or f"GM direct message from {sender}"
+        ticket_payload = {
+            "title": title[:140],
+            "requested_by": sender,
+            "status": "requested",
+            "priority": "normal",
+            "agent_scope": "global",
+            "phase": "direct_message",
+            "metadata": {
+                "source": "direct_message",
+                "initiator": sender,
+            },
+        }
+        try:
+            ticket = storage.create_gm_ticket(ticket_payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        resolved_ticket_id = str(ticket.get("id") or "").strip()
+        if not resolved_ticket_id:
+            raise HTTPException(status_code=500, detail="failed to initialize direct GM ticket")
+    else:
+        existing = storage.get_gm_ticket(resolved_ticket_id)
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"ticket '{resolved_ticket_id}' not found")
+
+        ticket = existing
+
+    try:
+        message = storage.append_gm_ticket_message(
+            resolved_ticket_id,
+            sender=sender,
+            content=content,
+            message_type=message_type,
+            metadata=metadata,
+        )
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"ticket '{resolved_ticket_id}' not found",
+        ) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    sanitized_ticket = _sanitize_gm_ticket_payload(ticket, role)
+    _event_for(
+        role,
+        "gm_ticket.direct_message",
+        f"Direct GM message sent to ticket: {resolved_ticket_id}",
+        "info",
+        payload={
+            "gm_ticket_id": resolved_ticket_id,
+            "sender": message.get("sender"),
+            "message_type": message.get("message_type"),
+            "created_ticket": created_ticket,
+            "actor": role,
+        },
+    )
+    return {
+        "ticket": sanitized_ticket,
+        "message": dict(message, metadata=_redact_metadata(message.get("metadata"), role)),
+        "created_ticket": created_ticket,
+        "updated_at": _now_iso(),
+    }
 
 
 @app.get("/api/gm-tickets")

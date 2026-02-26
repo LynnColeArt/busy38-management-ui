@@ -2554,6 +2554,66 @@ async function submitGmTicket(event) {
   }
 }
 
+async function submitGmDirectMessage(event) {
+  event.preventDefault();
+  const sender = qs('input[name="gmDirectSender"]')?.value.trim() || "";
+  const messageType = qs('select[name="gmDirectMessageType"]')?.value.trim() || "comment";
+  const ticketId = qs('input[name="gmDirectTicketId"]')?.value.trim() || "";
+  const title = qs('input[name="gmDirectTitle"]')?.value.trim() || "";
+  const content = qs('textarea[name="gmDirectMessageContent"]')?.value.trim() || "";
+  const metadataRaw = qs('textarea[name="gmDirectMessageMetadata"]')?.value.trim() || "";
+
+  if (!sender || !content) {
+    setStatus("#gmDirectMessageStatus", "sender and message content are required", "err");
+    return;
+  }
+
+  let metadata = undefined;
+  if (metadataRaw) {
+    try {
+      metadata = JSON.parse(metadataRaw);
+    } catch (err) {
+      setStatus("#gmDirectMessageStatus", "metadata must be valid JSON if provided", "err");
+      return;
+    }
+  }
+
+  const payload = { sender, content, message_type: messageType };
+  if (ticketId) {
+    payload.ticket_id = ticketId;
+  }
+  if (title) {
+    payload.title = title;
+  }
+  if (metadata != null) {
+    payload.metadata = metadata;
+  }
+
+  setStatus("#gmDirectMessageStatus", "sending direct message...", "");
+  try {
+    const created = await postJson("/api/gm/message", payload);
+    setStatus("#gmDirectMessageStatus", "direct message sent", "ok");
+    if (qs('textarea[name="gmDirectMessageContent"]')) {
+      qs('textarea[name="gmDirectMessageContent"]').value = "";
+    }
+    if (qs('textarea[name="gmDirectMessageMetadata"]')) {
+      qs('textarea[name="gmDirectMessageMetadata"]').value = "";
+    }
+    if (qs('input[name="gmDirectTitle"]')) {
+      qs('input[name="gmDirectTitle"]').value = "";
+    }
+    await loadGmTickets();
+    const targetTicketId = ticketId || created.ticket?.id || created.ticket?.ticket_id;
+    if (targetTicketId) {
+      await loadGmTicket(targetTicketId);
+    } else if (created.created_ticket) {
+      setStatus("#gmDirectMessageStatus", "message sent, open GM tickets to review", "ok");
+    }
+  } catch (err) {
+    setStatus("#gmDirectMessageStatus", `direct message failed: ${err.message}`, "err");
+  }
+}
+
 async function saveGmTicketUpdate(event) {
   if (event) {
     event.preventDefault();
@@ -3571,6 +3631,7 @@ document.body.addEventListener("click", (event) => {
 qs("#importRerunFile")?.addEventListener("change", submitImportRerun);
 qs("#gmTicketCreateForm")?.addEventListener("submit", submitGmTicket);
 qs("#gmTicketMessageForm")?.addEventListener("submit", submitGmTicketMessage);
+qs("#gmDirectMessageForm")?.addEventListener("submit", submitGmDirectMessage);
 qs("#gmTicketFilterStatus")?.addEventListener("change", loadGmTickets);
 qs("#gmTicketFilterPriority")?.addEventListener("change", loadGmTickets);
 qs("#gmTicketFilterAssignedTo")?.addEventListener("change", loadGmTickets);

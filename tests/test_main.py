@@ -1829,6 +1829,101 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         not_found_message = self.client.get("/api/gm-tickets/does-not-exist/messages", headers=admin_headers)
         self.assertEqual(not_found_message.status_code, 404, not_found_message.text)
 
+    def test_gm_direct_message_creates_ticket_when_missing_ticket_id(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        response = self.client.post(
+            "/api/gm/message",
+            headers=admin_headers,
+            json={
+                "sender": "founder",
+                "content": "Seed direct thread with initial context.",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertTrue(payload["created_ticket"])
+        self.assertTrue(payload["ticket"]["id"])
+        self.assertEqual(payload["message"]["sender"], "founder")
+        self.assertEqual(payload["message"]["content"], "Seed direct thread with initial context.")
+
+        created_ticket_id = payload["ticket"]["id"]
+        ticket_view = self.client.get(f"/api/gm-tickets/{created_ticket_id}", headers=admin_headers)
+        self.assertEqual(ticket_view.status_code, 200, ticket_view.text)
+        ticket = ticket_view.json()["ticket"]
+        self.assertEqual(ticket["id"], created_ticket_id)
+        self.assertEqual(ticket["requested_by"], "founder")
+        self.assertEqual(ticket["phase"], "direct_message")
+        self.assertEqual(ticket["metadata"]["source"], "direct_message")
+
+    def test_gm_direct_message_appends_to_existing_ticket(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        created = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={"title": "GM direct follow-up", "requested_by": "founder"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        ticket_id = created.json()["ticket"]["id"]
+
+        response = self.client.post(
+            "/api/gm/message",
+            headers=admin_headers,
+            json={
+                "sender": "founder",
+                "ticket_id": ticket_id,
+                "content": "Please follow up on this priority item.",
+                "message_type": "request",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertFalse(payload["created_ticket"])
+        self.assertEqual(payload["ticket"]["id"], ticket_id)
+        self.assertEqual(payload["message"]["message_type"], "request")
+
+        messages = self.client.get(f"/api/gm-tickets/{ticket_id}/messages", headers=admin_headers)
+        self.assertEqual(messages.status_code, 200, messages.text)
+        self.assertGreaterEqual(messages.json().get("count", 0), 1)
+
+    def test_gm_direct_message_rejects_viewer(self):
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+        response = self.client.post(
+            "/api/gm/message",
+            headers=read_headers,
+            json={"sender": "viewer", "content": "I should not be able to send"},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
+
+    def test_gm_direct_message_rejects_invalid_payload(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        missing_sender = self.client.post(
+            "/api/gm/message",
+            headers=admin_headers,
+            json={"content": "No sender"},
+        )
+        self.assertEqual(missing_sender.status_code, 422, missing_sender.text)
+
+        missing_content = self.client.post(
+            "/api/gm/message",
+            headers=admin_headers,
+            json={"sender": "founder"},
+        )
+        self.assertEqual(missing_content.status_code, 422, missing_content.text)
+
+        missing_ticket = self.client.post(
+            "/api/gm/message",
+            headers=admin_headers,
+            json={
+                "sender": "founder",
+                "ticket_id": "missing-ticket",
+                "content": "Should fail",
+            },
+        )
+        self.assertEqual(missing_ticket.status_code, 404, missing_ticket.text)
+
     def test_provider_discovery_success_stores_model_metadata(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
 

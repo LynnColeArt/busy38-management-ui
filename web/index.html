@@ -226,6 +226,42 @@
       </section>
 
       <section class="panel">
+        <h2>Send direct message to GM</h2>
+        <form id="gmDirectMessageForm">
+          <label>
+            Sender
+            <input name="gmDirectSender" type="text" placeholder="human" value="human" />
+          </label>
+          <label>
+            Message type
+            <select name="gmDirectMessageType">
+              <option value="comment">comment</option>
+              <option value="status">status</option>
+              <option value="request">request</option>
+            </select>
+          </label>
+          <label>
+            Existing GM ticket id (optional; creates a new thread if blank)
+            <input name="gmDirectTicketId" type="text" placeholder="gm-ticket-xxxx" />
+          </label>
+          <label>
+            New ticket title (optional)
+            <input name="gmDirectTitle" type="text" placeholder="Direct follow-up from human" />
+          </label>
+          <label>
+            Message
+            <textarea name="gmDirectMessageContent" rows="4" required placeholder="Send a direct GM note..."></textarea>
+          </label>
+          <label>
+            Metadata (optional JSON)
+            <textarea name="gmDirectMessageMetadata" rows="2" placeholder='{"urgency":"high"}'></textarea>
+          </label>
+          <button type="submit">Send message</button>
+        </form>
+        <p id="gmDirectMessageStatus" class="status"></p>
+      </section>
+
+      <section class="panel">
         <h2>GM tickets</h2>
         <div class="control-row">
           <label>
