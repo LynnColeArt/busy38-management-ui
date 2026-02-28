@@ -979,9 +979,108 @@ function buildPluginCard(plugin) {
   const isViewer = state.role === "viewer";
   const isLocked = isViewer ? "disabled" : "";
   const metadata = plugin.metadata || {};
+  const uiSpec = metadata.ui || {};
+  const uiSections = Array.isArray(uiSpec.sections) ? uiSpec.sections : [];
   const metadataLabel = Object.keys(metadata).length
     ? `<p><strong>Metadata:</strong> ${escapeHtml(JSON.stringify(metadata))}</p>`
     : "";
+  const uiActionLabel = uiSections
+    .filter((section) => section && typeof section === "object")
+    .map((section) => {
+      const sectionTitle = escapeHtml(section.title || section.id || "Actions");
+      const sectionDescription = section.description ? `<p>${escapeHtml(section.description)}</p>` : "";
+      const actionCards = Array.isArray(section.actions)
+        ? section.actions
+            .filter((action) => action && typeof action === "object" && action.id)
+            .map((action) => {
+              const actionId = String(action.id).trim();
+              const actionLabel = escapeHtml(action.label || actionId);
+              const actionDesc = action.description ? `<p>${escapeHtml(action.description)}</p>` : "";
+              const actionMethod = String(action.method || "POST").trim().toUpperCase() || "POST";
+              const fields = Array.isArray(action.fields) ? action.fields : [];
+              const fieldRows = fields
+                .filter((field) => field && typeof field === "object")
+                .map((field) => {
+                  const fieldName = String(field.name || "").trim() || String(field.id || "").trim();
+                  if (!fieldName) {
+                    return "";
+                  }
+                  const key = escapeHtml(fieldName);
+                  const label = escapeHtml(field.label || fieldName);
+                  const fieldType = String(field.type || "text").trim().toLowerCase();
+                  const defaultValue = field.default === undefined ? "" : field.default;
+                  const placeholder = escapeHtml(field.placeholder || "");
+                  const isRequired = field.required ? "required" : "";
+                  const common = `data-action-id="${escapeHtml(actionId)}" data-plugin-id="${escapeHtml(
+                    plugin.id,
+                  )}" data-plugin-ui-action-field="1" data-plugin-ui-field="${key}"`;
+                  if (fieldType === "textarea") {
+                    return `<label>${label}: <textarea ${common} data-plugin-ui-field-type="textarea" ${isLocked} ${isRequired}>${escapeHtml(defaultValue)}</textarea></label>`;
+                  }
+                  if (fieldType === "checkbox") {
+                    const checked = defaultValue ? "checked" : "";
+                    return `<label><input type="checkbox" ${checked} ${common} data-plugin-ui-field-type="checkbox" ${isLocked} ${isRequired} /> ${label}</label>`;
+                  }
+                  if (fieldType === "number") {
+                    return `<label>${label}: <input type="number" ${common} data-plugin-ui-field-type="number" value="${escapeHtml(defaultValue)}" placeholder="${placeholder}" ${isLocked} ${isRequired} /></label>`;
+                  }
+                  if (fieldType === "select" && Array.isArray(field.options)) {
+                    const options = field.options
+                      .map((option) => {
+                        if (option == null) {
+                          return "";
+                        }
+                        const optionValue = typeof option === "string" ? option : option.value;
+                        const optionLabel = typeof option === "string" ? option : option.label;
+                        if (optionValue == null) {
+                          return "";
+                        }
+                        const optVal = escapeHtml(optionValue);
+                        const optLabel = escapeHtml(optionLabel || optionValue);
+                        const selected = `${defaultValue}` === `${optionValue}` ? " selected" : "";
+                        return `<option value="${optVal}"${selected}>${optLabel}</option>`;
+                      })
+                      .join("");
+                    return `<label>${label}: <select ${common} data-plugin-ui-field-type="select" ${isLocked} ${isRequired}>${options}</select></label>`;
+                  }
+                  return `<label>${label}: <input type="text" ${common} data-plugin-ui-field-type="text" value="${escapeHtml(
+                    defaultValue,
+                  )}" placeholder="${placeholder}" ${isLocked} ${isRequired} /></label>`;
+                })
+                .join("");
+              return `
+                <div class="plugin-ui-action" data-plugin-id="${escapeHtml(plugin.id)}" data-action-id="${escapeHtml(actionId)}">
+                  <p><strong>${actionLabel}</strong> <small>(${escapeHtml(actionMethod)})</small></p>
+                  ${actionDesc}
+                  ${fieldRows}
+                  <p><button type="button" data-action="execute-plugin-ui-action" data-plugin-id="${escapeHtml(
+                    plugin.id,
+                  )}" data-action-id="${escapeHtml(actionId)}" data-method="${escapeHtml(actionMethod)}" ${isLocked}>Run</button></p>
+                  <p class="plugin-ui-action-status status" data-action="plugin-ui-action-status" data-plugin-id="${escapeHtml(
+                    plugin.id,
+                  )}" data-action-id="${escapeHtml(actionId)}"></p>
+                </div>
+              `;
+            })
+            .join("")
+        : "";
+      if (!actionCards) {
+        return "";
+      }
+      return `
+        <div>
+          <h4>${sectionTitle}</h4>
+          ${sectionDescription}
+          <div class="plugin-ui-section-actions">${actionCards}</div>
+        </div>
+      `;
+    })
+    .join("");
+
+  const uiSectionBlock = uiActionLabel
+    ? `<div class="plugin-ui-sections"><h4>Plugin actions</h4>${uiActionLabel}</div>`
+    : "";
+
   return `
     <div class="card">
       <h3>${escapeHtml(plugin.name || plugin.id)}</h3>
@@ -991,6 +1090,7 @@ function buildPluginCard(plugin) {
       <p><strong>Status:</strong> ${escapeHtml(plugin.status || "configured")}</p>
       <p><strong>Command:</strong> ${escapeHtml(plugin.command || "n/a")}</p>
       ${metadataLabel}
+      ${uiSectionBlock}
       <p>
         <label>
           Enabled:
@@ -3526,6 +3626,117 @@ async function onTableChange(event) {
       await loadPlugins();
       return;
     }
+
+    if (action === "execute-plugin-ui-action") {
+      const pluginId = target.dataset.pluginId || "";
+      const actionId = target.dataset.actionId || "";
+      const method = String(target.dataset.method || "POST").trim().toUpperCase() || "POST";
+      const section = target.closest(".plugin-ui-action");
+      if (!section) {
+        setStatus("#healthState", "plugin action form missing", "err");
+        return;
+      }
+
+      const statusEl = section.querySelector('[data-action="plugin-ui-action-status"]');
+      const fields = section.querySelectorAll("[data-plugin-ui-action-field]");
+      const payload = { method };
+      for (const field of fields) {
+        const fieldName = String(field.dataset.pluginUiField || "").trim();
+        if (!fieldName) {
+          continue;
+        }
+        const fieldType = String(field.dataset.pluginUiFieldType || field.type || "text").trim().toLowerCase();
+        const isCheckbox = fieldType === "checkbox" || field.type === "checkbox";
+        const value = field.value;
+        if (isCheckbox) {
+          payload[fieldName] = Boolean(field.checked);
+          continue;
+        }
+        if (fieldType === "number") {
+          if (value !== "") {
+            const normalized = Number(value);
+            if (!Number.isFinite(normalized)) {
+              setStatus("#healthState", `Invalid number for ${fieldName}`, "err");
+              if (statusEl) {
+                statusEl.textContent = `Invalid number for ${fieldName}`;
+                statusEl.className = "status err";
+              }
+              return;
+            }
+            payload[fieldName] = normalized;
+          }
+          continue;
+        }
+        if (fieldType === "select") {
+          const selected = String(value || "").trim();
+          if (field.required && !selected) {
+            const message = `${fieldName} is required`;
+            setStatus("#healthState", message, "err");
+            if (statusEl) {
+              statusEl.textContent = message;
+              statusEl.className = "status err";
+            }
+            return;
+          }
+          if (selected !== "") {
+            payload[fieldName] = selected;
+          }
+          continue;
+        }
+        if (fieldType === "textarea" || fieldType === "text") {
+          const text = String(value || "").trim();
+          if (field.required && !text) {
+            const message = `${fieldName} is required`;
+            setStatus("#healthState", message, "err");
+            if (statusEl) {
+              statusEl.textContent = message;
+              statusEl.className = "status err";
+            }
+            return;
+          }
+          if (text !== "") {
+            payload[fieldName] = text;
+          }
+          continue;
+        }
+      }
+
+      if (statusEl) {
+        statusEl.textContent = "running action...";
+        statusEl.className = "status";
+      }
+      let response;
+      try {
+        response = await postJson(`/api/plugins/${encodeURIComponent(pluginId)}/ui/${encodeURIComponent(actionId)}`, payload);
+      } catch (err) {
+        const message = `plugin action failed: ${err.message}`;
+        setStatus("#healthState", message, "err");
+        if (statusEl) {
+          statusEl.textContent = message;
+          statusEl.className = "status err";
+        }
+        return;
+      }
+
+      if (response?.result?.success) {
+        const msg = response.result?.message || "action executed";
+        setStatus("#healthState", `plugin action "${actionId}" completed`, "ok");
+        if (statusEl) {
+          statusEl.textContent = msg;
+          statusEl.className = "status ok";
+        }
+      } else {
+        const message = response?.result?.message || "action failed";
+        setStatus("#healthState", message, "err");
+        if (statusEl) {
+          statusEl.textContent = message;
+          statusEl.className = "status err";
+        }
+      }
+
+      await loadPlugins();
+      return;
+    }
   } catch (err) {
     setStatus("#healthState", `update failed: ${err.message}`, "err");
   }
@@ -3621,6 +3832,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "save-agent-overlay"
     && action !== "set-plugin-status"
     && action !== "set-plugin-command"
+    && action !== "execute-plugin-ui-action"
     && action !== "archive-agent"
     && action !== "restore-agent"
   )) {

@@ -528,6 +528,29 @@ def _sanitize_plugin(plugin: Dict[str, Any], role: str) -> Dict[str, Any]:
     return payload
 
 
+def _find_plugin_ui_action(contract: Dict[str, Any], action_id: str) -> Optional[Dict[str, Any]]:
+    if not action_id:
+        return None
+
+    metadata = contract.get("metadata") if isinstance(contract, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+
+    ui = metadata.get("ui") if isinstance(metadata.get("ui"), dict) else None
+    if ui is None:
+        return None
+
+    for section in ui.get("sections") or []:
+        if not isinstance(section, dict):
+            continue
+        for action in section.get("actions") or []:
+            if not isinstance(action, dict):
+                continue
+            if str(action.get("id") or "").strip() == action_id:
+                return action
+    return None
+
+
 def _plugin_map() -> Dict[str, Dict[str, Any]]:
     return {str(plugin.get("id")).strip(): plugin for plugin in storage.list_plugins()}
 
@@ -1753,6 +1776,74 @@ async def patch_plugin(request: Request, plugin_id: str, update: PluginUpdate) -
 
     _event_for(role, "plugin.updated", f"Plugin updated: {plugin_id}", "info", {"plugin_id": plugin_id})
     return {"plugin": _sanitize_plugin(plugin, role), "updated_at": _now_iso()}
+
+
+@app.post("/api/plugins/{plugin_id}/ui/{action_id}")
+async def execute_plugin_ui_action(
+    request: Request,
+    plugin_id: str,
+    action_id: str,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    plugin = _plugin_map().get(str(plugin_id).strip())
+    if not plugin:
+        raise HTTPException(status_code=404, detail=f"plugin '{plugin_id}' not found")
+
+    action = _find_plugin_ui_action(plugin, action_id)
+    if action is None:
+        raise HTTPException(status_code=404, detail=f"action '{action_id}' not found for plugin '{plugin_id}'")
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        body = {}
+
+    if body is None:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="invalid request payload")
+
+    method = str(body.get("method") or "POST").strip().upper() or "POST"
+    payload: Dict[str, Any] = {}
+    defaults = action.get("defaults")
+    if isinstance(defaults, dict):
+        payload.update({k: v for k, v in defaults.items()})
+
+    for key, value in body.items():
+        if key == "method":
+            continue
+        payload[str(key)] = value
+
+    result = runtime.plugin_ui_action(
+        plugin_id=plugin_id,
+        action_id=action_id,
+        payload=payload,
+        method=method,
+    )
+    _event_for(
+        role,
+        "plugin.ui_action",
+        f"Plugin action executed: {plugin_id}/{action_id}",
+        "info",
+        {
+            "plugin_id": str(plugin_id),
+            "action_id": str(action_id),
+            "method": method,
+            "success": result.success,
+        },
+    )
+
+    if not result.success:
+        raise HTTPException(status_code=502, detail=result.message)
+
+    return {
+        "result": {
+            "success": result.success,
+            "message": result.message,
+            "payload": result.payload,
+        },
+        "updated_at": _now_iso(),
+    }
 
 
 @app.get("/api/tools")

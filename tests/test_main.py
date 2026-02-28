@@ -68,6 +68,7 @@ class _MockRuntime:
         self.actions: List[Tuple[str, str]] = []
         self.overlay_writes: List[Tuple[str, str, int | None]] = []
         self.overlay_history_calls: List[Tuple[str, int]] = []
+        self.plugin_ui_action_calls: List[Dict[str, object]] = []
         self.overlay_histories: Dict[str, list[dict[str, object]]] = {}
 
     def get_status(self) -> Dict[str, object]:
@@ -158,6 +159,57 @@ class _MockRuntime:
             success=True,
             message=f"{action} queued for {service_name}",
             payload={"service": service_name, "action": action},
+        )
+
+    def plugin_ui_action(
+        self,
+        plugin_id: str,
+        action_id: str,
+        payload: dict | None = None,
+        *,
+        method: str = "POST",
+    ) -> RuntimeActionResult:
+        normalized_plugin = str(plugin_id).strip()
+        normalized_action = str(action_id).strip()
+        normalized_payload = dict(payload or {})
+        if not normalized_plugin:
+            return RuntimeActionResult(
+                success=False,
+                message="plugin id required",
+                payload={"plugin_id": plugin_id, "action_id": action_id},
+            )
+        if not normalized_action:
+            return RuntimeActionResult(
+                success=False,
+                message="action id required",
+                payload={"plugin_id": plugin_id, "action_id": action_id},
+            )
+
+        self.plugin_ui_action_calls.append(
+            {
+                "plugin_id": normalized_plugin,
+                "action_id": normalized_action,
+                "method": str(method or "POST").strip().upper() or "POST",
+                "payload": normalized_payload,
+            },
+        )
+
+        if normalized_action == "fail":
+            return RuntimeActionResult(
+                success=False,
+                message="action failed intentionally",
+                payload={"action_id": normalized_action},
+            )
+
+        return RuntimeActionResult(
+            success=True,
+            message="plugin ui action executed",
+            payload={
+                "plugin_id": normalized_plugin,
+                "action_id": normalized_action,
+                "method": str(method or "POST").strip().upper() or "POST",
+                "payload": normalized_payload,
+            },
         )
 
 
@@ -1244,6 +1296,70 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["payload"]["service"], "busy")
         self.assertEqual(self.runtime.actions[-1], ("busy", "start"))
+
+    def test_execute_plugin_ui_action_enforces_action_contract(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "ui-demo",
+            "name": "UI Demo Plugin",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "sync",
+                                    "label": "Sync",
+                                    "method": "POST",
+                                    "description": "Synchronize external state",
+                                    "defaults": {
+                                        "method": "POST",
+                                        "scope": "all",
+                                    },
+                                    "fields": [
+                                        {"name": "scope", "label": "Scope", "type": "text", "default": "all"},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        response = self.client.post(
+            "/api/plugins/ui-demo/ui/sync",
+            headers=admin_headers,
+            json={"scope": "custom"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+        self.assertTrue(response_payload["result"]["success"])
+        self.assertEqual(response_payload["result"]["payload"]["action_id"], "sync")
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["plugin_id"], "ui-demo")
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["action_id"], "sync")
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["method"], "POST")
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["payload"].get("scope"), "custom")
+
+        denied = self.client.post("/api/plugins/ui-demo/ui/sync", headers=read_headers, json={})
+        self.assertEqual(denied.status_code, 403)
+
+        missing_action = self.client.post(
+            "/api/plugins/ui-demo/ui/unknown",
+            headers=admin_headers,
+        )
+        self.assertEqual(missing_action.status_code, 404)
 
     def test_agents_overlay_read_and_update_roles(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}

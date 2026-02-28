@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
@@ -337,6 +338,39 @@ class RuntimeAdapter:
             "error": self._overlay_error,
         }
 
+    def _bridge_plugin_ui_action(
+        self,
+        plugin_id: str,
+        action_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        method: str = "POST",
+    ) -> Optional[Dict[str, Any]]:
+        if not self.bridge_url:
+            return None
+
+        quoted_plugin = urllib.parse.quote_plus(str(plugin_id or "").strip())
+        quoted_action = urllib.parse.quote_plus(str(action_id or "").strip())
+        if not quoted_plugin or not quoted_action:
+            return None
+
+        body = dict(payload or {})
+        request_paths = (
+            f"/api/plugins/{quoted_plugin}/ui/{quoted_action}",
+            f"/runtime/plugins/{quoted_plugin}/ui/{quoted_action}",
+            f"/plugin/{quoted_plugin}/ui/{quoted_action}",
+            f"/api/plugin/{quoted_plugin}/ui/{quoted_action}",
+        )
+        method_name = method.strip().upper() or "POST"
+        for path in request_paths:
+            if method_name == "GET":
+                response = self._request_json("GET", path, payload=None)
+            else:
+                response = self._request_json("POST", path, payload=body)
+            if isinstance(response, dict) and response:
+                return response
+        return None
+
     def write_actor_overlay(
         self,
         actor_id: str,
@@ -524,6 +558,57 @@ class RuntimeAdapter:
 
     def control_service(self, service_name: str, action: str) -> RuntimeActionResult:
         return self._run_action(service_name, action)
+
+    def plugin_ui_action(
+        self,
+        plugin_id: str,
+        action_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+        *,
+        method: str = "POST",
+    ) -> RuntimeActionResult:
+        response = None
+        if not plugin_id:
+            return RuntimeActionResult(
+                success=False,
+                message="plugin_id is required",
+                payload={"plugin_id": plugin_id, "action_id": action_id},
+            )
+        if not action_id:
+            return RuntimeActionResult(
+                success=False,
+                message="action_id is required",
+                payload={"plugin_id": str(plugin_id)},
+            )
+
+        normalized_plugin = str(plugin_id).strip()
+        method_value = str(method or "POST").strip().upper()
+        response = self._bridge_plugin_ui_action(
+            normalized_plugin,
+            action_id,
+            payload=payload,
+            method=method_value,
+        )
+
+        if isinstance(response, dict) and response:
+            return RuntimeActionResult(
+                success=bool(response.get("success", True)),
+                message=str(response.get("message", "plugin ui action executed")),
+                payload=response,
+            )
+
+        if not self.bridge_url:
+            return RuntimeActionResult(
+                success=False,
+                message="plugin ui action bridge unavailable",
+                payload={"plugin_id": str(plugin_id), "action_id": action_id},
+            )
+
+        return RuntimeActionResult(
+            success=False,
+            message="plugin ui action request did not return a response",
+            payload={"plugin_id": str(plugin_id), "action_id": action_id},
+        )
 
 
 def load_runtime_adapter() -> RuntimeAdapter:
