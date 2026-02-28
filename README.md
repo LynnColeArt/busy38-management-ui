@@ -67,6 +67,8 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `GET /api/plugins`
 - `POST /api/plugins`
 - `PATCH /api/plugins/{plugin_id}`
+- `POST /api/plugins/{plugin_id}/ui/{action_id}`
+- `GET /api/plugins/{plugin_id}/ui/debug`
 - `GET /api/providers`
 - `POST /api/providers`
 - `POST /api/providers/{provider_id}/discover-models`

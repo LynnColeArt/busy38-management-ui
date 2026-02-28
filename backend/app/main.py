@@ -551,6 +551,42 @@ def _find_plugin_ui_action(contract: Dict[str, Any], action_id: str) -> Optional
     return None
 
 
+def _collect_plugin_ui_actions(contract: Dict[str, Any]) -> List[Dict[str, Any]]:
+    metadata = contract.get("metadata") if isinstance(contract, dict) else None
+    if not isinstance(metadata, dict):
+        return []
+
+    ui = metadata.get("ui") if isinstance(metadata.get("ui"), dict) else None
+    if ui is None:
+        return []
+
+    sections = ui.get("sections") if isinstance(ui.get("sections"), list) else []
+    actions: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        section_id = str(section.get("id") or "").strip()
+        section_title = section.get("title")
+        for action in section.get("actions") or []:
+            if not isinstance(action, dict):
+                continue
+            action_id = str(action.get("id") or "").strip()
+            if not action_id or action_id in seen:
+                continue
+            seen.add(action_id)
+            actions.append(
+                {
+                    "id": action_id,
+                    "section_id": section_id,
+                    "section_title": section_title,
+                    "label": action.get("label"),
+                    "method": str(action.get("method") or "POST").strip().upper() or "POST",
+                }
+            )
+    return actions
+
+
 def _plugin_map() -> Dict[str, Dict[str, Any]]:
     return {str(plugin.get("id")).strip(): plugin for plugin in storage.list_plugins()}
 
@@ -1841,6 +1877,51 @@ async def execute_plugin_ui_action(
             "success": result.success,
             "message": result.message,
             "payload": result.payload,
+        },
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/plugins/{plugin_id}/ui/debug")
+async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    plugin = _plugin_map().get(str(plugin_id).strip())
+    if not plugin:
+        raise HTTPException(status_code=404, detail=f"plugin '{plugin_id}' not found")
+
+    ui_actions = _collect_plugin_ui_actions(plugin)
+    has_debug = any(action.get("id") == "debug" for action in ui_actions)
+    runtime_result = runtime.plugin_ui_action(
+        plugin_id=plugin_id,
+        action_id="debug",
+        method="GET",
+    )
+
+    _event_for(
+        role,
+        "plugin.ui_debug",
+        f"Plugin UI debug probe executed: {plugin_id}",
+        "info",
+        {
+            "plugin_id": str(plugin_id),
+            "action_id": "debug",
+            "runtime_success": runtime_result.success,
+        },
+    )
+
+    return {
+        "plugin": _sanitize_plugin(plugin, role),
+        "ui": {
+            "actions": ui_actions,
+            "has_debug_action": has_debug,
+            "action_count": len(ui_actions),
+        },
+        "runtime": {
+            "action": "debug",
+            "method": "GET",
+            "success": runtime_result.success,
+            "message": runtime_result.message,
+            "payload": runtime_result.payload,
         },
         "updated_at": _now_iso(),
     }

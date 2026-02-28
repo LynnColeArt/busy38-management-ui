@@ -1361,6 +1361,62 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         )
         self.assertEqual(missing_action.status_code, 404)
 
+    def test_debug_plugin_ui_action_calls_runtime_and_returns_debug_payload(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        plugin_payload = {
+            "id": "debug-demo",
+            "name": "Debug Demo Plugin",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "sync",
+                                    "label": "Sync",
+                                    "method": "POST",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        response = self.client.get("/api/plugins/debug-demo/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+        self.assertEqual(response_payload["plugin"]["id"], "debug-demo")
+        self.assertFalse(response_payload["ui"]["has_debug_action"])
+        self.assertEqual(response_payload["ui"]["action_count"], 1)
+        self.assertEqual(response_payload["runtime"]["action"], "debug")
+        self.assertEqual(response_payload["runtime"]["method"], "GET")
+        self.assertTrue(response_payload["runtime"]["success"])
+
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["plugin_id"], "debug-demo")
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["action_id"], "debug")
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["method"], "GET")
+
+        denied = self.client.get("/api/plugins/debug-demo/ui/debug", headers=read_headers)
+        self.assertEqual(denied.status_code, 403)
+
+    def test_plugin_debug_not_found_returns_404(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        response = self.client.get("/api/plugins/missing-plugin/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 404)
+
     def test_agents_overlay_read_and_update_roles(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
