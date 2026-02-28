@@ -68,7 +68,7 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `POST /api/plugins`
 - `PATCH /api/plugins/{plugin_id}`
 - `POST /api/plugins/{plugin_id}/ui/{action_id}`
-- `GET /api/plugins/{plugin_id}/ui/debug`
+- `GET /api/plugins/{plugin_id}/ui/debug` (plugin diagnostics; includes signature checks, dependency checks, tool conflict diagnostics, optional runtime probe, and warning/error summary)
 - `GET /api/providers`
 - `POST /api/providers`
 - `POST /api/providers/{provider_id}/discover-models`
@@ -130,6 +130,9 @@ node -c web/app.js
 pip install -r backend/requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest tests
 ```
+
+See `docs/PLUGIN_DEBUGGER.md` for detailed debugger semantics, warning/error codes,
+and expected payload structure.
 
 ## License
 

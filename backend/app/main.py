@@ -63,6 +63,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_CORE_PLUGIN_REFERENCE = [
+    {"plugin_id": "squidkeys", "aliases": ["squidkeys"], "required": True, "signature_required": True},
+    {"plugin_id": "rangewriter", "aliases": ["rangewriter", "rw", "rw4"], "required": True, "signature_required": True},
+    {"plugin_id": "blossom", "aliases": ["blossom"], "required": True, "signature_required": True},
+    {"plugin_id": "busy38-management-ui", "aliases": ["busy38-management-ui", "management-ui"], "required": True, "signature_required": True},
+    {"plugin_id": "busy38-gticket", "aliases": ["busy38-gticket", "gticket"], "required": True, "signature_required": True},
+    {"plugin_id": "busy-installer", "aliases": ["busy-installer"], "required": True, "signature_required": True},
+    {"plugin_id": "busy38-security-agent", "aliases": ["busy38-security-agent"], "required": True, "signature_required": True},
+    {"plugin_id": "busy38-git", "aliases": ["busy38-git", "git"], "required": True, "signature_required": True},
+    {"plugin_id": "openclaw-browser-for-busy38", "aliases": ["openclaw-browser-for-busy38", "browser"], "required": True, "signature_required": True},
+    {"plugin_id": "busy38-discord", "aliases": ["busy38-discord", "discord"], "required": False, "signature_required": False},
+    {"plugin_id": "busy38-telegram", "aliases": ["busy38-telegram", "telegram"], "required": False, "signature_required": False},
+    {"plugin_id": "busy-bridge", "aliases": ["busy-bridge", "bridge"], "required": False, "signature_required": False},
+    {"plugin_id": "openclaw-canvas-for-busy38", "aliases": ["openclaw-canvas-for-busy38", "canvas"], "required": False, "signature_required": False, "depends_on": ["busy38-management-ui"]},
+    {"plugin_id": "busy38-iphone", "aliases": ["busy38-iphone", "iphone"], "required": False, "signature_required": False},
+    {"plugin_id": "busy38-teams", "aliases": ["busy38-teams", "teams"], "required": False, "signature_required": False},
+]
+
+_CORE_PLUGIN_INDEX = {
+    alias: entry
+    for entry in _CORE_PLUGIN_REFERENCE
+    for alias in (entry.get("aliases") or [])
+}
 
 class SettingsUpdate(BaseModel):
     heartbeat_interval: Optional[int] = None
@@ -528,6 +551,203 @@ def _sanitize_plugin(plugin: Dict[str, Any], role: str) -> Dict[str, Any]:
     return payload
 
 
+def _find_core_plugin_reference(plugin_id: str) -> Optional[Dict[str, Any]]:
+    normalized = str(plugin_id).strip().lower()
+    if not normalized:
+        return None
+    candidate = _CORE_PLUGIN_INDEX.get(normalized)
+    if candidate is None:
+        return None
+
+    return {
+        "plugin_id": str(candidate.get("plugin_id", "")).strip().lower() or normalized,
+        "required": bool(candidate.get("required", False)),
+        "signature_required": bool(candidate.get("signature_required", False)),
+        "aliases": list(candidate.get("aliases") or [normalized]),
+        "depends_on": list(candidate.get("depends_on") or []),
+        "matched_alias": normalized,
+    }
+
+
+def _plugin_ui_contract_diagnostics(
+    plugin: Dict[str, Any],
+) -> List[Dict[str, str]]:
+    metadata = plugin.get("metadata") if isinstance(plugin, dict) else None
+    ui_warnings: List[Dict[str, str]] = []
+    if not isinstance(metadata, dict):
+        ui_warnings.append(
+            {
+                "code": "P_PLUGIN_UI_METADATA_MISSING",
+                "severity": "warn",
+                "source": "ui",
+                "message": "plugin metadata.ui contract is missing",
+            },
+        )
+        return ui_warnings
+
+    ui = metadata.get("ui")
+    if not isinstance(ui, dict):
+        ui_warnings.append(
+            {
+                "code": "P_PLUGIN_UI_CONTRACT_MISSING",
+                "severity": "warn",
+                "source": "ui",
+                "message": "plugin has no ui contract",
+            },
+        )
+        return ui_warnings
+
+    sections = ui.get("sections")
+    if not isinstance(sections, list):
+        ui_warnings.append(
+            {
+                "code": "P_PLUGIN_UI_SECTIONS_INVALID",
+                "severity": "warn",
+                "source": "ui",
+                "message": "plugin.ui.sections must be a list",
+            },
+        )
+        return ui_warnings
+    if not sections:
+        ui_warnings.append(
+            {
+                "code": "P_PLUGIN_UI_EMPTY",
+                "severity": "warn",
+                "source": "ui",
+                "message": "plugin.ui.sections is present but empty",
+            },
+        )
+
+    seen_action_ids: set[str] = set()
+    for section in sections:
+        if not isinstance(section, dict):
+            ui_warnings.append(
+                {
+                    "code": "P_PLUGIN_UI_SECTION_INVALID",
+                    "severity": "warn",
+                    "source": "ui",
+                    "message": "plugin.ui.sections contains a non-object section",
+                },
+            )
+            continue
+        section_title = str(section.get("id") or section.get("title") or "section")
+        for action in section.get("actions", []):
+            if not isinstance(action, dict):
+                ui_warnings.append(
+                    {
+                        "code": "P_PLUGIN_UI_ACTION_INVALID",
+                        "severity": "warn",
+                        "source": "ui",
+                        "message": f"plugin ui section '{section_title}' contains non-object action",
+                    },
+                )
+                continue
+            action_id = str(action.get("id") or "").strip()
+            if not action_id:
+                ui_warnings.append(
+                    {
+                        "code": "P_PLUGIN_UI_ACTION_ID_INVALID",
+                        "severity": "warn",
+                        "source": "ui",
+                        "message": f"plugin ui section '{section_title}' has an action without an id",
+                    },
+                )
+                continue
+            if action_id in seen_action_ids:
+                ui_warnings.append(
+                    {
+                        "code": "P_PLUGIN_UI_ACTION_DUPLICATE_ID",
+                        "severity": "warn",
+                        "source": "ui",
+                        "message": f"plugin ui action id '{action_id}' appears multiple times",
+                    },
+                )
+            seen_action_ids.add(action_id)
+
+            method = str(action.get("method") or "POST").strip().upper()
+            if method not in {"GET", "POST", "PATCH", "PUT", "DELETE", "HEAD", "OPTIONS"}:
+                ui_warnings.append(
+                    {
+                        "code": "P_PLUGIN_UI_ACTION_METHOD_INVALID",
+                        "severity": "warn",
+                        "source": "ui",
+                        "message": f"plugin ui action '{action_id}' uses unsupported method '{method}'",
+                    },
+                )
+
+    return ui_warnings
+
+
+def _collect_plugin_dependencies(plugin: Dict[str, Any]) -> List[str]:
+    metadata = plugin.get("metadata") if isinstance(plugin, dict) else None
+    if not isinstance(metadata, dict):
+        return []
+
+    raw_dependencies = metadata.get("depends_on") or plugin.get("depends_on")
+    if raw_dependencies is None:
+        return []
+
+    if isinstance(raw_dependencies, str):
+        split_values = [part for part in raw_dependencies.replace(",", " ").split() if part.strip()]
+    elif isinstance(raw_dependencies, (list, tuple)):
+        split_values = list(raw_dependencies)
+    else:
+        return []
+
+    normalized: List[str] = []
+    for value in split_values:
+        if not isinstance(value, str):
+            continue
+        dependency = value.strip().lower()
+        if dependency and dependency not in normalized:
+            normalized.append(dependency)
+    return normalized
+
+
+def _collect_plugin_tool_conflicts(plugin_id: str) -> List[Dict[str, Any]]:
+    normalized = str(plugin_id).strip()
+    own_tools = storage.list_tools(plugin_id=normalized, status="active")
+    if not own_tools:
+        return []
+
+    collisions: List[Dict[str, Any]] = []
+    namespace_index: Dict[str, set[str]] = {}
+    for tool in own_tools:
+        namespace = str(tool.get("namespace") or "").strip()
+        action = str(tool.get("action") or "").strip()
+        if not namespace or not action:
+            continue
+        namespace_index.setdefault(namespace, set()).add(action)
+
+    checked: set[tuple[str, str]] = set()
+    for namespace, actions in namespace_index.items():
+        if not actions:
+            continue
+        namespace_tools = storage.list_tools(namespace=namespace, status="active")
+        for action in sorted(actions):
+            key = (namespace, action)
+            if key in checked:
+                continue
+            checked.add(key)
+            owners = sorted({
+                str(candidate.get("plugin_id") or "")
+                for candidate in namespace_tools
+                if str(candidate.get("action") or "").strip() == action
+                and str(candidate.get("plugin_id") or "").strip() != normalized
+                and str(candidate.get("plugin_id") or "").strip()
+            })
+            if owners:
+                collisions.append(
+                    {
+                        "namespace": namespace,
+                        "action": action,
+                        "owners": owners,
+                    },
+                )
+
+    return collisions
+
+
 def _find_plugin_ui_action(contract: Dict[str, Any], action_id: str) -> Optional[Dict[str, Any]]:
     if not action_id:
         return None
@@ -585,6 +805,65 @@ def _collect_plugin_ui_actions(contract: Dict[str, Any]) -> List[Dict[str, Any]]
                 }
             )
     return actions
+
+
+def _sanitize_plugin_for_debug(plugin: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(plugin, dict):
+        return {}
+    payload = dict(plugin)
+    payload["metadata"] = _redact_metadata(payload.get("metadata"), "viewer")
+    return payload
+
+
+def _redact_sensitive_payload(payload: Any, role: str) -> Any:
+    if role == "admin":
+        return payload
+    if isinstance(payload, dict):
+        return {
+            k: "***redacted***" if _is_sensitive_key(k) else _redact_sensitive_payload(v, role)
+            for k, v in payload.items()
+        }
+    if isinstance(payload, list):
+        return [_redact_sensitive_payload(v, role) for v in payload]
+    if isinstance(payload, tuple):
+        return tuple(_redact_sensitive_payload(v, role) for v in payload)
+    return payload
+
+
+def _dependency_warning(
+    dependency: str,
+    plugin_catalog: Dict[str, Dict[str, Any]],
+    *,
+    owner_required: bool,
+) -> Optional[Dict[str, str]]:
+    normalized_dependency = str(dependency).strip().lower()
+    if not normalized_dependency:
+        return None
+
+    reference = _find_core_plugin_reference(normalized_dependency)
+    aliases = reference.get("aliases") if reference else [normalized_dependency]
+    if not aliases:
+        aliases = [normalized_dependency]
+
+    for alias in aliases:
+        if alias in plugin_catalog:
+            dependency_plugin = plugin_catalog[alias]
+            if not dependency_plugin.get("enabled", False):
+                return {
+                    "code": "P_PLUGIN_DEPENDENCY_DISABLED",
+                    "severity": "warn",
+                    "source": "runtime",
+                    "message": f"plugin dependency '{normalized_dependency}' is registered but disabled",
+                }
+            return None
+
+    severity = "error" if owner_required else "warn"
+    return {
+        "code": "P_PLUGIN_DEPENDENCY_MISSING",
+        "severity": severity,
+        "source": "runtime",
+        "message": f"plugin dependency '{normalized_dependency}' is missing from plugin registry",
+    }
 
 
 def _plugin_map() -> Dict[str, Dict[str, Any]]:
@@ -1885,17 +2164,147 @@ async def execute_plugin_ui_action(
 @app.get("/api/plugins/{plugin_id}/ui/debug")
 async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
-    plugin = _plugin_map().get(str(plugin_id).strip())
+    normalized_plugin = str(plugin_id).strip()
+    plugin_map = _plugin_map()
+    plugin = plugin_map.get(normalized_plugin)
     if not plugin:
         raise HTTPException(status_code=404, detail=f"plugin '{plugin_id}' not found")
 
     ui_actions = _collect_plugin_ui_actions(plugin)
     has_debug = any(action.get("id") == "debug" for action in ui_actions)
-    runtime_result = runtime.plugin_ui_action(
-        plugin_id=plugin_id,
-        action_id="debug",
-        method="GET",
-    )
+    reference = _find_core_plugin_reference(normalized_plugin)
+    reference_warnings: List[Dict[str, str]] = []
+    if reference and reference.get("required"):
+        signature_metadata = plugin.get("metadata") if isinstance(plugin, dict) else {}
+        signature_block = signature_metadata.get("signature") if isinstance(signature_metadata, dict) else None
+        if reference.get("signature_required") and not signature_block:
+            reference_warnings.append(
+                {
+                    "code": "P_PLUGIN_SIGNATURE_MISSING_REQUIRED",
+                    "severity": "error",
+                    "source": "registry",
+                    "message": "required plugin signature is missing from metadata",
+                },
+            )
+        elif reference.get("signature_required") and not signature_block.get("status") and isinstance(signature_block, dict):
+            reference_warnings.append(
+                {
+                    "code": "P_PLUGIN_SIGNATURE_INVALID",
+                    "severity": "error",
+                    "source": "registry",
+                    "message": "required plugin signature record indicates unresolved status",
+                },
+            )
+    if reference and not reference.get("required") and not reference.get("signature_required"):
+        signature_metadata = plugin.get("metadata") if isinstance(plugin, dict) else {}
+        if not isinstance(signature_metadata, dict) or not signature_metadata.get("signature"):
+            reference_warnings.append(
+                {
+                    "code": "P_PLUGIN_SIGNATURE_MISSING_OPTIONAL",
+                    "severity": "warn",
+                    "source": "registry",
+                    "message": "optional plugin metadata signature is missing",
+                },
+            )
+
+    runtime_payload: Dict[str, Any]
+    dependency_warnings: List[Dict[str, str]] = []
+    declared_dependencies = [
+        str(dependency).strip().lower()
+        for dependency in (list(reference.get("depends_on") if reference else []) + _collect_plugin_dependencies(plugin))
+        if str(dependency).strip()
+    ]
+    seen_dependencies: set[str] = set()
+    unique_dependencies = []
+    for dependency in declared_dependencies:
+        if dependency not in seen_dependencies:
+            seen_dependencies.add(dependency)
+            unique_dependencies.append(dependency)
+
+    for dependency in unique_dependencies:
+        warning = _dependency_warning(dependency, plugin_map, owner_required=bool(reference.get("required")) if reference else False)
+        if warning:
+            dependency_warnings.append(warning)
+
+    runtime_called = False
+    if has_debug:
+        runtime_called = True
+        runtime_result = runtime.plugin_ui_action(
+            plugin_id=normalized_plugin,
+            action_id="debug",
+            method="GET",
+        )
+    else:
+        runtime_result = RuntimeActionResult(
+            success=False,
+            message="debug action unavailable in plugin ui contract",
+            payload={
+                "action_id": "debug",
+                "method": "GET",
+                "reason": "action_not_declared_in_ui_contract",
+            },
+        )
+
+    tool_count = 0
+    active_tool_count = 0
+    tool_warnings: List[Dict[str, str]] = []
+    try:
+        tool_rows = storage.list_tools(plugin_id=normalized_plugin)
+        tool_count = len(tool_rows)
+        active_tool_count = len([tool for tool in tool_rows if str(tool.get("status") or "").strip() != "retired"])
+    except Exception as exc:  # pragma: no cover
+        tool_warnings.append(
+            {
+                "code": "P_PLUGIN_TOOLS_QUERY_FAILED",
+                "severity": "warn",
+                "source": "tools",
+                "message": f"could not query tool registry for {normalized_plugin}: {exc}",
+            },
+        )
+
+    conflicts = _collect_plugin_tool_conflicts(normalized_plugin)
+    if conflicts:
+        tool_warnings.append(
+            {
+                "code": "P_PLUGIN_TOOL_NAMESPACE_CONFLICT",
+                "severity": "warn",
+                "source": "tools",
+                "message": f"tool namespace/action conflicts detected for {len(conflicts)} action(s)",
+            },
+        )
+
+    ui_warnings = _plugin_ui_contract_diagnostics(plugin)
+    if not has_debug:
+        ui_warnings.append(
+            {
+                "code": "P_PLUGIN_DEBUG_ACTION_MISSING",
+                "severity": "warn",
+                "source": "ui",
+                "message": "plugin ui contract does not expose a debug action",
+            },
+        )
+    if not runtime_result.success:
+        ui_warnings.append(
+            {
+                "code": "P_PLUGIN_RUNTIME_DEBUG_FAILED",
+                "severity": "warn",
+                "source": "runtime",
+                "message": "plugin debug action returned failure",
+            },
+        )
+
+    diagnostics = [
+        *ui_warnings,
+        *reference_warnings,
+        *tool_warnings,
+        *dependency_warnings,
+    ]
+    errors = [entry for entry in diagnostics if entry.get("severity") == "error"]
+    status = "error" if any(entry.get("severity") == "error" for entry in diagnostics) else ("warn" if diagnostics else "ok")
+    warnings = {
+        "count": len(diagnostics),
+        "entries": diagnostics,
+    }
 
     _event_for(
         role,
@@ -1903,25 +2312,52 @@ async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
         f"Plugin UI debug probe executed: {plugin_id}",
         "info",
         {
-            "plugin_id": str(plugin_id),
+            "plugin_id": normalized_plugin,
             "action_id": "debug",
             "runtime_success": runtime_result.success,
+            "runtime_called": runtime_called,
+            "warning_count": len(diagnostics),
         },
     )
 
     return {
-        "plugin": _sanitize_plugin(plugin, role),
+        "plugin": _sanitize_plugin_for_debug(plugin),
+        "reference": {
+            "required": bool(reference.get("required")) if reference else False,
+            "signature_required": bool(reference.get("signature_required")) if reference else False,
+            "aliases": reference.get("aliases") if reference else [],
+            "matched_alias": reference.get("matched_alias") if reference else normalized_plugin,
+            "depends_on": reference.get("depends_on") if reference else [],
+        },
         "ui": {
             "actions": ui_actions,
             "has_debug_action": has_debug,
             "action_count": len(ui_actions),
         },
+        "tools": {
+            "total": tool_count,
+            "active": active_tool_count,
+            "conflicts": conflicts,
+            "conflict_count": len(conflicts),
+        },
+        "warnings": warnings,
         "runtime": {
             "action": "debug",
             "method": "GET",
             "success": runtime_result.success,
             "message": runtime_result.message,
-            "payload": runtime_result.payload,
+            "payload": _redact_sensitive_payload(runtime_result.payload, role),
+            "runtime_called": runtime_called,
+        },
+        "dependencies": {
+            "declared": unique_dependencies,
+            "warnings": dependency_warnings,
+            "count": len(unique_dependencies),
+        },
+        "status": status,
+        "errors": {
+            "count": len(errors),
+            "entries": errors,
         },
         "updated_at": _now_iso(),
     }

@@ -1394,6 +1394,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
         self.assertEqual(created.status_code, 200, created.text)
 
+        runtime_calls_before = len(self.runtime.plugin_ui_action_calls)
         response = self.client.get("/api/plugins/debug-demo/ui/debug", headers=admin_headers)
         self.assertEqual(response.status_code, 200, response.text)
         response_payload = response.json()
@@ -1402,14 +1403,107 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(response_payload["ui"]["action_count"], 1)
         self.assertEqual(response_payload["runtime"]["action"], "debug")
         self.assertEqual(response_payload["runtime"]["method"], "GET")
-        self.assertTrue(response_payload["runtime"]["success"])
-
-        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["plugin_id"], "debug-demo")
-        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["action_id"], "debug")
-        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["method"], "GET")
+        self.assertFalse(response_payload["runtime"]["success"])
+        self.assertEqual(len(self.runtime.plugin_ui_action_calls), runtime_calls_before)
+        self.assertTrue(any(
+            item.get("code") == "P_PLUGIN_DEBUG_ACTION_MISSING" for item in response_payload["warnings"]["entries"]
+        ))
+        self.assertTrue(any(
+            item.get("code") == "P_PLUGIN_RUNTIME_DEBUG_FAILED" for item in response_payload["warnings"]["entries"]
+        ))
+        self.assertEqual(response_payload["status"], "warn")
 
         denied = self.client.get("/api/plugins/debug-demo/ui/debug", headers=read_headers)
         self.assertEqual(denied.status_code, 403)
+
+    def test_debug_plugin_ui_action_runtime_success(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        plugin_payload = {
+            "id": "debug-demo-success",
+            "name": "Debug Demo Plugin",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        response = self.client.get("/api/plugins/debug-demo-success/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+        self.assertTrue(response_payload["ui"]["has_debug_action"])
+        self.assertTrue(response_payload["runtime"]["success"])
+        self.assertTrue(response_payload["runtime"]["runtime_called"])
+        self.assertEqual(response_payload["runtime"]["payload"]["action_id"], "debug")
+
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["plugin_id"], "debug-demo-success")
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["action_id"], "debug")
+        self.assertEqual(self.runtime.plugin_ui_action_calls[-1]["method"], "GET")
+
+    def test_debug_plugin_ui_reports_dependency_warnings(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        plugin_payload = {
+            "id": "openclaw-canvas-for-busy38",
+            "name": "OpenClaw Canvas",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "depends_on": [
+                    "busy38-management-ui"
+                ],
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        response = self.client.get("/api/plugins/openclaw-canvas-for-busy38/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+        self.assertEqual(response_payload["dependencies"]["count"], 1)
+        self.assertEqual(response_payload["dependencies"]["declared"], ["busy38-management-ui"])
+        self.assertIn(
+            "P_PLUGIN_DEPENDENCY_MISSING",
+            {entry.get("code") for entry in response_payload["dependencies"]["warnings"]},
+        )
 
     def test_plugin_debug_not_found_returns_404(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
