@@ -16,6 +16,7 @@ const GM_TICKET_STATUS_OPTIONS = [
   "archived",
 ];
 const GM_TICKET_PRIORITY_OPTIONS = ["low", "normal", "high", "critical"];
+const GM_TICKET_DISPATCH_ROLES = ["portia", "nora", "mini", "mission_agent"];
 const GM_TICKET_MESSAGE_TYPES = ["comment", "status", "request"];
 const state = {
   settings: {},
@@ -23,6 +24,8 @@ const state = {
   plugins: [],
   agents: [],
   events: [],
+  startupDebugSummary: null,
+  corePlugins: [],
   runtimeServices: [],
   role: "unknown",
   roleSource: "unknown",
@@ -597,6 +600,70 @@ function renderProviderDiagnosticsHtml(payload) {
   `;
 }
 
+function renderPluginDiagnosticsHtml(payload) {
+  if (!payload) {
+    return "<p>Plugin diagnostics unavailable.</p>";
+  }
+  const reference = payload.reference || {};
+  const ui = payload.ui || {};
+  const tools = payload.tools || {};
+  const runtime = payload.runtime || {};
+  const dependencies = payload.dependencies || {};
+  const warnings = Array.isArray(payload.warnings?.entries) ? payload.warnings.entries : [];
+  const warningRows = warnings
+    .map((warning) => {
+      const code = escapeHtml(warning.code || "UNKNOWN");
+      const source = escapeHtml(warning.source || "runtime");
+      const severity = escapeHtml(String(warning.severity || "warn"));
+      const message = escapeHtml(warning.message || "No message provided.");
+      return `<li><strong>${source}</strong> (${code}) [${severity}] ${message}</li>`;
+    })
+    .join("");
+  const plugin = payload.plugin || {};
+  const status = escapeHtml(payload.status || "ok");
+  const warningCount = Number(payload.warnings?.count || 0);
+  const errorCount = Number(payload.errors?.count || 0);
+  const aliasText = Array.isArray(reference.aliases) && reference.aliases.length
+    ? reference.aliases.map(escapeHtml).join(", ")
+    : "none";
+  const dependsText = Array.isArray(dependencies.declared) && dependencies.declared.length
+    ? dependencies.declared.map(escapeHtml).join(", ")
+    : "none";
+
+  return `
+    <div class="status-grid">
+      <div><strong>Plugin:</strong> ${escapeHtml(plugin.id || "unknown")}</div>
+      <div><strong>Status:</strong> ${status}</div>
+      <div><strong>Warnings:</strong> ${warningCount}</div>
+      <div><strong>Errors:</strong> ${errorCount}</div>
+      <div><strong>UI actions:</strong> ${ui.action_count || 0}</div>
+      <div><strong>Debug action:</strong> ${ui.has_debug_action ? "exposed" : "missing"}</div>
+      <div><strong>Tools (active/total):</strong> ${tools.active || 0}/${tools.total || 0}</div>
+      <div><strong>Dependencies:</strong> ${dependencies.count || 0}</div>
+      <div><strong>Tool conflicts:</strong> ${tools.conflict_count || 0}</div>
+    </div>
+    <h4>Reference health</h4>
+    <ul class="compact-list">
+      <li>Required: ${reference.required ? "yes" : "no"}</li>
+      <li>Signature required: ${reference.signature_required ? "yes" : "no"}</li>
+      <li>Aliases: ${aliasText}</li>
+      <li>Matched alias: ${escapeHtml(reference.matched_alias || "unset")}</li>
+      <li>Depends on: ${dependsText}</li>
+    </ul>
+    <h4>Runtime debug</h4>
+    <ul class="compact-list">
+      <li><strong>Action:</strong> ${escapeHtml(runtime.action || "debug")} (${escapeHtml(runtime.method || "GET")})</li>
+      <li><strong>Called:</strong> ${runtime.runtime_called ? "yes" : "no"}</li>
+      <li><strong>Success:</strong> ${runtime.success ? "yes" : "no"}</li>
+      <li><strong>Message:</strong> ${escapeHtml(runtime.message || "n/a")}</li>
+    </ul>
+    <h4>Warnings (${warningRows ? warnings.length : 0})</h4>
+    <ul class="compact-list">
+      ${warningRows || "<li>No warnings.</li>"}
+    </ul>
+  `;
+}
+
 function parseProviderMetadata(value) {
   if (value == null) {
     return {};
@@ -1092,6 +1159,12 @@ function buildPluginCard(plugin) {
       ${metadataLabel}
       ${uiSectionBlock}
       <p>
+        <button type="button" data-action="show-plugin-diagnostics" data-plugin-id="${escapeHtml(plugin.id)}" ${isLocked}>
+          Show plugin diagnostics
+        </button>
+      </p>
+      <div class="plugin-ui-sections" data-plugin-debug-root="1" data-plugin-id="${escapeHtml(plugin.id)}"></div>
+      <p>
         <label>
           Enabled:
           <input type="checkbox" data-action="toggle-plugin" data-id="${plugin.id}" ${plugin.enabled ? "checked" : ""} ${isLocked} />
@@ -1144,9 +1217,156 @@ function renderEvents(items) {
   if (!list) {
     return;
   }
+  const startupSummary = (items || []).find(
+    (event) => String(event?.type || "").trim() === "plugin.startup_debug_summary",
+  );
+  state.startupDebugSummary = startupSummary || null;
+  renderStartupDebugSummary(startupSummary);
   list.innerHTML = (items || [])
     .map((event) => `<li>${event.created_at} — [${event.level}] ${event.message}</li>`)
     .join("");
+}
+
+function renderStartupDebugSummary(summaryEvent) {
+  const summaryRoot = qs("#startupDebugSummary");
+  if (!summaryRoot) {
+    return;
+  }
+  if (!summaryEvent) {
+    summaryRoot.innerHTML = "<p>Startup debug summary unavailable yet.</p>";
+    return;
+  }
+
+  const payload = summaryEvent.payload || {};
+  const total = Number(payload.plugin_count || 0);
+  const checked = Number(payload.checked || 0);
+  const called = Number(payload.runtime_called || 0);
+  const passed = Number(payload.runtime_success || 0);
+  const missing = Number(payload.missing_debug || 0);
+  const requiredTotal = Number(payload.required_total || 0);
+  const requiredPresent = Number(payload.required_present || 0);
+  const requiredMissing = Number(payload.required_missing || 0);
+  const requiredDisabled = Number(payload.required_disabled || 0);
+  const errors = Number(payload.error_count || 0);
+  const warnings = Number(payload.warn_count || 0);
+  const level = String(summaryEvent.level || "info").trim();
+  const missingPlugins = Array.isArray(payload.missing_debug_plugins) ? payload.missing_debug_plugins : [];
+  const requiredMissingPlugins = Array.isArray(payload.required_missing_plugins) ? payload.required_missing_plugins : [];
+  const requiredDisabledPlugins = Array.isArray(payload.required_disabled_plugins) ? payload.required_disabled_plugins : [];
+  const warnPlugins = Array.isArray(payload.warn_plugins) ? payload.warn_plugins : [];
+  const errorPlugins = Array.isArray(payload.error_plugins) ? payload.error_plugins : [];
+  const checkedPlugins = Array.isArray(payload.checked_plugins) ? payload.checked_plugins : [];
+  const checkedList = checkedPlugins
+    .slice(0, 8)
+    .map((pluginId) => `<li>${escapeHtml(String(pluginId))}</li>`)
+    .join("");
+  const moreChecked = checkedPlugins.length > 8 ? `<li>… and ${checkedPlugins.length - 8} more</li>` : "";
+  const warnList = warnPlugins
+    .slice(0, 8)
+    .map((pluginId) => `<li>${escapeHtml(String(pluginId))}</li>`)
+    .join("");
+  const moreWarn = warnPlugins.length > 8 ? `<li>… and ${warnPlugins.length - 8} more</li>` : "";
+  const errorList = errorPlugins
+    .slice(0, 8)
+    .map((pluginId) => `<li>${escapeHtml(String(pluginId))}</li>`)
+    .join("");
+  const moreError = errorPlugins.length > 8 ? `<li>… and ${errorPlugins.length - 8} more</li>` : "";
+
+  const statusLine = level === "error"
+    ? "Critical issues detected"
+    : level === "warn"
+    ? "Warnings detected"
+    : "No startup warnings";
+  const statusClass = level === "error" ? "status err" : level === "warn" ? "status" : "status ok";
+
+  summaryRoot.className = `${statusClass} card`;
+  summaryRoot.innerHTML = `
+    <p><strong>${escapeHtml(statusLine)}</strong></p>
+    <p>Checked ${checked}/${total} plugins</p>
+    <p>Debug executed ${called} times; passed ${passed}</p>
+    <p>Required core plugins present: ${requiredPresent}/${requiredTotal}</p>
+    <p>Required core plugins missing: ${requiredMissing}</p>
+    <p>Required core plugins disabled: ${requiredDisabled}</p>
+    <p>Missing debug action on ${missing} plugin(s)</p>
+    <p>Warnings: ${warnings} • Errors: ${errors}</p>
+    ${warnPlugins.length ? `<p>Warned plugins:</p><ul>${warnList}${moreWarn}</ul>` : "<p>Warned plugins: none</p>"}
+    ${missingPlugins.length ? `<p>Missing debug action:</p><ul>${missingPlugins.slice(0, 8).map((pluginId) => `<li>${escapeHtml(String(pluginId))}</li>`).join("")}${missingPlugins.length > 8 ? `<li>… and ${missingPlugins.length - 8} more</li>` : ""}</ul>` : ""}
+    ${errorPlugins.length ? `<p>Error plugins:</p><ul>${errorList}${moreError}</ul>` : "<p>Error plugins: none</p>"}
+    ${requiredMissingPlugins.length ? `<p>Missing required plugins:</p><ul>${requiredMissingPlugins.slice(0, 8).map((pluginId) => `<li>${escapeHtml(String(pluginId))}</li>`).join("")}${requiredMissingPlugins.length > 8 ? `<li>… and ${requiredMissingPlugins.length - 8} more</li>` : ""}</ul>` : ""}
+    ${requiredDisabledPlugins.length ? `<p>Disabled required plugins:</p><ul>${requiredDisabledPlugins.slice(0, 8).map((pluginId) => `<li>${escapeHtml(String(pluginId))}</li>`).join("")}${requiredDisabledPlugins.length > 8 ? `<li>… and ${requiredDisabledPlugins.length - 8} more</li>` : ""}</ul>` : ""}
+    <p>Sample checked plugins:</p>
+    <ul>${checkedList}${moreChecked}</ul>
+  `;
+}
+
+function renderCorePluginCoverage(payload) {
+  const root = qs("#corePluginCoverage");
+  if (!root) {
+    return;
+  }
+  if (!payload) {
+    root.innerHTML = "<p>Core plugin coverage unavailable yet.</p>";
+    return;
+  }
+
+  const requiredSummary = payload.summary || {};
+  const requiredTotal = Number(requiredSummary.required_total || 0);
+  const requiredPresent = Number(requiredSummary.required_present || 0);
+  const requiredCovered = Number(requiredSummary.required_covered || 0);
+  const requiredMissing = Number(requiredSummary.required_missing || 0);
+  const requiredDisabled = Number(requiredSummary.required_disabled || 0);
+  const requiredUiMissing = Number(requiredSummary.required_ui_missing || 0);
+  const requiredDebugMissing = Number(requiredSummary.required_debug_missing || 0);
+  const requiredState = String(payload.required_state || "UNKNOWN");
+
+  const requiredPlugins = Array.isArray(payload.core_plugins) ? payload.core_plugins : [];
+  const rows = requiredPlugins
+    .map((entry) => {
+      const pluginId = escapeHtml(entry.plugin_id || "unknown");
+      const matched = escapeHtml(entry.matched_plugin_id || "unregistered");
+      const aliases = Array.isArray(entry.aliases) ? entry.aliases.map(escapeHtml).join(", ") : "none";
+      const state = String(entry.coverage_state || "unknown");
+      const stateText = state === "covered"
+        ? "covered"
+        : state === "debug_missing"
+        ? "debug missing"
+        : state === "ui_contract_missing"
+        ? "ui contract missing"
+        : state === "disabled"
+        ? "disabled"
+        : "missing";
+      const classes = state === "covered"
+        ? "status ok"
+        : state === "disabled" ? "status" : "status err";
+
+      return `
+        <div class="card">
+          <h3>${pluginId}</h3>
+          <p><strong>Matched plugin:</strong> ${matched}</p>
+          <p><strong>Aliases:</strong> ${aliases}</p>
+          <p><strong>Coverage:</strong> <span class="${classes}">${stateText}</span></p>
+          <p><strong>UI contract:</strong> ${entry.has_ui_contract ? "yes" : "no"}</p>
+          <p><strong>Debug action:</strong> ${entry.has_debug_action ? "yes" : "no"}</p>
+          <p><strong>Reason:</strong> ${escapeHtml(entry.reason_code || "n/a")}</p>
+        </div>
+      `;
+    })
+    .join("");
+
+  const stateLine = requiredState === "READY"
+    ? "All required plugin coverage checks passed."
+    : requiredState === "BLOCKED"
+    ? "Required plugin coverage is incomplete."
+    : "Required plugin coverage state is unknown.";
+  root.innerHTML = `
+    <p><strong>${escapeHtml(stateLine)}</strong></p>
+    <p>Required present/expected: ${requiredPresent}/${requiredTotal}</p>
+    <p>Coverage complete: ${requiredCovered}/${requiredTotal}</p>
+    <p>Missing: ${requiredMissing} • Disabled: ${requiredDisabled} • UI contract missing: ${requiredUiMissing} • Debug missing: ${requiredDebugMissing}</p>
+    <div class="card-list">
+      ${rows || "<p>Core plugin coverage unavailable.</p>"}
+    </div>
+  `;
 }
 
 function renderMemory(items) {
@@ -1189,6 +1409,16 @@ function renderGmTickets(tickets) {
       const status = escapeHtml(ticket.status || "open");
       const priority = escapeHtml(ticket.priority || "normal");
       const assigned = escapeHtml(ticket.assigned_to || "unassigned");
+      const lineage = ticket.lineage || {};
+      const requestId = escapeHtml((lineage.request_id || ticket.gm_request_id || "n/a"));
+      const currentMission = escapeHtml(lineage.current_mission_id || ticket.phase2_mission || ticket.mission_id || "n/a");
+      const buildTicketId = escapeHtml(lineage.build_ticket_id || "n/a");
+      const buildBatchId = escapeHtml(lineage.build_batch_id || "n/a");
+      const lastMissionEvent = lineage.last_mission_event || {};
+      const lastMissionEventSummary = escapeHtml(
+        `${lastMissionEvent.phase2_mission || "n/a"} ${lastMissionEvent.event || "no event"} ${lastMissionEvent.status || ""}`.trim(),
+      );
+      const lastMissionEventAt = escapeHtml(lastMissionEvent.at || lastMissionEvent.timestamp || "n/a");
       const createdAt = escapeHtml(ticket.created_at || ticket.createdAt || "n/a");
       const updatedAt = escapeHtml(ticket.updated_at || ticket.updatedAt || "n/a");
       const requestedBy = escapeHtml(ticket.requested_by || "unknown");
@@ -1196,9 +1426,15 @@ function renderGmTickets(tickets) {
         <div class="card${isSelected ? " selected" : ""}">
           <h3>${escapeHtml(ticket.title || "untitled")}</h3>
           <p><strong>ID:</strong> ${escapeHtml(ticket.id || "unknown")}</p>
+          <p><strong>Request ID:</strong> ${requestId}</p>
+          <p><strong>Build ticket ID:</strong> ${buildTicketId}</p>
+          <p><strong>Build batch ID:</strong> ${buildBatchId}</p>
+          <p><strong>Last mission event:</strong> ${lastMissionEventSummary}</p>
+          <p><strong>Last mission event time:</strong> ${lastMissionEventAt}</p>
           <p><strong>Status:</strong> ${status}</p>
           <p><strong>Priority:</strong> ${priority}</p>
           <p><strong>Assigned to:</strong> ${assigned}</p>
+          <p><strong>Current mission:</strong> ${currentMission}</p>
           <p><strong>Requested by:</strong> ${requestedBy}</p>
           <p><strong>Phase:</strong> ${escapeHtml(ticket.phase || "n/a")}</p>
           <p><strong>Created:</strong> ${createdAt}</p>
@@ -1234,6 +1470,16 @@ function _gmTicketPriorityOptions(currentPriority) {
     .join("");
 }
 
+function _gmTicketDispatchRoleOptions(currentRole) {
+  const roleList = GM_TICKET_DISPATCH_ROLES;
+  const selectedRole = (currentRole || "nora").trim();
+  return roleList
+    .map(
+      (role) => `<option value="${role}"${role === selectedRole ? " selected" : ""}>${role}</option>`,
+    )
+    .join("");
+}
+
 function renderGmTicketDetail(ticket) {
   const root = qs("#gmTicketDetail");
   if (!root) {
@@ -1245,16 +1491,32 @@ function renderGmTicketDetail(ticket) {
   }
   const metadata = ticket.metadata || {};
   const metadataText = Object.keys(metadata).length ? escapeHtml(JSON.stringify(metadata)) : "none";
+  const lineage = ticket.lineage || {};
   const assigned = escapeHtml(ticket.assigned_to || "");
   const phase = escapeHtml(ticket.phase || "");
   const scope = escapeHtml(ticket.agent_scope || "global");
   const requestedBy = escapeHtml(ticket.requested_by || "unknown");
   const closedAt = ticket.closed_at ? escapeHtml(ticket.closed_at) : "open";
+  const buildTicketId = escapeHtml(lineage.build_ticket_id || "n/a");
+  const buildBatchId = escapeHtml(lineage.build_batch_id || "n/a");
+  const currentMission = escapeHtml(lineage.current_mission_id || "n/a");
+  const requestId = escapeHtml(lineage.request_id || ticket.gm_request_id || "n/a");
+  const lastMissionEvent = lineage.last_mission_event || {};
+  const lastMissionEventSummary = escapeHtml(
+    `${lastMissionEvent.phase2_mission || "n/a"} ${lastMissionEvent.event || "no event"} ${lastMissionEvent.status || ""}`.trim(),
+  );
+  const lastMissionEventAt = escapeHtml(lastMissionEvent.at || lastMissionEvent.timestamp || "n/a");
 
   root.innerHTML = `
     <div class="card">
       <h3>${escapeHtml(ticket.title || "untitled")}</h3>
       <p><strong>ID:</strong> ${escapeHtml(ticket.id)}</p>
+      <p><strong>Request ID:</strong> ${requestId}</p>
+      <p><strong>Build ticket ID:</strong> ${buildTicketId}</p>
+      <p><strong>Build batch ID:</strong> ${buildBatchId}</p>
+      <p><strong>Current mission:</strong> ${currentMission}</p>
+      <p><strong>Last mission event:</strong> ${lastMissionEventSummary}</p>
+      <p><strong>Last mission event time:</strong> ${lastMissionEventAt}</p>
       <p><strong>Requested by:</strong> ${requestedBy}</p>
       <p><strong>Current status:</strong> ${escapeHtml(ticket.status || "open")}</p>
       <p><strong>Current priority:</strong> ${escapeHtml(ticket.priority || "normal")}</p>
@@ -1292,6 +1554,27 @@ function renderGmTicketDetail(ticket) {
           Assigned to
           <input type="text" data-action="gm-ticket-assigned-to" data-ticket-id="${escapeHtml(ticket.id)}" value="${assigned}" />
         </label>
+        <label>
+          Dispatch objective
+          <input
+            type="text"
+            data-action="gm-ticket-dispatch-objective"
+            data-ticket-id="${escapeHtml(ticket.id)}"
+            value="${escapeHtml(ticket.title || "")}"
+            placeholder="Optional objective override"
+          />
+        </label>
+        <label>
+          Dispatch role
+          <select data-action="gm-ticket-dispatch-role" data-ticket-id="${escapeHtml(ticket.id)}">
+            ${_gmTicketDispatchRoleOptions(ticket.dispatch_role || "nora")}
+          </select>
+        </label>
+      </div>
+      <div class="control-row">
+        <button type="button" data-action="dispatch-gm-ticket" data-ticket-id="${escapeHtml(ticket.id)}">
+          Dispatch to phase-2 runtime
+        </button>
         <button type="button" data-action="save-gm-ticket-update" data-ticket-id="${escapeHtml(ticket.id)}">Save</button>
         ${ticket.status === "closed" ? "" : `<button type="button" data-action="close-gm-ticket" data-ticket-id="${escapeHtml(ticket.id)}">Close now</button>`}
         <button type="button" data-action="export-gm-ticket-audit" data-ticket-id="${escapeHtml(ticket.id)}">Export audit</button>
@@ -1314,10 +1597,14 @@ function renderGmTicketMessages(messages) {
     .map((message) => {
       const metadata = message.metadata || {};
       const metadataText = Object.keys(metadata).length ? `<pre>${escapeHtml(JSON.stringify(metadata, null, 2))}</pre>` : "";
+      const responseRequiredText = message.response_required
+        ? "<p><strong>Response required:</strong> yes</p>"
+        : "";
       return `
         <div class="card">
           <h4>${escapeHtml(message.sender || "sender unknown")}</h4>
           <p><strong>Type:</strong> ${escapeHtml(message.message_type || "comment")}</p>
+          ${responseRequiredText}
           <p><strong>Message:</strong> ${escapeHtml(message.content || "")}</p>
           <p><strong>At:</strong> ${escapeHtml(message.created_at || "n/a")}</p>
           ${metadataText}
@@ -1366,6 +1653,7 @@ function renderGmTicketAudit(audit) {
       (message) => `
         <div class="card">
           <p><strong>${escapeHtml(message.sender || "sender unknown")}</strong> — ${escapeHtml(message.message_type || "comment")}</p>
+          ${message.response_required ? "<p><strong>Response required:</strong> yes</p>" : ""}
           <p>${escapeHtml(message.content || "")}</p>
           <p><strong>At:</strong> ${escapeHtml(message.created_at || "n/a")}</p>
         </div>
@@ -1481,6 +1769,37 @@ async function loadPlugins() {
   const payload = await fetchJson("/api/plugins");
   state.plugins = payload.plugins || [];
   renderCards("#plugins", state.plugins, buildPluginCard);
+}
+
+async function loadCorePluginCoverage() {
+  const payload = await fetchJson("/api/plugins/core");
+  state.corePlugins = payload || {};
+  renderCorePluginCoverage(payload);
+}
+
+async function loadPluginDiagnostics(pluginId) {
+  const normalizedPluginId = String(pluginId || "").trim();
+  if (!normalizedPluginId) {
+    setStatus("#healthState", "plugin diagnostics missing plugin id", "err");
+    return;
+  }
+
+  const roots = Array.from(document.querySelectorAll("[data-plugin-debug-root='1']"));
+  const root = roots.find((entry) => entry.dataset.pluginId === normalizedPluginId);
+  if (!root) {
+    setStatus("#healthState", `Unable to find diagnostics container for plugin ${normalizedPluginId}`, "err");
+    return;
+  }
+
+  root.innerHTML = "<p>Loading plugin diagnostics…</p>";
+  try {
+    const payload = await fetchJson(`/api/plugins/${encodeURIComponent(normalizedPluginId)}/ui/debug`);
+    root.innerHTML = renderPluginDiagnosticsHtml(payload);
+    setStatus("#healthState", `plugin diagnostics loaded for ${normalizedPluginId}`, "ok");
+  } catch (err) {
+    root.innerHTML = `<p>Plugin diagnostics failed: ${escapeHtml(err.message || "unknown error")}</p>`;
+    setStatus("#healthState", `plugin diagnostics failed for ${normalizedPluginId}: ${err.message}`, "err");
+  }
 }
 
 async function loadProviderChain() {
@@ -2755,6 +3074,42 @@ async function closeGmTicket(ticketId = "") {
   }
 }
 
+async function dispatchGmTicket(ticketId = "") {
+  const target = String(ticketId || state.selectedGmTicketId || "").trim();
+  if (!target) {
+    setStatus("#gmTicketDetailStatus", "select a ticket before dispatch", "err");
+    return;
+  }
+
+  const root = qs("#gmTicketDetail");
+  const objectiveNode = root?.querySelector(
+    `input[data-action="gm-ticket-dispatch-objective"][data-ticket-id="${escapeHtml(target)}"]`,
+  );
+  const roleNode = root?.querySelector(
+    `select[data-action="gm-ticket-dispatch-role"][data-ticket-id="${escapeHtml(target)}"]`,
+  );
+  const objective = objectiveNode?.value?.trim() || "";
+  const role = roleNode?.value?.trim() || "";
+  const payload = {};
+  if (objective) {
+    payload.objective = objective;
+  }
+  if (role) {
+    payload.role = role;
+  }
+
+  setStatus("#gmTicketDetailStatus", "dispatching ticket to runtime...", "");
+  try {
+    await postJson(`/api/gm-tickets/${encodeURIComponent(target)}/dispatch`, payload);
+    setStatus("#gmTicketDetailStatus", "ticket dispatched", "ok");
+    await loadGmTicket(target);
+    await loadGmTickets();
+    await loadGmTicketMessages(target);
+  } catch (err) {
+    setStatus("#gmTicketDetailStatus", `dispatch failed: ${err.message}`, "err");
+  }
+}
+
 async function submitGmTicketMessage(event) {
   event.preventDefault();
   const ticketId = state.selectedGmTicketId;
@@ -2765,6 +3120,7 @@ async function submitGmTicketMessage(event) {
   const sender = qs('input[name="gmTicketMessageSender"]')?.value.trim() || "";
   const messageType = qs('select[name="gmTicketMessageType"]')?.value.trim() || GM_TICKET_MESSAGE_TYPES[0];
   const content = qs('textarea[name="gmTicketMessageContent"]')?.value.trim() || "";
+  const responseRequired = qs('input[name="gmTicketMessageResponseRequired"]')?.checked === true;
   const metadataRaw = qs('textarea[name="gmTicketMessageMetadata"]')?.value.trim() || "";
 
   if (!sender || !content) {
@@ -2782,7 +3138,12 @@ async function submitGmTicketMessage(event) {
     }
   }
 
-  const payload = { sender, content, message_type: messageType };
+  const payload = {
+    sender,
+    content,
+    message_type: messageType,
+    response_required: responseRequired,
+  };
   if (metadata != null) {
     payload.metadata = metadata;
   }
@@ -2795,6 +3156,10 @@ async function submitGmTicketMessage(event) {
     if (contentInput) {
       contentInput.value = "";
     }
+  const responseRequiredInput = qs('input[name="gmTicketMessageResponseRequired"]');
+  if (responseRequiredInput) {
+    responseRequiredInput.checked = false;
+  }
   const metadataInput = qs('textarea[name="gmTicketMessageMetadata"]');
   if (metadataInput) {
     metadataInput.value = "";
@@ -3338,6 +3703,20 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "gm-ticket-dispatch-objective") {
+    return;
+  }
+
+  if (action === "gm-ticket-dispatch-role") {
+    return;
+  }
+
+  if (action === "dispatch-gm-ticket") {
+    const ticketId = target.dataset.ticketId;
+    await dispatchGmTicket(ticketId);
+    return;
+  }
+
   if (action === "save-gm-ticket-update") {
     const ticketId = target.dataset.ticketId;
     if (ticketId) {
@@ -3627,6 +4006,12 @@ async function onTableChange(event) {
       return;
     }
 
+    if (action === "show-plugin-diagnostics") {
+      const pluginId = target.dataset.pluginId || "";
+      await loadPluginDiagnostics(pluginId);
+      return;
+    }
+
     if (action === "execute-plugin-ui-action") {
       const pluginId = target.dataset.pluginId || "";
       const actionId = target.dataset.actionId || "";
@@ -3756,6 +4141,7 @@ async function boot() {
       loadProviders(),
       loadProviderChain(),
       loadPlugins(),
+      loadCorePluginCoverage(),
       loadImportJobs(),
       loadAgents(),
       loadAgentDirectory(),
@@ -3817,6 +4203,9 @@ document.body.addEventListener("click", (event) => {
     && action !== "gm-ticket-scope"
     && action !== "gm-ticket-phase"
     && action !== "gm-ticket-assigned-to"
+    && action !== "gm-ticket-dispatch-objective"
+    && action !== "gm-ticket-dispatch-role"
+    && action !== "dispatch-gm-ticket"
     && action !== "save-gm-ticket-update"
     && action !== "close-gm-ticket"
     && action !== "export-gm-ticket-audit"
@@ -3832,6 +4221,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "save-agent-overlay"
     && action !== "set-plugin-status"
     && action !== "set-plugin-command"
+    && action !== "show-plugin-diagnostics"
     && action !== "execute-plugin-ui-action"
     && action !== "archive-agent"
     && action !== "restore-agent"

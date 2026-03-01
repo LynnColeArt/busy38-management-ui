@@ -285,6 +285,7 @@ def _ensure_gm_ticket_tables(conn: sqlite3.Connection) -> None:
             sender TEXT NOT NULL,
             content TEXT NOT NULL,
             message_type TEXT NOT NULL,
+            response_required INTEGER NOT NULL DEFAULT 0,
             metadata TEXT,
             created_at TEXT NOT NULL,
             FOREIGN KEY(gm_ticket_id) REFERENCES gm_tickets(id) ON DELETE CASCADE
@@ -306,6 +307,14 @@ def _ensure_gm_ticket_tables(conn: sqlite3.Connection) -> None:
             ON gm_ticket_messages(sender);
         """
     )
+
+
+def _ensure_gm_ticket_message_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(gm_ticket_messages)")}
+    if "response_required" not in columns:
+        conn.execute(
+            "ALTER TABLE gm_ticket_messages ADD COLUMN response_required INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _ensure_settings_columns(conn: sqlite3.Connection) -> None:
@@ -551,6 +560,7 @@ def ensure_schema() -> None:
         _ensure_tool_usage_columns(conn)
         _ensure_chat_history_columns(conn)
         _ensure_gm_ticket_tables(conn)
+        _ensure_gm_ticket_message_columns(conn)
         conn.commit()
 
         row = conn.execute("SELECT 1 FROM settings WHERE id='singleton'").fetchone()
@@ -2536,6 +2546,7 @@ def append_gm_ticket_message(
     sender: str,
     content: str,
     message_type: str = "comment",
+    response_required: bool = False,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     normalized_ticket_id = str(ticket_id).strip()
@@ -2551,6 +2562,7 @@ def append_gm_ticket_message(
     normalized_message_type = str(message_type).strip() or "comment"
     if normalized_message_type not in {"comment", "status", "request"}:
         raise ValueError(f"unsupported message_type: {message_type!r}")
+    normalized_response_required = _coerce_bool(bool(response_required))
 
     now = _now_iso()
     message_id = f"gm-msg-{uuid.uuid4().hex[:12]}"
@@ -2567,10 +2579,11 @@ def append_gm_ticket_message(
                 sender,
                 content,
                 message_type,
+                response_required,
                 metadata,
                 created_at
             )
-            VALUES(?, ?, ?, ?, ?, ?, ?)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 message_id,
@@ -2578,6 +2591,7 @@ def append_gm_ticket_message(
                 normalized_sender,
                 normalized_content,
                 normalized_message_type,
+                normalized_response_required,
                 _coerce_metadata_for_storage(metadata),
                 now,
             ),
@@ -2593,6 +2607,7 @@ def append_gm_ticket_message(
         "sender": normalized_sender,
         "content": normalized_content,
         "message_type": normalized_message_type,
+        "response_required": bool(normalized_response_required),
         "metadata": metadata,
         "created_at": now,
     }
@@ -2612,6 +2627,7 @@ def list_gm_ticket_messages(ticket_id: str) -> List[Dict[str, Any]]:
     return [
         {
             **_dict_from_row(row),
+            "response_required": bool(row["response_required"]),
             "metadata": _coerce_json_payload(row["metadata"]),
         }
         for row in rows

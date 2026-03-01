@@ -67,6 +67,8 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `GET /api/plugins`
 - `POST /api/plugins`
 - `PATCH /api/plugins/{plugin_id}`
+- `GET /api/plugins/core`
+- `GET /api/plugins/core/reference`
 - `POST /api/plugins/{plugin_id}/ui/{action_id}`
 - `GET /api/plugins/{plugin_id}/ui/debug` (plugin diagnostics; includes signature checks, dependency checks, tool conflict diagnostics, optional runtime probe, and warning/error summary)
 - `GET /api/providers`

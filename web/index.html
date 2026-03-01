@@ -226,6 +226,11 @@
       </section>
 
       <section class="panel">
+        <h2>Core plugin coverage</h2>
+        <div id="corePluginCoverage"><p>Core plugin coverage pending...</p></div>
+      </section>
+
+      <section class="panel">
         <h2>Send direct message to GM</h2>
         <form id="gmDirectMessageForm">
           <label>
@@ -390,6 +395,10 @@
           <label>
             Message
             <textarea name="gmTicketMessageContent" rows="4" required placeholder="Add a note..."></textarea>
+          </label>
+          <label>
+            <input name="gmTicketMessageResponseRequired" type="checkbox" />
+            Response required
           </label>
           <label>
             Metadata (optional JSON)
@@ -577,6 +586,11 @@
       <section class="panel">
         <h2>Recent events</h2>
         <ul id="events"></ul>
+      </section>
+
+      <section class="panel">
+        <h2>Startup plugin debug summary</h2>
+        <div id="startupDebugSummary"><p>Startup debug summary pending...</p></div>
       </section>
 
       <section class="panel">

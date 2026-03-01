@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import importlib.util
+import inspect
 import sys
+from pathlib import Path
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -371,6 +374,221 @@ class RuntimeAdapter:
                 return response
         return None
 
+    def _resolve_plugin_source_path(self, source: Optional[str]) -> Optional[Path]:
+        if not isinstance(source, str):
+            return None
+        raw_source = source.strip()
+        if not raw_source:
+            return None
+        if "://" in raw_source:
+            return None
+
+        source_path = Path(raw_source)
+        if source_path.is_absolute():
+            return source_path if source_path.exists() else None
+
+        candidate_paths = [
+            source_path,
+            Path(__file__).resolve().parent.parent / source_path,
+            Path.cwd() / source_path,
+        ]
+        for candidate in candidate_paths:
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _parse_entry_point(action: Optional[Dict[str, Any]], action_id: str) -> tuple[str, str]:
+        default_module = "actions"
+        fallback_function = f"handle_{str(action_id).strip()}"
+        if not isinstance(action, dict):
+            return default_module, fallback_function
+
+        raw_entry = str(action.get("entry_point") or "").strip()
+        if not raw_entry:
+            return default_module, fallback_function
+
+        if ":" in raw_entry:
+            module_expr, function_expr = raw_entry.split(":", 1)
+            module_expr = module_expr.strip()
+            function_expr = function_expr.strip()
+        else:
+            separator = raw_entry.rfind(".")
+            if separator < 0:
+                return default_module, raw_entry
+            module_expr = raw_entry[:separator].strip()
+            function_expr = raw_entry[separator + 1 :].strip()
+
+        if not module_expr:
+            module_expr = default_module
+        if not function_expr:
+            function_expr = fallback_function
+        return module_expr, function_expr
+
+    @staticmethod
+    def _resolve_ui_module_file(ui_path: Path, module_name: str) -> Optional[Path]:
+        module_parts = [part for part in module_name.split(".") if part]
+        if not module_parts:
+            module_parts = ["actions"]
+
+        module_base = ui_path.joinpath(*module_parts)
+        module_file = module_base.with_suffix(".py")
+        package_init = module_base / "__init__.py"
+        if package_init.is_file():
+            return package_init
+        if module_file.is_file():
+            return module_file
+        return None
+
+    @staticmethod
+    def _coerce_payload_for_runtime_result(payload: Any) -> Dict[str, Any]:
+        if isinstance(payload, dict):
+            normalized = dict(payload)
+            normalized.pop("success", None)
+            normalized.pop("message", None)
+            nested_payload = normalized.pop("payload", None)
+            if isinstance(nested_payload, dict):
+                for key, value in nested_payload.items():
+                    if key not in normalized:
+                        normalized[key] = value
+            normalized["payload"] = nested_payload
+            return normalized
+        return {"value": payload}
+
+    @staticmethod
+    def _coerce_runtime_result(payload: Any) -> RuntimeActionResult:
+        if isinstance(payload, RuntimeActionResult):
+            return payload
+        if not isinstance(payload, dict):
+            return RuntimeActionResult(
+                success=False,
+                message="plugin ui handler returned non-mapping result",
+                payload={"value": payload},
+            )
+
+        message = str(payload.get("message", "plugin ui action executed"))
+        return RuntimeActionResult(
+            success=bool(payload.get("success", True)),
+            message=message,
+            payload=RuntimeAdapter._coerce_payload_for_runtime_result(payload),
+        )
+
+    def _invoke_local_ui_handler(
+        self,
+        plugin_id: str,
+        action_id: str,
+        action: Optional[Dict[str, Any]],
+        source_path: Path,
+        method: str,
+        payload: Optional[Dict[str, Any]],
+    ) -> Optional[RuntimeActionResult]:
+        ui_path = source_path / "ui"
+        if not ui_path.is_dir():
+            return None
+
+        module_name, function_name = self._parse_entry_point(action, action_id)
+        module_file = self._resolve_ui_module_file(ui_path, module_name)
+        if module_file is None:
+            return None
+
+        try:
+            module_id = f"busy38_plugin_ui_{id(module_file)}_{module_name}"
+            module_spec = importlib.util.spec_from_file_location(module_id, str(module_file))
+            if module_spec is None or module_spec.loader is None:
+                return RuntimeActionResult(
+                    success=False,
+                    message="plugin ui module spec was not loadable",
+                    payload={
+                        "plugin_id": str(plugin_id),
+                        "action_id": str(action_id),
+                        "module": module_name,
+                    },
+                )
+
+            module = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(module)
+        except Exception as exc:
+            return RuntimeActionResult(
+                success=False,
+                message="plugin ui module load failed",
+                payload={
+                    "plugin_id": str(plugin_id),
+                    "action_id": str(action_id),
+                    "module": module_name,
+                    "error": str(exc),
+                },
+            )
+
+        handler = module
+        for piece in function_name.split("."):
+            if not isinstance(handler, object):
+                return None
+            handler = getattr(handler, piece, None)
+            if handler is None:
+                return None
+
+        if not callable(handler):
+            return RuntimeActionResult(
+                success=False,
+                message="plugin ui entry point is not callable",
+                payload={
+                    "plugin_id": str(plugin_id),
+                    "action_id": str(action_id),
+                    "module": module_name,
+                    "entry_point": function_name,
+                },
+            )
+
+        normalized_payload = dict(payload or {})
+        method_value = str(method or "POST").strip().upper() or "POST"
+        context = {
+            "plugin_id": str(plugin_id),
+            "action_id": str(action_id),
+            "method": method_value,
+            "source_path": str(source_path),
+        }
+
+        try:
+            try:
+                signature = inspect.signature(handler)
+                kwargs: Dict[str, Any] = {}
+                if "payload" in signature.parameters:
+                    kwargs["payload"] = normalized_payload
+                if "method" in signature.parameters:
+                    kwargs["method"] = method_value
+                if "context" in signature.parameters:
+                    kwargs["context"] = context
+                if kwargs:
+                    return self._coerce_runtime_result(handler(**kwargs))
+                return self._coerce_runtime_result(handler())
+            except TypeError:
+                return self._coerce_runtime_result(handler(normalized_payload, method_value, context))
+        except Exception as exc:
+            return RuntimeActionResult(
+                success=False,
+                message=f"plugin ui handler execution failed for '{action_id}'",
+                payload={
+                    "plugin_id": str(plugin_id),
+                    "action_id": str(action_id),
+                    "error": str(exc),
+                },
+            )
+
+    def _run_plugin_local_ui_action(
+        self,
+        plugin_id: str,
+        action_id: str,
+        action: Optional[Dict[str, Any]],
+        payload: Optional[Dict[str, Any]],
+        *,
+        plugin_source: Optional[str],
+        method: str,
+    ) -> Optional[RuntimeActionResult]:
+        source_path = self._resolve_plugin_source_path(plugin_source)
+        if source_path is None:
+            return None
+        return self._invoke_local_ui_handler(plugin_id, action_id, action, source_path, method=method, payload=payload)
+
     def write_actor_overlay(
         self,
         actor_id: str,
@@ -559,6 +777,63 @@ class RuntimeAdapter:
     def control_service(self, service_name: str, action: str) -> RuntimeActionResult:
         return self._run_action(service_name, action)
 
+    def _bridge_dispatch_gm_ticket(
+        self,
+        ticket_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not self.bridge_url:
+            return None
+
+        quoted_ticket = urllib.parse.quote_plus(str(ticket_id or "").strip())
+        if not quoted_ticket:
+            return None
+
+        body = dict(payload or {})
+        for path in (
+            f"/api/gm-tickets/{quoted_ticket}/dispatch-mission",
+            f"/runtime/gm-tickets/{quoted_ticket}/dispatch-mission",
+            f"/gm-tickets/{quoted_ticket}/dispatch-mission",
+        ):
+            response = self._request_json("POST", path, payload=body)
+            if isinstance(response, dict) and response:
+                return response
+        return None
+
+    def dispatch_gm_ticket(
+        self,
+        ticket_id: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> RuntimeActionResult:
+        normalized_ticket_id = str(ticket_id or "").strip()
+        if not normalized_ticket_id:
+            return RuntimeActionResult(
+                success=False,
+                message="ticket_id is required",
+                payload={"ticket_id": ticket_id},
+            )
+
+        response = self._bridge_dispatch_gm_ticket(normalized_ticket_id, payload=payload)
+        if isinstance(response, dict) and response:
+            result_message = str(response.get("message", "gm ticket dispatch queued"))
+            if "success" in response:
+                return RuntimeActionResult(
+                    success=bool(response.get("success")),
+                    message=result_message,
+                    payload=self._coerce_payload_for_runtime_result(response),
+                )
+            return RuntimeActionResult(
+                success=True,
+                message=result_message,
+                payload=self._coerce_payload_for_runtime_result(response),
+            )
+
+        return RuntimeActionResult(
+            success=False,
+            message="gm ticket dispatch unavailable",
+            payload={"ticket_id": normalized_ticket_id},
+        )
+
     def plugin_ui_action(
         self,
         plugin_id: str,
@@ -566,8 +841,9 @@ class RuntimeAdapter:
         payload: Optional[Dict[str, Any]] = None,
         *,
         method: str = "POST",
+        action: Optional[Dict[str, Any]] = None,
+        plugin_source: Optional[str] = None,
     ) -> RuntimeActionResult:
-        response = None
         if not plugin_id:
             return RuntimeActionResult(
                 success=False,
@@ -583,6 +859,17 @@ class RuntimeAdapter:
 
         normalized_plugin = str(plugin_id).strip()
         method_value = str(method or "POST").strip().upper()
+        local_result = self._run_plugin_local_ui_action(
+            normalized_plugin,
+            action_id,
+            action=action,
+            payload=payload,
+            plugin_source=plugin_source,
+            method=method_value,
+        )
+        if isinstance(local_result, RuntimeActionResult):
+            return local_result
+
         response = self._bridge_plugin_ui_action(
             normalized_plugin,
             action_id,

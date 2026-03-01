@@ -1,0 +1,49 @@
+{
+  "type": "plugin-ui",
+  "version": "1",
+  "summary": "Management dashboard and admin surfaces for actor orchestration and configuration.",
+  "required_api": [
+    "/api/plugins/{plugin_id}/ui/debug"
+  ],
+  "sections": [
+    {
+      "id": "overview",
+      "title": "Overview",
+      "kind": "docs",
+      "scope": "viewer",
+      "visibility": "default-open",
+      "fields": [
+        {
+          "name": "overview",
+          "label": "Overview",
+          "type": "textarea",
+          "kind": "readonly",
+          "default": "Primary operator cockpit for plugin status, actor coordination, and system settings."
+        }
+      ]
+    },
+    {
+      "id": "diagnostics",
+      "title": "Diagnostics",
+      "kind": "form",
+      "scope": "admin",
+      "visibility": "default-open",
+      "actions": [
+        {
+          "id": "ping",
+          "label": "Ping plugin backend",
+          "method": "POST",
+          "description": "Execute a local plugin-owned ping handler.",
+          "entry_point": "actions:handle_ping"
+        },
+        {
+          "id": "debug",
+          "label": "Run plugin debug",
+          "method": "GET",
+          "description": "Execute a local plugin-owned debug handler.",
+          "entry_point": "actions:handle_debug"
+        }
+      ]
+    }
+  ]
+}

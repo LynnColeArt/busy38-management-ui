@@ -8,6 +8,7 @@ import sys
 import json
 import hashlib
 import tempfile
+import shutil
 from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
@@ -66,6 +67,7 @@ def _load_main_module(admin_token: str, read_token: str, db_path: str):
 class _MockRuntime:
     def __init__(self) -> None:
         self.actions: List[Tuple[str, str]] = []
+        self.gm_dispatch_calls: List[Tuple[str, Dict[str, object]]] = []
         self.overlay_writes: List[Tuple[str, str, int | None]] = []
         self.overlay_history_calls: List[Tuple[str, int]] = []
         self.plugin_ui_action_calls: List[Dict[str, object]] = []
@@ -168,6 +170,8 @@ class _MockRuntime:
         payload: dict | None = None,
         *,
         method: str = "POST",
+        action: dict | None = None,
+        plugin_source: str | None = None,
     ) -> RuntimeActionResult:
         normalized_plugin = str(plugin_id).strip()
         normalized_action = str(action_id).strip()
@@ -193,6 +197,9 @@ class _MockRuntime:
                 "payload": normalized_payload,
             },
         )
+        if action is not None:
+            self.plugin_ui_action_calls[-1]["action_id_entry"] = action.get("id")
+            self.plugin_ui_action_calls[-1]["plugin_source"] = plugin_source
 
         if normalized_action == "fail":
             return RuntimeActionResult(
@@ -209,6 +216,38 @@ class _MockRuntime:
                 "action_id": normalized_action,
                 "method": str(method or "POST").strip().upper() or "POST",
                 "payload": normalized_payload,
+            },
+        )
+
+    def dispatch_gm_ticket(self, ticket_id: str, payload: dict | None = None) -> RuntimeActionResult:
+        normalized_ticket_id = str(ticket_id or "").strip()
+        normalized_payload = dict(payload or {})
+        if not normalized_ticket_id:
+            return RuntimeActionResult(
+                success=False,
+                message="ticket_id is required",
+                payload={"ticket_id": ticket_id},
+            )
+
+        self.gm_dispatch_calls.append((normalized_ticket_id, normalized_payload))
+        if normalized_payload.get("objective") == "fail":
+            return RuntimeActionResult(
+                success=False,
+                message="dispatch failed intentionally",
+                payload={"ticket_id": normalized_ticket_id},
+            )
+
+        return RuntimeActionResult(
+            success=True,
+            message="gm ticket dispatch queued",
+            payload={
+                "ticket_id": normalized_ticket_id,
+                "objective": normalized_payload.get("objective"),
+                "mission": {
+                    "mission_id": f"gm-{normalized_ticket_id}-dispatch",
+                    "state": "queued",
+                    "assigned_to": normalized_payload.get("assigned_to") or "nora",
+                },
             },
         )
 
@@ -1361,6 +1400,202 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         )
         self.assertEqual(missing_action.status_code, 404)
 
+    def test_runtime_plugin_ui_action_prefers_local_handler(self):
+        from backend.app.runtime import RuntimeAdapter
+
+        with tempfile.TemporaryDirectory(prefix="busy38-ui-local-handler-") as plugin_source:
+            ui_dir = os.path.join(plugin_source, "ui")
+            os.makedirs(ui_dir, exist_ok=True)
+            with open(os.path.join(ui_dir, "actions.py"), "w", encoding="utf-8") as handle:
+                handle.write(
+                    "def handle_ping(payload, method, context):\n"
+                    "    return {\n"
+                    "        \"success\": True,\n"
+                    "        \"message\": \"local ping\",\n"
+                    "        \"payload\": {\n"
+                    "            \"payload\": payload,\n"
+                    "            \"method\": method,\n"
+                    "            \"plugin\": context.get(\"plugin_id\"),\n"
+                    "        },\n"
+                    "    }\n",
+                )
+
+            adapter = RuntimeAdapter()
+            result = adapter.plugin_ui_action(
+                plugin_id="local-demo",
+                action_id="ping",
+                payload={"value": "hello"},
+                method="POST",
+                plugin_source=plugin_source,
+                action={"id": "ping"},
+            )
+            self.assertTrue(result.success)
+            self.assertEqual(result.message, "local ping")
+            self.assertEqual(result.payload.get("payload", {}).get("plugin"), "local-demo")
+
+    def test_execute_plugin_ui_action_uses_local_ui_handler(self):
+        from backend.app.runtime import RuntimeAdapter
+
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with tempfile.TemporaryDirectory(prefix="busy38-ui-http-local-handler-") as plugin_source:
+            ui_dir = os.path.join(plugin_source, "ui")
+            os.makedirs(ui_dir, exist_ok=True)
+            with open(os.path.join(ui_dir, "actions.py"), "w", encoding="utf-8") as handle:
+                handle.write(
+                    "def handle_ping(payload, method, context):\n"
+                    "    return {\n"
+                    "        \"success\": True,\n"
+                    "        \"message\": \"plugin ui ping handler executed\",\n"
+                    "        \"payload\": {\n"
+                    "            \"plugin\": context.get(\"plugin_id\"),\n"
+                    "            \"method\": method,\n"
+                    "            \"payload\": payload,\n"
+                    "        },\n"
+                    "    }\n",
+                )
+
+            plugin_payload = {
+                "id": "local-ui-route-demo",
+                "name": "Local UI Route Plugin",
+                "source": plugin_source,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "ui": {
+                        "sections": [
+                            {
+                                "id": "core",
+                                "title": "Core",
+                                "actions": [
+                                    {
+                                        "id": "ping",
+                                        "label": "Ping",
+                                        "method": "POST",
+                                        "entry_point": "actions:handle_ping",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+            created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+            self.assertEqual(created.status_code, 200, created.text)
+
+            self.main.runtime = RuntimeAdapter()
+            response = self.client.post(
+                "/api/plugins/local-ui-route-demo/ui/ping",
+                headers=admin_headers,
+                json={"method": "GET", "scope": "local"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            response_payload = response.json()
+            self.assertTrue(response_payload["result"]["success"])
+            self.assertEqual(response_payload["result"]["message"], "plugin ui ping handler executed")
+            self.assertEqual(response_payload["result"]["payload"]["plugin"], "local-ui-route-demo")
+            self.assertEqual(response_payload["result"]["payload"]["method"], "GET")
+            self.assertEqual(response_payload["result"]["payload"]["payload"]["scope"], "local")
+
+    def test_execute_plugin_ui_action_prefers_local_ui_manifest_without_metadata_inline_ui(self):
+        from backend.app.runtime import RuntimeAdapter
+
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with tempfile.TemporaryDirectory(prefix="busy38-ui-local-manifest-route-") as plugin_source:
+            os.makedirs(os.path.join(plugin_source, "ui"), exist_ok=True)
+            with open(os.path.join(plugin_source, "manifest.json"), "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "name": "Local UI Manifest Plugin",
+                        "version": "0.1.0",
+                        "description": "Manifest-only plugin with UI contract in ui/manifest.json",
+                        "license": "GPL-3.0-only",
+                        "type": "toolkit",
+                        "permissions": [],
+                    },
+                    handle,
+                )
+            with open(os.path.join(plugin_source, "ui", "manifest.json"), "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "ui": {
+                            "type": "plugin-ui",
+                            "version": "1",
+                            "summary": "Local UI manifest for delegated plugin actions.",
+                            "required_api": ["/api/plugins/{plugin_id}/ui/debug"],
+                            "sections": [
+                                {
+                                    "id": "diagnostics",
+                                    "title": "Diagnostics",
+                                    "kind": "form",
+                                    "scope": "admin",
+                                    "visibility": "default-open",
+                                    "actions": [
+                                        {
+                                            "id": "ping",
+                                            "label": "Ping from local manifest",
+                                            "method": "POST",
+                                            "entry_point": "actions:handle_ping",
+                                        },
+                                    ],
+                                },
+                            ],
+                        }
+                    },
+                    handle,
+                )
+
+            with open(os.path.join(plugin_source, "ui", "actions.py"), "w", encoding="utf-8") as handle:
+                handle.write(
+                    "def handle_ping(payload, method, context):\n"
+                    "    return {\n"
+                    "        \"success\": True,\n"
+                    "        \"message\": \"local manifest ping executed\",\n"
+                    "        \"payload\": {\n"
+                    "            \"plugin\": context.get(\"plugin_id\"),\n"
+                    "            \"method\": method,\n"
+                    "            \"payload\": payload,\n"
+                    "        },\n"
+                    "    }\n"
+                )
+
+            plugin_payload = {
+                "id": "local-ui-manifest-demo",
+                "name": "Local UI Manifest Plugin",
+                "source": plugin_source,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "provider": "test",
+                },
+            }
+            created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+            self.assertEqual(created.status_code, 200, created.text)
+
+            plugin_rows = self.client.get("/api/plugins", headers=admin_headers).json()["plugins"]
+            plugin_row = next(item for item in plugin_rows if item["id"] == "local-ui-manifest-demo")
+            self.assertIn("ui", plugin_row["metadata"])
+            ui_sections = plugin_row["metadata"]["ui"].get("sections", [])
+            self.assertEqual(ui_sections[0]["id"], "diagnostics")
+
+            self.main.runtime = RuntimeAdapter()
+            response = self.client.post(
+                "/api/plugins/local-ui-manifest-demo/ui/ping",
+                headers=admin_headers,
+                json={"method": "POST", "scope": "manifest"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            response_payload = response.json()
+            self.assertTrue(response_payload["result"]["success"])
+            self.assertEqual(response_payload["result"]["message"], "local manifest ping executed")
+            self.assertEqual(response_payload["result"]["payload"]["plugin"], "local-ui-manifest-demo")
+            self.assertEqual(response_payload["result"]["payload"]["payload"]["scope"], "manifest")
+
     def test_debug_plugin_ui_action_calls_runtime_and_returns_debug_payload(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
@@ -1415,6 +1650,573 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
 
         denied = self.client.get("/api/plugins/debug-demo/ui/debug", headers=read_headers)
         self.assertEqual(denied.status_code, 403)
+
+    def test_debug_plugin_ui_includes_core_plugin_presence_report(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        core_payload = {
+            "id": "squidkeys",
+            "name": "SquidKeys Core",
+            "source": "integration",
+            "kind": "core",
+            "status": "configured",
+            "enabled": True,
+            "command": "squidkeys",
+            "metadata": {
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        debug_payload = {
+            "id": "debug-demo",
+            "name": "Debug Demo Plugin",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+
+        created_core = self.client.post("/api/plugins", headers=admin_headers, json=core_payload)
+        self.assertEqual(created_core.status_code, 200, created_core.text)
+        created_demo = self.client.post("/api/plugins", headers=admin_headers, json=debug_payload)
+        self.assertEqual(created_demo.status_code, 200, created_demo.text)
+
+        response = self.client.get("/api/plugins/debug-demo/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+
+        core_response = self.client.get("/api/plugins/core", headers=admin_headers)
+        self.assertEqual(core_response.status_code, 200, core_response.text)
+        core_payload = core_response.json()
+
+        core_plugins = response_payload["core_plugins"]
+        self.assertIn("plugins", core_plugins)
+        self.assertIn("summary", core_plugins)
+
+        squid_entry = next(item for item in core_plugins["plugins"] if item["plugin_id"] == "squidkeys")
+        self.assertTrue(squid_entry["present"])
+        self.assertEqual(squid_entry["reason_code"], "P_PLUGIN_PRESENT_OK")
+        self.assertTrue(squid_entry["required"])
+
+        required_total = core_plugins["summary"]["required_total"]
+        optional_total = core_plugins["summary"]["optional_total"]
+        ticketing_provider = core_payload.get("ticketing_provider")
+        self.assertIsInstance(ticketing_provider, dict)
+        self.assertIn("configured_provider_id", ticketing_provider)
+        self.assertIn("selected_provider_id", ticketing_provider)
+        self.assertIn("provider_is_default", ticketing_provider)
+        self.assertIn("status", ticketing_provider)
+        self.assertIn("reason_code", ticketing_provider)
+        self.assertGreaterEqual(required_total, 1)
+        self.assertGreaterEqual(optional_total, 1)
+        self.assertEqual(len(core_plugins["plugins"]), required_total + optional_total)
+
+    def test_core_plugin_reference_endpoint_exposes_required_set(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        response = self.client.get("/api/plugins/core/reference", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+
+        reference = payload.get("plugins") if isinstance(payload, dict) else None
+        self.assertIsInstance(reference, list)
+
+        plugin_ids = {
+            str(item.get("plugin_id") or "").strip()
+            for item in reference
+            if isinstance(item, dict) and str(item.get("plugin_id") or "").strip()
+        }
+
+        expected_required = {
+            "busy-38-squidkeys",
+            "busy-38-rangewriter",
+            "busy-38-blossom",
+            "busy-38-management-ui",
+            "busy-38-gticket",
+            "busy-installer",
+            "busy38-security-agent",
+            "busy-38-git",
+            "openclaw-browser-for-busy38",
+            "busy-38-watchdog",
+        }
+        required_items = {
+            str(item.get("plugin_id") or "").strip()
+            for item in reference
+            if isinstance(item, dict) and item.get("required")
+        }
+
+        self.assertTrue(expected_required.issubset(plugin_ids))
+        self.assertTrue(expected_required.issubset(required_items))
+        self.assertEqual(payload.get("summary", {}).get("required_total"), len(expected_required))
+
+    def test_collect_ticketing_contract_issues_rejects_missing_lifecycle_contract(self):
+        provider_id = "busy-38-jira"
+        manifest = {
+            "ticketing": {
+                "contract_version": 1,
+                "required_api": [
+                    "/api/plugins/{plugin_id}/tickets",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/comments",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/assign",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/close",
+                    "/api/plugins/{plugin_id}/ui/debug",
+                ],
+                "capabilities": ["create", "read", "comment", "assign", "close"],
+            }
+        }
+        issues = self.main._collect_ticketing_contract_issues(manifest, provider_id)
+        self.assertEqual(len(issues), 1)
+        code, message = issues[0]
+        self.assertEqual(code, self.main._TICKETING_PROVIDER_INCOMPATIBLE)
+        self.assertIn("manifest.ticketing.lifecycle is required", message)
+
+    def test_collect_ticketing_contract_issues_rejects_missing_phase2_lifecycle_contract(self):
+        provider_id = "busy-38-jira"
+        manifest = {
+            "ticketing": {
+                "contract_version": 1,
+                "required_api": [
+                    "/api/plugins/{plugin_id}/tickets",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/comments",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/assign",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/close",
+                    "/api/plugins/{plugin_id}/ui/debug",
+                ],
+                "capabilities": ["create", "read", "comment", "assign", "close"],
+                "lifecycle": {
+                    "dispatch_required": True,
+                    "supports_hard_close": True,
+                },
+            }
+        }
+        issues = self.main._collect_ticketing_contract_issues(manifest, provider_id)
+        self.assertEqual(len(issues), 1)
+        code, message = issues[0]
+        self.assertEqual(code, self.main._TICKETING_PROVIDER_INCOMPATIBLE)
+        self.assertIn("phase2_required is required", message)
+
+    def test_collect_ticketing_contract_issues_rejects_incomplete_phase2_lifecycle_contract(self):
+        provider_id = "busy-38-jira"
+        manifest = {
+            "ticketing": {
+                "contract_version": 1,
+                "required_api": [
+                    "/api/plugins/{plugin_id}/tickets",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/comments",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/assign",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/close",
+                    "/api/plugins/{plugin_id}/ui/debug",
+                ],
+                "capabilities": ["create", "read", "comment", "assign", "close"],
+                "lifecycle": {
+                    "dispatch_required": True,
+                    "phase2_required": ["request_id", "build_ticket_id"],
+                    "supports_hard_close": True,
+                },
+            }
+        }
+        issues = self.main._collect_ticketing_contract_issues(manifest, provider_id)
+        self.assertEqual(len(issues), 1)
+        code, message = issues[0]
+        self.assertEqual(code, self.main._TICKETING_PROVIDER_INCOMPATIBLE)
+        self.assertIn("phase2_required is missing required values", message)
+
+    def test_collect_ticketing_contract_issues_accepts_valid_manifest(self):
+        provider_id = "busy-38-jira"
+        manifest = {
+            "ticketing": {
+                "contract_version": 1,
+                "required_api": [
+                    "/api/plugins/{plugin_id}/tickets",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/comments",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/assign",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/close",
+                    "/api/plugins/{plugin_id}/ui/debug",
+                ],
+                "capabilities": ["create", "read", "comment", "assign", "close"],
+                "lifecycle": {
+                    "dispatch_required": True,
+                    "phase2_required": ["request_id", "build_ticket_id", "build_batch_id"],
+                    "supports_hard_close": True,
+                },
+            }
+        }
+        issues = self.main._collect_ticketing_contract_issues(manifest, provider_id)
+        self.assertEqual(issues, [])
+
+    def test_collect_ticketing_contract_issues_rejects_invalid_dispatch_required_type(self):
+        provider_id = "busy-38-jira"
+        manifest = {
+            "ticketing": {
+                "contract_version": 1,
+                "required_api": [
+                    "/api/plugins/{plugin_id}/tickets",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/comments",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/assign",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/close",
+                    "/api/plugins/{plugin_id}/ui/debug",
+                ],
+                "capabilities": ["create", "read", "comment", "assign", "close"],
+                "lifecycle": {
+                    "dispatch_required": "true",
+                    "phase2_required": ["request_id", "build_ticket_id", "build_batch_id"],
+                    "supports_hard_close": True,
+                },
+            }
+        }
+        issues = self.main._collect_ticketing_contract_issues(manifest, provider_id)
+        self.assertEqual(len(issues), 1)
+        code, message = issues[0]
+        self.assertEqual(code, self.main._TICKETING_PROVIDER_INCOMPATIBLE)
+        self.assertIn("dispatch_required must be a boolean", message)
+
+    def test_collect_ticketing_contract_issues_rejects_invalid_supports_hard_close_type(self):
+        provider_id = "busy-38-jira"
+        manifest = {
+            "ticketing": {
+                "contract_version": 1,
+                "required_api": [
+                    "/api/plugins/{plugin_id}/tickets",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/comments",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/assign",
+                    "/api/plugins/{plugin_id}/tickets/{ticket_id}/close",
+                    "/api/plugins/{plugin_id}/ui/debug",
+                ],
+                "capabilities": ["create", "read", "comment", "assign", "close"],
+                "lifecycle": {
+                    "dispatch_required": True,
+                    "phase2_required": ["request_id", "build_ticket_id", "build_batch_id"],
+                    "supports_hard_close": 1,
+                },
+            }
+        }
+        issues = self.main._collect_ticketing_contract_issues(manifest, provider_id)
+        self.assertEqual(len(issues), 1)
+        code, message = issues[0]
+        self.assertEqual(code, self.main._TICKETING_PROVIDER_INCOMPATIBLE)
+        self.assertIn("supports_hard_close must be a boolean", message)
+
+    def test_debug_plugin_ui_resolves_core_plugin_aliases(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        alias_payload = {
+            "id": "rw4",
+            "name": "RangeWriter Alias",
+            "source": "integration",
+            "kind": "core",
+            "status": "configured",
+            "enabled": True,
+            "command": "rangewriter",
+            "metadata": {
+                "signature": {
+                    "status": True,
+                },
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        debug_payload = {
+            "id": "debug-demo-alias",
+            "name": "Debug Demo Plugin Alias",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+
+        created_alias = self.client.post("/api/plugins", headers=admin_headers, json=alias_payload)
+        self.assertEqual(created_alias.status_code, 200, created_alias.text)
+        created_demo = self.client.post("/api/plugins", headers=admin_headers, json=debug_payload)
+        self.assertEqual(created_demo.status_code, 200, created_demo.text)
+
+        response = self.client.get("/api/plugins/debug-demo-alias/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+
+        core_plugins = response_payload["core_plugins"]["plugins"]
+        rangewriter_entry = next(item for item in core_plugins if item["plugin_id"] == "rangewriter")
+        self.assertEqual(rangewriter_entry["matched_plugin_id"], "rw4")
+        self.assertEqual(rangewriter_entry["alias_match"], "rw4")
+        self.assertTrue(rangewriter_entry["present"])
+        self.assertEqual(rangewriter_entry["reason_code"], "P_PLUGIN_PRESENT_OK")
+
+    def test_debug_plugin_ui_reports_missing_ui_assets(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with tempfile.TemporaryDirectory(prefix="busy-ui-debug-missing-") as plugin_source:
+            plugin_payload = {
+                "id": "debug-demo-missing-ui",
+                "name": "Debug Demo Plugin - Missing UI",
+                "source": plugin_source,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "ui": {
+                        "sections": [
+                            {
+                                "id": "core",
+                                "title": "Core",
+                                "actions": [
+                                    {
+                                        "id": "debug",
+                                        "label": "Debug",
+                                        "method": "GET",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+            created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+            self.assertEqual(created.status_code, 200, created.text)
+
+            response = self.client.get("/api/plugins/debug-demo-missing-ui/ui/debug", headers=admin_headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            response_payload = response.json()
+            warning_codes = {entry.get("code") for entry in response_payload["warnings"]["entries"]}
+            self.assertIn("P_PLUGIN_UI_ASSET_MISSING", warning_codes)
+            self.assertEqual(response_payload["status"], "warn")
+
+    def test_debug_plugin_ui_reports_empty_ui_directory(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with tempfile.TemporaryDirectory(prefix="busy-ui-debug-empty-") as plugin_source:
+            os.makedirs(os.path.join(plugin_source, "ui"), exist_ok=True)
+            plugin_payload = {
+                "id": "debug-demo-empty-ui",
+                "name": "Debug Demo Plugin - Empty UI",
+                "source": plugin_source,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "ui": {
+                        "sections": [
+                            {
+                                "id": "core",
+                                "title": "Core",
+                                "actions": [
+                                    {
+                                        "id": "debug",
+                                        "label": "Debug",
+                                        "method": "GET",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+            created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+            self.assertEqual(created.status_code, 200, created.text)
+
+            response = self.client.get("/api/plugins/debug-demo-empty-ui/ui/debug", headers=admin_headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            response_payload = response.json()
+            warning_codes = {entry.get("code") for entry in response_payload["warnings"]["entries"]}
+            self.assertIn("P_PLUGIN_UI_ASSET_EMPTY", warning_codes)
+
+    def test_debug_plugin_ui_reports_missing_local_ui_handler(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with tempfile.TemporaryDirectory(prefix="busy-ui-debug-missing-handler-") as plugin_source:
+            os.makedirs(os.path.join(plugin_source, "ui"), exist_ok=True)
+            with open(os.path.join(plugin_source, "ui", "actions.py"), "w", encoding="utf-8") as handle:
+                handle.write("def unrelated_action(payload, method, context):\n    return {}\n")
+
+            plugin_payload = {
+                "id": "debug-demo-missing-local-handler",
+                "name": "Debug Demo Plugin - Missing Local Handler",
+                "source": plugin_source,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "ui": {
+                        "sections": [
+                            {
+                                "id": "core",
+                                "title": "Core",
+                                "actions": [
+                                    {
+                                        "id": "debug",
+                                        "label": "Debug",
+                                        "method": "GET",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+            created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+            self.assertEqual(created.status_code, 200, created.text)
+
+            response = self.client.get("/api/plugins/debug-demo-missing-local-handler/ui/debug", headers=admin_headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            response_payload = response.json()
+            warning_codes = {entry.get("code") for entry in response_payload["warnings"]["entries"]}
+            self.assertIn("P_PLUGIN_UI_HANDLER_MISSING", warning_codes)
+            self.assertIn("P_PLUGIN_RUNTIME_DEBUG_FAILED", warning_codes)
+
+    def test_debug_plugin_ui_reports_non_callable_local_ui_handler(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with tempfile.TemporaryDirectory(prefix="busy-ui-debug-noncallable-handler-") as plugin_source:
+            os.makedirs(os.path.join(plugin_source, "ui"), exist_ok=True)
+            with open(os.path.join(plugin_source, "ui", "actions.py"), "w", encoding="utf-8") as handle:
+                handle.write("handle_debug = 'not-callable'\n")
+
+            plugin_payload = {
+                "id": "debug-demo-noncallable-local-handler",
+                "name": "Debug Demo Plugin - Non-Callable Handler",
+                "source": plugin_source,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "ui": {
+                        "sections": [
+                            {
+                                "id": "core",
+                                "title": "Core",
+                                "actions": [
+                                    {
+                                        "id": "debug",
+                                        "label": "Debug",
+                                        "method": "GET",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+            created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+            self.assertEqual(created.status_code, 200, created.text)
+
+            response = self.client.get("/api/plugins/debug-demo-noncallable-local-handler/ui/debug", headers=admin_headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            response_payload = response.json()
+            warning_codes = {entry.get("code") for entry in response_payload["warnings"]["entries"]}
+            self.assertIn("P_PLUGIN_UI_HANDLER_NOT_CALLABLE", warning_codes)
+
+    def test_debug_plugin_ui_reports_load_failed_local_ui_handler(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        with tempfile.TemporaryDirectory(prefix="busy-ui-debug-load-failed-handler-") as plugin_source:
+            os.makedirs(os.path.join(plugin_source, "ui"), exist_ok=True)
+            with open(os.path.join(plugin_source, "ui", "actions.py"), "w", encoding="utf-8") as handle:
+                handle.write("raise RuntimeError('cannot import handler')\n")
+
+            plugin_payload = {
+                "id": "debug-demo-load-failed-local-handler",
+                "name": "Debug Demo Plugin - Load Failed Handler",
+                "source": plugin_source,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "ui": {
+                        "sections": [
+                            {
+                                "id": "core",
+                                "title": "Core",
+                                "actions": [
+                                    {
+                                        "id": "debug",
+                                        "label": "Debug",
+                                        "method": "GET",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+            created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+            self.assertEqual(created.status_code, 200, created.text)
+
+            response = self.client.get("/api/plugins/debug-demo-load-failed-local-handler/ui/debug", headers=admin_headers)
+            self.assertEqual(response.status_code, 200, response.text)
+            response_payload = response.json()
+            warning_codes = {entry.get("code") for entry in response_payload["warnings"]["entries"]}
+            self.assertIn("P_PLUGIN_UI_HANDLER_LOAD_FAILED", warning_codes)
 
     def test_debug_plugin_ui_action_runtime_success(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
@@ -1504,6 +2306,178 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             "P_PLUGIN_DEPENDENCY_MISSING",
             {entry.get("code") for entry in response_payload["dependencies"]["warnings"]},
         )
+
+    def test_debug_plugin_ui_reports_required_signature_missing_for_core_plugin(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        plugin_payload = {
+            "id": "squidkeys",
+            "name": "SquidKeys Core",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        response = self.client.get("/api/plugins/squidkeys/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+        warning_codes = {entry.get("code") for entry in response_payload["warnings"]["entries"]}
+        self.assertIn("P_PLUGIN_SIGNATURE_MISSING_REQUIRED", warning_codes)
+        self.assertEqual(response_payload["status"], "error")
+
+    def test_debug_plugin_ui_reports_missing_signature_for_optional_plugin(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        plugin_payload = {
+            "id": "busy38-iphone",
+            "name": "Busy38 iPhone Optional",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        response = self.client.get("/api/plugins/busy38-iphone/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+        warning_codes = {entry.get("code") for entry in response_payload["warnings"]["entries"]}
+        self.assertIn("P_PLUGIN_SIGNATURE_MISSING_OPTIONAL", warning_codes)
+        self.assertEqual(response_payload["status"], "warn")
+
+    def test_debug_plugin_ui_reports_invalid_signature(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        plugin_payload = {
+            "id": "rangewriter",
+            "name": "RangeWriter Core",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "ui-action",
+            "metadata": {
+                "signature": {"status": False},
+                "ui": {
+                    "sections": [
+                        {
+                            "id": "core",
+                            "title": "Core",
+                            "actions": [
+                                {
+                                    "id": "debug",
+                                    "label": "Debug",
+                                    "method": "GET",
+                                },
+                            ],
+                        },
+                    ],
+                },
+            },
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        response = self.client.get("/api/plugins/rangewriter/ui/debug", headers=admin_headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        response_payload = response.json()
+        warning_codes = {entry.get("code") for entry in response_payload["warnings"]["entries"]}
+        self.assertIn("P_PLUGIN_SIGNATURE_INVALID", warning_codes)
+        self.assertEqual(response_payload["status"], "error")
+
+    def test_core_plugin_required_override_endpoints_manage_dynamic_requiredness(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        self.client.request("DELETE", "/api/plugins/busy-bridge/required", headers=admin_headers)
+        plugin_payload = {
+            "id": "busy-bridge",
+            "name": "Busy38 Bridge Optional",
+            "source": "integration",
+            "kind": "automation",
+            "status": "configured",
+            "enabled": True,
+            "command": "bridge-command",
+        }
+        created = self.client.post("/api/plugins", headers=admin_headers, json=plugin_payload)
+        self.assertEqual(created.status_code, 200, created.text)
+
+        before = self.client.get("/api/plugins/busy-bridge/ui/debug", headers=admin_headers)
+        self.assertEqual(before.status_code, 200, before.text)
+        self.assertFalse(before.json()["reference"]["required"])
+        self.assertFalse(before.json()["reference"]["required_override"])
+        self.assertFalse(before.json()["reference"]["base_required"])
+
+        override = self.client.post("/api/plugins/busy-bridge/required", headers=admin_headers)
+        self.assertEqual(override.status_code, 200, override.text)
+        override_payload = override.json()
+        self.assertTrue(override_payload["required"])
+        self.assertTrue(override_payload["required_override"])
+        self.assertIn("busy-bridge", override_payload["required_overrides"])
+
+        after = self.client.get("/api/plugins/busy-bridge/ui/debug", headers=admin_headers)
+        self.assertEqual(after.status_code, 200, after.text)
+        self.assertTrue(after.json()["reference"]["required"])
+        self.assertTrue(after.json()["reference"]["required_override"])
+        self.assertFalse(after.json()["reference"]["base_required"])
+
+        restored = self.client.request("DELETE", "/api/plugins/busy-bridge/required", headers=admin_headers)
+        self.assertEqual(restored.status_code, 200, restored.text)
+        restored_payload = restored.json()
+        self.assertFalse(restored_payload["required_override"])
+        self.assertFalse(restored_payload["required"])
+        self.assertFalse(restored_payload["base_required"])
+
+        final = self.client.get("/api/plugins/busy-bridge/ui/debug", headers=admin_headers)
+        self.assertEqual(final.status_code, 200, final.text)
+        self.assertFalse(final.json()["reference"]["required"])
+
+    def test_required_override_rejects_non_core_plugin(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        response = self.client.post("/api/plugins/does-not-exist/required", headers=admin_headers)
+        self.assertEqual(response.status_code, 404)
+        response_payload = response.json()
+        self.assertIn("not a known core plugin", response_payload["detail"])
 
     def test_plugin_debug_not_found_returns_404(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
@@ -1846,6 +2820,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 "sender": "gm-ui",
                 "content": "Escalated to core planner",
                 "message_type": "comment",
+                "response_required": True,
                 "metadata": {"api_key": "message-secret"},
             },
         )
@@ -1853,6 +2828,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         message_payload = message.json()["message"]
         self.assertEqual(message_payload["sender"], "gm-ui")
         self.assertEqual(message_payload["message_type"], "comment")
+        self.assertTrue(message_payload["response_required"], "response_required should be persisted in response payload")
 
         read_only_message = self.client.post(
             f"/api/gm-tickets/{ticket_id}/messages",
@@ -1866,6 +2842,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         admin_messages_payload = list_admin_messages.json()["messages"]
         self.assertEqual(admin_messages_payload[0]["metadata"]["api_key"], "message-secret")
         self.assertEqual(admin_messages_payload[0]["content"], "Escalated to core planner")
+        self.assertTrue(admin_messages_payload[0]["response_required"], "response_required should be persisted in message list response")
 
         list_view_messages = self.client.get(f"/api/gm-tickets/{ticket_id}/messages", headers=read_headers)
         self.assertEqual(list_view_messages.status_code, 200, list_view_messages.text)
@@ -1882,6 +2859,141 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertIn("gm_ticket_id", create_events[0]["payload"])
         self.assertIn("gm_ticket_id", update_events[0]["payload"])
         self.assertIn("gm_ticket_id", message_events[0]["payload"])
+        self.assertIn("response_required", message_events[0]["payload"])
+        self.assertTrue(message_events[0]["payload"]["response_required"], "message event should include response_required flag")
+
+    def test_gm_ticket_dispatch_route_calls_runtime(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+
+        created = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={
+                "title": "Dispatch path coverage",
+                "requested_by": "founder",
+                "status": "open",
+                "priority": "normal",
+                "agent_scope": "ops",
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        ticket_id = created.json()["ticket"]["id"]
+
+        dispatch = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/dispatch",
+            headers=admin_headers,
+            json={
+                "objective": "Review launch readiness",
+                "role": "mini",
+                "dispatch_token": "dispatch-runtime-ui",
+                "dispatch_nonce": "nonce-runtime-ui",
+                "max_steps": 7,
+                "qa_max_retries": 1,
+            },
+        )
+        self.assertEqual(dispatch.status_code, 200, dispatch.text)
+        dispatch_payload = dispatch.json()
+        self.assertEqual(dispatch_payload["success"], True)
+        self.assertEqual(dispatch_payload["result"].get("ticket_id"), ticket_id)
+        self.assertEqual(dispatch_payload["result"].get("mission", {}).get("assigned_to"), "nora")
+        self.assertEqual(self.runtime.gm_dispatch_calls[-1][0], ticket_id)
+        self.assertEqual(
+            self.runtime.gm_dispatch_calls[-1][1].get("objective"),
+            "Review launch readiness",
+        )
+        self.assertEqual(self.runtime.gm_dispatch_calls[-1][1].get("role"), "mini")
+        self.assertEqual(self.runtime.gm_dispatch_calls[-1][1].get("dispatch_token"), "dispatch-runtime-ui")
+        self.assertEqual(self.runtime.gm_dispatch_calls[-1][1].get("dispatch_nonce"), "nonce-runtime-ui")
+        self.assertEqual(self.runtime.gm_dispatch_calls[-1][1].get("build_ticket_id"), ticket_id)
+        self.assertEqual(
+            self.runtime.gm_dispatch_calls[-1][1].get("build_batch_id"),
+            f"batch-{ticket_id}",
+        )
+        self.assertEqual(self.runtime.gm_dispatch_calls[-1][1].get("max_steps"), 7)
+        self.assertEqual(self.runtime.gm_dispatch_calls[-1][1].get("qa_max_retries"), 1)
+
+        dispatch_event = self.client.get("/api/events", headers=admin_headers).json()["events"]
+        dispatch_events = [event for event in dispatch_event if event.get("type") == "gm_ticket.dispatch"]
+        self.assertTrue(dispatch_events)
+        self.assertEqual(dispatch_events[0]["payload"]["gm_ticket_id"], ticket_id)
+        self.assertEqual(dispatch_events[0]["payload"].get("role"), "mini")
+
+        read_dispatch = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/dispatch",
+            headers=read_headers,
+            json={"objective": "Reader path"},
+        )
+        self.assertEqual(read_dispatch.status_code, 403)
+
+        failed = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/dispatch",
+            headers=admin_headers,
+            json={
+                "objective": "fail",
+                "role": "portia",
+                "dispatch_token": "dispatch-runtime-ui",
+                "dispatch_nonce": "nonce-runtime-ui",
+                "build_ticket_id": ticket_id,
+                "build_batch_id": f"batch-{ticket_id}",
+            },
+        )
+        self.assertEqual(failed.status_code, 502)
+
+    def test_gm_ticket_dispatch_route_rejects_invalid_role(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        created = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={
+                "title": "Dispatch role validation",
+                "requested_by": "founder",
+                "status": "open",
+                "priority": "normal",
+                "agent_scope": "ops",
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        ticket_id = created.json()["ticket"]["id"]
+
+        failed = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/dispatch",
+            headers=admin_headers,
+            json={
+                "objective": "Rejected role check",
+                "role": "unsupported-role",
+                "dispatch_token": "dispatch-runtime-ui",
+                "dispatch_nonce": "nonce-runtime-ui",
+            },
+        )
+        self.assertEqual(failed.status_code, 400, failed.text)
+        self.assertIn("unsupported dispatch role", failed.json()["detail"])
+
+    def test_gm_ticket_dispatch_route_rejects_missing_phase2_lineage(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        created = self.client.post(
+            "/api/gm-tickets",
+            headers=admin_headers,
+            json={
+                "title": "Dispatch lineage missing",
+                "requested_by": "founder",
+                "status": "open",
+                "priority": "normal",
+                "agent_scope": "ops",
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        ticket_id = created.json()["ticket"]["id"]
+
+        failed = self.client.post(
+            f"/api/gm-tickets/{ticket_id}/dispatch",
+            headers=admin_headers,
+            json={"objective": "Launch readiness review"},
+        )
+        self.assertEqual(failed.status_code, 400, failed.text)
+        self.assertIn("phase-2 dispatch requires dispatch_token and dispatch_nonce", failed.json()["detail"])
 
     def test_gm_ticket_audit_endpoint_returns_thread_and_linked_events(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
@@ -1919,6 +3031,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 "sender": "gm-ui",
                 "content": "Route to platform team.",
                 "message_type": "request",
+                "response_required": True,
                 "metadata": {"api_key": "gm-message-secret"},
             },
         )
@@ -1956,6 +3069,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
 
         admin_message = (payload.get("messages") or [])[0]
         self.assertEqual(admin_message["metadata"]["api_key"], "gm-message-secret")
+        self.assertTrue(admin_message["response_required"], "audit payload should include response_required for message")
 
         viewer_audit = self.client.get(f"/api/gm-tickets/{ticket_id}/audit", headers=read_headers)
         self.assertEqual(viewer_audit.status_code, 200, viewer_audit.text)
@@ -4309,3 +5423,206 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["review_state"], "quarantined")
+
+
+class TestStartupPluginDebugger(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.admin_token = "admin-token"
+        cls.read_token = "read-token"
+
+    def setUp(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self.db_file = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        self.db_file.close()
+
+        self.plugin_source_dir = tempfile.TemporaryDirectory(prefix="busy38-startup-debug-plugin-")
+        plugin_source = self.plugin_source_dir.name
+        os.makedirs(os.path.join(plugin_source, "ui"), exist_ok=True)
+        with open(os.path.join(plugin_source, "ui", "actions.py"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "def handle_debug(payload, method, context):\n"
+                "    return {\n"
+                "        \"success\": True,\n"
+                "        \"message\": \"startup debug handler executed\",\n"
+                "        \"payload\": {\n"
+                "            \"plugin\": context.get(\"plugin_id\"),\n"
+                "            \"method\": method,\n"
+                "            \"payload\": payload,\n"
+                "        },\n"
+                "    }\n"
+            )
+
+        storage.set_db_path_override(self.db_file.name)
+        storage.ensure_schema()
+        storage.create_plugin(
+            {
+                "id": "startup-debug-plugin",
+                "name": "Startup Debug Plugin",
+                "source": plugin_source,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "ui": {
+                        "sections": [
+                            {
+                                "id": "diagnostics",
+                                "title": "Diagnostics",
+                                "actions": [
+                                    {"id": "debug", "label": "Debug", "method": "GET"},
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+        )
+
+        self.main = _load_main_module(
+            admin_token=self.admin_token,
+            read_token=self.read_token,
+            db_path=self.db_file.name,
+        )
+        self.client = _SyncAsyncClient(self._loop, self.main.app)
+
+    def tearDown(self):
+        self.client.close()
+        self._loop.close()
+        self.plugin_source_dir.cleanup()
+        os.remove(self.db_file.name)
+
+    def test_startup_debug_summary_event_records_local_plugin_debug_execution(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        events_response = self.client.get("/api/events", headers=admin_headers)
+        self.assertEqual(events_response.status_code, 200, events_response.text)
+        events = events_response.json()["events"]
+
+        startup_summary_events = [
+            event for event in events if event.get("type") == "plugin.startup_debug_summary"
+        ]
+        self.assertTrue(startup_summary_events, "startup debug summary event was not emitted")
+        startup_summary = startup_summary_events[0]
+        summary_payload = startup_summary.get("payload") or {}
+        ticketing_summary = summary_payload.get("ticketing_provider") or {}
+        self.assertIsInstance(ticketing_summary, dict)
+        self.assertIn("selected_provider_id", ticketing_summary)
+        self.assertIn("status", ticketing_summary)
+        self.assertIn("reason_code", ticketing_summary)
+        self.assertGreaterEqual(int(summary_payload.get("checked", 0)), 1)
+        self.assertGreaterEqual(int(summary_payload.get("runtime_called", 0)), 1)
+        self.assertGreaterEqual(int(summary_payload.get("runtime_success", 0)), 1)
+
+        plugin_startup_events = [
+            event for event in events
+            if event.get("type") == "plugin.startup_debug"
+            and (event.get("payload") or {}).get("plugin_id") == "startup-debug-plugin"
+        ]
+        self.assertTrue(plugin_startup_events, "startup debug event missing for seeded plugin")
+        plugin_event = plugin_startup_events[0]
+        plugin_payload = plugin_event.get("payload") or {}
+        self.assertEqual(plugin_payload.get("runtime_called"), True)
+        self.assertEqual(plugin_payload.get("runtime_success"), True)
+
+
+class TestStartupPluginDebuggerDefectivePlugin(unittest.TestCase):
+    def setUp(self):
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self.db_file = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
+        self.db_file.close()
+
+        self.admin_token = "admin-token"
+        self.read_token = "read-token"
+
+        storage.set_db_path_override(self.db_file.name)
+        storage.ensure_schema()
+
+        self.broken_plugin_dir = tempfile.mkdtemp(prefix="busy38-defective-plugin-debug-")
+        os.makedirs(os.path.join(self.broken_plugin_dir, "ui"), exist_ok=True)
+        with open(os.path.join(self.broken_plugin_dir, "ui", "actions.py"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "# intentionally broken module to verify startup debugger captures local load failures\n"
+                "raise RuntimeError('broken handler module')\n"
+            )
+
+        storage.create_plugin(
+            {
+                "id": "busy-38-squidkeys",
+                "name": "Busy Squidkeys (defective)",
+                "source": self.broken_plugin_dir,
+                "kind": "automation",
+                "status": "configured",
+                "enabled": True,
+                "command": "ui-action",
+                "metadata": {
+                    "ui": {
+                        "sections": [
+                            {
+                                "id": "diagnostics",
+                                "title": "Diagnostics",
+                                "actions": [
+                                    {"id": "debug", "label": "Run plugin debug", "method": "GET"},
+                                ],
+                            },
+                        ],
+                    },
+                },
+            }
+        )
+
+        self.main = _load_main_module(
+            admin_token=self.admin_token,
+            read_token=self.read_token,
+            db_path=self.db_file.name,
+        )
+        self.client = _SyncAsyncClient(self._loop, self.main.app)
+
+    def tearDown(self):
+        self.client.close()
+        self._loop.close()
+        os.remove(self.db_file.name)
+        shutil.rmtree(self.broken_plugin_dir)
+
+    def test_startup_debug_reports_local_plugin_handler_load_failure(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        events_response = self.client.get("/api/events", headers=admin_headers)
+        self.assertEqual(events_response.status_code, 200, events_response.text)
+        events = events_response.json()["events"]
+
+        startup_summary_events = [
+            event for event in events if event.get("type") == "plugin.startup_debug_summary"
+        ]
+        self.assertTrue(startup_summary_events, "startup debug summary event was not emitted")
+        startup_summary = startup_summary_events[0]
+        summary_payload = startup_summary.get("payload") or {}
+        ticketing_summary = summary_payload.get("ticketing_provider") or {}
+        self.assertIsInstance(ticketing_summary, dict)
+        self.assertIn("selected_provider_id", ticketing_summary)
+        self.assertIn("status", ticketing_summary)
+        self.assertGreaterEqual(int(summary_payload.get("error_count", 0)), 1)
+        self.assertIn("error_plugins", summary_payload)
+        self.assertIn("busy-38-squidkeys", summary_payload.get("error_plugins", []))
+
+        plugin_startup_events = [
+            event
+            for event in events
+            if event.get("type") == "plugin.startup_debug"
+            and (event.get("payload") or {}).get("plugin_id") == "busy-38-squidkeys"
+        ]
+        self.assertTrue(plugin_startup_events, "startup debug event missing for defective plugin")
+
+        plugin_event = plugin_startup_events[0]
+        payload = plugin_event.get("payload") or {}
+        self.assertTrue(payload.get("runtime_called"))
+        self.assertFalse(payload.get("runtime_success"))
+        failure_message = str(payload.get("message") or "").lower()
+        self.assertTrue(
+            "startup plugin debug probe raised exception" in failure_message
+            or "plugin ui module load failed" in failure_message
+            or "plugin ui module spec was not loadable" in failure_message,
+        )

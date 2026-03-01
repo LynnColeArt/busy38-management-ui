@@ -4,6 +4,59 @@
   "description": "Busy management UI plugin exposing operational views and actor/task controls.",
   "license": "GPL-3.0-only",
   "type": "toolkit",
+  "ui": {
+    "type": "plugin-ui",
+    "version": "1",
+    "summary": "Management dashboard and admin surfaces for actor orchestration and configuration.",
+    "required_api": [
+      "/api/plugins/{plugin_id}/ui/debug"
+    ],
+    "plugin_identity": {
+      "id": "busy-38-management-ui",
+      "aliases": ["busy-38-management-ui", "management-ui", "ui"]
+    },
+    "sections": [
+      {
+        "id": "overview",
+        "title": "Overview",
+        "kind": "docs",
+        "scope": "viewer",
+        "visibility": "default-open",
+        "fields": [
+          {
+            "name": "overview",
+            "label": "Overview",
+            "type": "textarea",
+            "kind": "readonly",
+            "default": "Primary operator cockpit for plugin status, actor coordination, and system settings."
+          }
+        ]
+      },
+      {
+        "id": "diagnostics",
+        "title": "Diagnostics",
+        "kind": "form",
+        "scope": "admin",
+        "visibility": "default-open",
+        "actions": [
+          {
+            "id": "ping",
+            "label": "Ping plugin backend",
+            "method": "POST",
+            "description": "Execute a local plugin-owned ping handler.",
+            "entry_point": "actions:handle_ping"
+          },
+          {
+            "id": "debug",
+            "label": "Run plugin debug",
+            "method": "GET",
+            "description": "Execute a local plugin-owned debug handler for diagnostics and coverage checks.",
+            "entry_point": "actions:handle_debug"
+          }
+        ]
+      }
+    ]
+  },
   "permissions": [
     "ui:read",
     "ui:manage"

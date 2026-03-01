@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import hashlib
+import importlib.util
 import json
 import os
 import time
@@ -11,6 +13,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
+from pathlib import Path
+import re
 
 from fastapi import (
     FastAPI,
@@ -52,8 +56,22 @@ from .import_contract import checksum_payload
 from . import storage
 from .runtime import RuntimeActionResult, load_runtime_adapter
 
+try:
+    from core.plugins.state import (
+        get_core_plugin_requirements,
+        is_base_required_core_plugin,
+        is_known_core_plugin,
+        is_required_core_plugin,
+        resolve_core_plugin_alias,
+        set_required_plugin,
+    )
+except Exception as exc:  # pragma: no cover
+    raise RuntimeError("busy38 plugin state module unavailable") from exc
+ 
 
 app = FastAPI(title="Busy38 Management UI API", version="0.2.0")
+_STARTUP_DEBUG_LOGGER = logging.getLogger("busy38.management.startup")
+_STARTUP_PLUGIN_DEBUG_CHECKS_RAN = False
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,29 +81,773 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_TICKETING_PROVIDER_DEFAULT = "busy-38-gticket"
+_TICKETING_PROVIDER_MISSING_PLUGIN = "P_TICKETING_PROVIDER_MISSING_PLUGIN"
+_TICKETING_PROVIDER_MISSING_MANIFEST = "P_TICKETING_PROVIDER_MISSING_MANIFEST"
+_TICKETING_PROVIDER_INVALID_MANIFEST = "P_TICKETING_PROVIDER_INVALID_MANIFEST"
+_TICKETING_PROVIDER_MISSING_REQUIRED_API = "P_TICKETING_PROVIDER_MISSING_REQUIRED_API"
+_TICKETING_PROVIDER_CAPABILITY_MISMATCH = "P_TICKETING_PROVIDER_CAPABILITY_MISMATCH"
+_TICKETING_PROVIDER_INCOMPATIBLE = "P_TICKETING_PROVIDER_INCOMPATIBLE"
+_TICKETING_PROVIDER_OK = "P_TICKETING_PROVIDER_OK"
+_TICKETING_PROVIDER_EXTERNAL_ENABLE_ENV = "BUSY38_TICKETING_ALLOW_EXTERNAL_PROVIDER"
+
+
 _CORE_PLUGIN_REFERENCE = [
-    {"plugin_id": "squidkeys", "aliases": ["squidkeys"], "required": True, "signature_required": True},
-    {"plugin_id": "rangewriter", "aliases": ["rangewriter", "rw", "rw4"], "required": True, "signature_required": True},
-    {"plugin_id": "blossom", "aliases": ["blossom"], "required": True, "signature_required": True},
-    {"plugin_id": "busy38-management-ui", "aliases": ["busy38-management-ui", "management-ui"], "required": True, "signature_required": True},
-    {"plugin_id": "busy38-gticket", "aliases": ["busy38-gticket", "gticket"], "required": True, "signature_required": True},
-    {"plugin_id": "busy-installer", "aliases": ["busy-installer"], "required": True, "signature_required": True},
-    {"plugin_id": "busy38-security-agent", "aliases": ["busy38-security-agent"], "required": True, "signature_required": True},
-    {"plugin_id": "busy38-git", "aliases": ["busy38-git", "git"], "required": True, "signature_required": True},
-    {"plugin_id": "openclaw-browser-for-busy38", "aliases": ["openclaw-browser-for-busy38", "browser"], "required": True, "signature_required": True},
-    {"plugin_id": "busy38-discord", "aliases": ["busy38-discord", "discord"], "required": False, "signature_required": False},
-    {"plugin_id": "busy38-telegram", "aliases": ["busy38-telegram", "telegram"], "required": False, "signature_required": False},
-    {"plugin_id": "busy-bridge", "aliases": ["busy-bridge", "bridge"], "required": False, "signature_required": False},
-    {"plugin_id": "openclaw-canvas-for-busy38", "aliases": ["openclaw-canvas-for-busy38", "canvas"], "required": False, "signature_required": False, "depends_on": ["busy38-management-ui"]},
-    {"plugin_id": "busy38-iphone", "aliases": ["busy38-iphone", "iphone"], "required": False, "signature_required": False},
-    {"plugin_id": "busy38-teams", "aliases": ["busy38-teams", "teams"], "required": False, "signature_required": False},
+    {
+        "plugin_id": str(requirement.canonical),
+        "aliases": list(requirement.aliases),
+        "signature_required": bool(requirement.signed),
+    }
+    for requirement in get_core_plugin_requirements()
 ]
 
-_CORE_PLUGIN_INDEX = {
-    alias: entry
-    for entry in _CORE_PLUGIN_REFERENCE
-    for alias in (entry.get("aliases") or [])
+_CORE_PLUGIN_DEPENDENCIES: Dict[str, List[str]] = {
+    "openclaw-canvas-for-busy38": ["busy-38-management-ui"],
 }
+_GM_TICKET_EXECUTION_ROLES = {
+    "portia",
+    "nora",
+    "mini",
+    "mission_agent",
+}
+
+
+def _iter_core_plugin_reference() -> List[Dict[str, Any]]:
+    reference = []
+    for entry in _CORE_PLUGIN_REFERENCE:
+        if not isinstance(entry, dict):
+            continue
+        plugin_id = str(entry.get("plugin_id") or "").strip()
+        if not plugin_id:
+            continue
+        required = bool(is_required_core_plugin(plugin_id))
+        base_required = bool(is_base_required_core_plugin(plugin_id))
+        dynamic_entry = dict(entry)
+        dynamic_entry.update(
+            {
+                "required": required,
+                "base_required": base_required,
+                "required_override": bool(required and not base_required),
+                "aliases": list(entry.get("aliases") or []),
+                "depends_on": list(_CORE_PLUGIN_DEPENDENCIES.get(plugin_id, [])),
+            }
+        )
+        reference.append(dynamic_entry)
+    return reference
+
+
+def _core_alias_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+
+_CORE_PLUGIN_INDEX = {
+    _core_alias_key(alias): entry
+    for entry in _iter_core_plugin_reference()
+    for alias in (
+        [str(entry.get("plugin_id") or "").strip()]
+        + [str(candidate).strip() for candidate in (entry.get("aliases") or [])]
+    )
+    if alias
+}
+
+_PLUGIN_MANIFEST_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
+_PLUGIN_UI_MANIFEST_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
+
+
+def _coerce_json_obj(value: Any) -> Dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return value
+
+
+def _normalize_core_plugin_dependency_id(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if normalized.startswith("busy-38-"):
+        return f"busy38-{normalized[len('busy-38-'):]}"
+    return normalized
+
+
+def _core_plugin_display_id(entry: Dict[str, Any]) -> str:
+    aliases = [str(alias).strip().lower() for alias in (entry.get("aliases") or []) if str(alias).strip()]
+    for alias in aliases:
+        if "-" not in alias and "_" not in alias:
+            return alias
+
+    plugin_id = str(entry.get("plugin_id") or "").strip().lower()
+    if plugin_id.startswith("busy-38-"):
+        return f"busy38-{plugin_id[len('busy-38-'):]}"
+    return plugin_id
+
+
+def _load_plugin_manifest(source: str) -> Optional[Dict[str, Any]]:
+    source_path = _resolve_plugin_source_path(source)
+    if source_path is None or not source_path.is_dir():
+        return None
+
+    manifest_path = source_path / "manifest.json"
+    if not manifest_path.exists():
+        return None
+
+    cache_key = str(manifest_path.resolve())
+    if cache_key in _PLUGIN_MANIFEST_CACHE:
+        return _PLUGIN_MANIFEST_CACHE[cache_key]
+
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        loaded = None
+
+    payload = loaded if isinstance(loaded, dict) else None
+    _PLUGIN_MANIFEST_CACHE[cache_key] = payload
+    return payload
+
+
+def _load_plugin_ui_manifest(source: str) -> Optional[Dict[str, Any]]:
+    source_path = _resolve_plugin_source_path(source)
+    if source_path is None or not source_path.is_dir():
+        return None
+
+    ui_manifest_path = source_path / "ui" / "manifest.json"
+    if not ui_manifest_path.exists():
+        return None
+
+    cache_key = str(ui_manifest_path.resolve())
+    if cache_key in _PLUGIN_UI_MANIFEST_CACHE:
+        return _PLUGIN_UI_MANIFEST_CACHE[cache_key]
+
+    try:
+        with open(ui_manifest_path, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (json.JSONDecodeError, OSError):
+        loaded = None
+
+    payload = loaded if isinstance(loaded, dict) else None
+    _PLUGIN_UI_MANIFEST_CACHE[cache_key] = payload
+    return payload
+
+
+def _extract_ui_contract(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+
+    if isinstance(value.get("ui"), dict):
+        return _coerce_json_obj(value["ui"])
+
+    if "sections" in value or "summary" in value or "type" in value:
+        return _coerce_json_obj(value)
+    return None
+
+
+def _merge_ui_contracts(base: Dict[str, Any], local: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(base, dict):
+        return _coerce_json_obj(local)
+    if not isinstance(local, dict):
+        return dict(base)
+
+    merged = dict(base)
+    base_sections = merged.get("sections")
+    local_sections = local.get("sections")
+    if isinstance(base_sections, list) and isinstance(local_sections, list):
+        merged_sections = [dict(section) if isinstance(section, dict) else {} for section in base_sections]
+        index: Dict[str, int] = {
+            str(section.get("id")).strip(): idx
+            for idx, section in enumerate(merged_sections)
+            if isinstance(section, dict) and str(section.get("id") or "").strip()
+        }
+
+        for section in local_sections:
+            if not isinstance(section, dict):
+                continue
+            section_id = str(section.get("id") or "").strip()
+            section_actions = [
+                dict(action)
+                for action in section.get("actions", [])
+                if isinstance(action, dict)
+            ]
+            if not section_id or section_id not in index:
+                merged_sections.append(dict(section))
+                continue
+
+            existing_index = index[section_id]
+            existing_section = merged_sections[existing_index]
+            existing_actions = [
+                dict(action)
+                for action in existing_section.get("actions", [])
+                if isinstance(action, dict)
+            ]
+            existing_action_ids = {
+                str(action.get("id") or "").strip()
+                for action in existing_actions
+                if str(action.get("id") or "").strip()
+            }
+            for action in section_actions:
+                action_id = str(action.get("id") or "").strip()
+                if not action_id or action_id in existing_action_ids:
+                    continue
+                existing_actions.append(action)
+                existing_action_ids.add(action_id)
+            if existing_actions:
+                existing_section["actions"] = existing_actions
+
+            for key, value in section.items():
+                if key == "id":
+                    continue
+                if key in existing_section:
+                    continue
+                existing_section[key] = value
+            merged_sections[existing_index] = existing_section
+
+        merged["sections"] = merged_sections
+
+    merged_required_api = list(merged.get("required_api") or [])
+    local_required_api = local.get("required_api")
+    if local_required_api is not None:
+        required_api_items = [item for item in merged_required_api if item]
+        for item in local_required_api if isinstance(local_required_api, list) else [local_required_api]:
+            normalized = str(item).strip()
+            if normalized and normalized not in required_api_items:
+                required_api_items.append(normalized)
+        merged["required_api"] = required_api_items
+
+    for key in ("type", "version", "summary", "plugin_identity"):
+        if key not in merged and key in local:
+            merged[key] = local[key]
+
+    return merged
+
+
+def _env_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _normalize_ticketing_provider_id(provider_id: str) -> str:
+    normalized = str(provider_id or "").strip()
+    if not normalized:
+        normalized = _TICKETING_PROVIDER_DEFAULT
+    resolved = resolve_core_plugin_alias(normalized)
+    return str(resolved or normalized)
+
+
+def _normalize_ticketing_endpoint(entry: str) -> str:
+    return str(entry or "").strip().lower()
+
+
+def _resolve_ticketing_provider_path(provider_id: str) -> tuple[str, Optional[Path]]:
+    vendor_root = Path(os.getenv("BUSY38_VENDOR_DIR") or "./vendor").resolve()
+    configured = str(provider_id or "").strip() or _TICKETING_PROVIDER_DEFAULT
+    candidates: list[str] = []
+
+    alias = resolve_core_plugin_alias(configured)
+    if alias:
+        candidates.append(alias)
+    if configured not in candidates:
+        candidates.append(configured)
+
+    selected_provider = configured
+    selected_path: Optional[Path] = None
+    for candidate in candidates:
+        candidate_path = vendor_root / str(candidate)
+        if candidate_path.exists() and candidate_path.is_dir():
+            selected_provider = str(candidate)
+            selected_path = candidate_path
+            break
+
+    return selected_provider, selected_path
+
+
+def _required_ticketing_api_variants(plugin_id: str, template: str) -> set[str]:
+    normalized_plugin = str(plugin_id).strip().lower()
+    return {
+        _normalize_ticketing_endpoint(template),
+        _normalize_ticketing_endpoint(template.replace("{plugin_id}", normalized_plugin)),
+    }
+
+
+def _collect_ticketing_contract_issues(manifest: Dict[str, Any], provider_id: str) -> list[tuple[str, str]]:
+    ticketing_contract = manifest.get("ticketing")
+    if not isinstance(ticketing_contract, dict):
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest ticketing contract is required",
+        )]
+
+    contract_version = ticketing_contract.get("contract_version")
+    if not isinstance(contract_version, int) or contract_version != 1:
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest.ticketing.contract_version must be exactly 1 (received {contract_version!r})",
+        )]
+
+    required_api = ticketing_contract.get("required_api")
+    if not isinstance(required_api, list):
+        return [(
+            _TICKETING_PROVIDER_MISSING_REQUIRED_API,
+            f"{provider_id} manifest.ticketing.required_api is required and must be a list",
+        )]
+
+    normalized_required_api = {
+        _normalize_ticketing_endpoint(value)
+        for value in required_api
+        if isinstance(value, str) and _normalize_ticketing_endpoint(value)
+    }
+    if not normalized_required_api:
+        return [(
+            _TICKETING_PROVIDER_MISSING_REQUIRED_API,
+            f"{provider_id} manifest.ticketing.required_api is empty",
+        )]
+
+    expected_paths = {
+        "create": _required_ticketing_api_variants(provider_id, "/api/plugins/{plugin_id}/tickets"),
+        "read": _required_ticketing_api_variants(provider_id, "/api/plugins/{plugin_id}/tickets/{ticket_id}"),
+        "comment": _required_ticketing_api_variants(
+            provider_id,
+            "/api/plugins/{plugin_id}/tickets/{ticket_id}/comments",
+        ),
+        "assign": _required_ticketing_api_variants(
+            provider_id,
+            "/api/plugins/{plugin_id}/tickets/{ticket_id}/assign",
+        ),
+        "close": _required_ticketing_api_variants(
+            provider_id,
+            "/api/plugins/{plugin_id}/tickets/{ticket_id}/close",
+        ),
+        "ui_debug": _required_ticketing_api_variants(
+            provider_id,
+            "/api/plugins/{plugin_id}/ui/debug",
+        ),
+    }
+    missing_api: list[str] = []
+    for name, alternatives in expected_paths.items():
+        if alternatives.isdisjoint(normalized_required_api):
+            missing_api.append(name)
+    if missing_api:
+        return [(
+            _TICKETING_PROVIDER_MISSING_REQUIRED_API,
+            f"{provider_id} manifest.ticketing.required_api missing entries for: {', '.join(sorted(missing_api))}",
+        )]
+
+    capabilities = ticketing_contract.get("capabilities")
+    if not isinstance(capabilities, list):
+        return [(
+            _TICKETING_PROVIDER_CAPABILITY_MISMATCH,
+            f"{provider_id} manifest.ticketing.capabilities is required and must be a list",
+        )]
+
+    normalized_capabilities = [
+        str(capability).strip()
+        for capability in capabilities
+        if isinstance(capability, str) and str(capability).strip()
+    ]
+    required_capabilities = {"create", "read", "comment", "assign", "close"}
+    missing_capabilities = required_capabilities.difference(set(normalized_capabilities))
+    if missing_capabilities:
+        return [(
+            _TICKETING_PROVIDER_CAPABILITY_MISMATCH,
+            f"{provider_id} manifest.ticketing.capabilities missing required values: {', '.join(sorted(missing_capabilities))}",
+        )]
+
+    lifecycle_contract = ticketing_contract.get("lifecycle")
+    if not isinstance(lifecycle_contract, dict):
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest.ticketing.lifecycle is required and must be an object",
+        )]
+
+    dispatch_required = lifecycle_contract.get("dispatch_required")
+    if dispatch_required is not None and not isinstance(dispatch_required, bool):
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest.ticketing.lifecycle.dispatch_required must be a boolean",
+        )]
+
+    if "phase2_required" not in lifecycle_contract:
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest.ticketing.lifecycle.phase2_required is required",
+        )]
+
+    phase2_required = lifecycle_contract.get("phase2_required")
+    if not isinstance(phase2_required, list):
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest.ticketing.lifecycle.phase2_required is required and must be a list",
+        )]
+
+    normalized_phase2_required: list[str] = []
+    for value in phase2_required:
+        if isinstance(value, str):
+            normalized_value = value.strip()
+            if normalized_value:
+                normalized_phase2_required.append(normalized_value)
+
+    if not normalized_phase2_required:
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest.ticketing.lifecycle.phase2_required is empty",
+        )]
+
+    required_phase2 = {"request_id", "build_ticket_id", "build_batch_id"}
+    missing_phase2_fields = required_phase2.difference(set(normalized_phase2_required))
+    if missing_phase2_fields:
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest.ticketing.lifecycle.phase2_required is missing required values: "
+            f"{', '.join(sorted(missing_phase2_fields))}",
+        )]
+
+    supports_hard_close = lifecycle_contract.get("supports_hard_close")
+    if supports_hard_close is not None and not isinstance(supports_hard_close, bool):
+        return [(
+            _TICKETING_PROVIDER_INCOMPATIBLE,
+            f"{provider_id} manifest.ticketing.lifecycle.supports_hard_close must be a boolean",
+        )]
+
+    return []
+
+
+def _collect_ticketing_provider_status(plugin_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    configured_provider_id = os.getenv("BUSY38_TICKETING_PROVIDER", "").strip() or _TICKETING_PROVIDER_DEFAULT
+    selected_provider, provider_path = _resolve_ticketing_provider_path(configured_provider_id)
+    provider_path_resolved = str(provider_path) if provider_path else None
+    selected_normalized = _normalize_ticketing_provider_id(selected_provider)
+    default_normalized = _normalize_ticketing_provider_id(_TICKETING_PROVIDER_DEFAULT)
+    allow_external = _env_truthy(os.getenv(_TICKETING_PROVIDER_EXTERNAL_ENABLE_ENV, ""))
+
+    status: Dict[str, Any] = {
+        "configured_provider_id": configured_provider_id,
+        "selected_provider_id": selected_provider,
+        "provider_path": provider_path_resolved,
+        "provider_is_default": selected_normalized == default_normalized,
+        "status": "ok",
+        "reason_code": _TICKETING_PROVIDER_OK,
+        "message": None,
+        "ticketing_contract": None,
+        "provider_record": None,
+        "allow_external_provider": allow_external,
+        "contract_issues": [],
+        "has_ui_contract": False,
+    }
+
+    if not status["provider_is_default"] and not allow_external:
+        status.update(
+            status="error",
+            reason_code=_TICKETING_PROVIDER_INCOMPATIBLE,
+            message=(
+                f"ticketing provider '{selected_provider}' requires explicit promotion via "
+                f"{_TICKETING_PROVIDER_EXTERNAL_ENABLE_ENV}=1 to replace default provider"
+            ),
+        )
+        return status
+
+    if provider_path is None:
+        status.update(
+            status="error",
+            reason_code=_TICKETING_PROVIDER_MISSING_PLUGIN,
+            message=f"ticketing provider '{configured_provider_id}' is missing from vendor directory",
+        )
+        return status
+
+    manifest = _load_plugin_manifest(str(provider_path)) if provider_path is not None else None
+    if manifest is None:
+        status.update(
+            status="error",
+            reason_code=_TICKETING_PROVIDER_MISSING_MANIFEST,
+            message=f"{selected_provider} manifest.json is required",
+        )
+        return status
+
+    issues = _collect_ticketing_contract_issues(manifest, selected_provider)
+    if issues:
+        reason_code, message = issues[0]
+        status.update(status="error", reason_code=reason_code, message=message)
+        status["contract_issues"] = [{"reason_code": reason_code, "message": message}]
+    else:
+        status["ticketing_contract"] = {
+            "contract_version": manifest.get("ticketing", {}).get("contract_version"),
+            "required_api": manifest.get("ticketing", {}).get("required_api"),
+            "capabilities": manifest.get("ticketing", {}).get("capabilities"),
+            "lifecycle": manifest.get("ticketing", {}).get("lifecycle"),
+        }
+
+    ui_contract = manifest.get("ui") if isinstance(manifest, dict) else None
+    if isinstance(ui_contract, dict):
+        status["has_ui_contract"] = bool(_extract_ui_contract(ui_contract))
+
+    selected_record = None
+    selected_record_id = ""
+    if isinstance(plugin_map, dict):
+        lookup_keys = [selected_provider, configured_provider_id, selected_normalized]
+        for lookup_id in lookup_keys:
+            normalized_lookup = _normalize_ticketing_provider_id(lookup_id)
+            if not normalized_lookup:
+                continue
+            for candidate_id, candidate_record in plugin_map.items():
+                if not isinstance(candidate_record, dict):
+                    continue
+                candidate_normalized = _normalize_ticketing_provider_id(str(candidate_id))
+                if candidate_normalized == normalized_lookup:
+                    selected_record = candidate_record
+                    selected_record_id = str(candidate_id).strip()
+                    break
+            if selected_record is not None:
+                break
+    if isinstance(selected_record, dict):
+        status["provider_record"] = {
+            "plugin_id": selected_record_id or str(selected_provider).strip(),
+            "name": selected_record.get("name"),
+            "source": selected_record.get("source"),
+            "enabled": bool(selected_record.get("enabled", False)),
+            "present_in_registry": True,
+        }
+    else:
+        status["provider_record"] = {
+            "plugin_id": str(selected_provider).strip(),
+            "present_in_registry": False,
+        }
+    return status
+
+
+def _enrich_plugin_metadata(contract: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(contract, dict):
+        return {}
+
+    metadata = _coerce_json_obj(contract.get("metadata"))
+    metadata_copy = dict(metadata)
+
+    source_path = contract.get("source")
+    manifest = _load_plugin_manifest(str(source_path)) if isinstance(source_path, str) else None
+    ui_manifest = _load_plugin_ui_manifest(str(source_path)) if isinstance(source_path, str) else None
+    if not manifest and not ui_manifest:
+        return metadata_copy
+
+    manifest_payload = manifest or {}
+    local_ui = _extract_ui_contract(ui_manifest) if isinstance(ui_manifest, dict) else None
+    manifest_ui = _extract_ui_contract(manifest_payload.get("ui")) if isinstance(manifest_payload.get("ui"), dict) else None
+    if "ui" not in metadata_copy:
+        if local_ui is not None:
+            metadata_copy["ui"] = local_ui
+        elif manifest_ui is not None:
+            metadata_copy["ui"] = manifest_ui
+    elif isinstance(metadata_copy.get("ui"), dict):
+        metadata_copy["ui"] = _merge_ui_contracts(metadata_copy["ui"], local_ui)
+        if "required_api" not in metadata_copy["ui"] and manifest_ui is not None:
+            metadata_copy["ui"] = _merge_ui_contracts(metadata_copy["ui"], manifest_ui)
+
+    for key in ("depends_on", "required_api", "required_core_plugins", "signature"):
+        if key not in metadata_copy and key in manifest:
+            metadata_copy[key] = manifest[key]
+        elif key not in metadata_copy and ui_manifest and key in ui_manifest:
+            metadata_copy[key] = ui_manifest[key]
+
+    if "ticketing" not in metadata_copy and isinstance(manifest.get("ticketing"), dict):
+        metadata_copy["ticketing"] = _coerce_json_obj(manifest.get("ticketing"))
+
+    if "plugin_identity" not in metadata_copy and isinstance(manifest.get("plugin_identity"), dict):
+        metadata_copy["plugin_identity"] = manifest["plugin_identity"]
+
+    if "type" not in metadata_copy and "type" in manifest:
+        metadata_copy["type"] = manifest["type"]
+
+    return metadata_copy
+
+
+def _enrich_plugin_record(contract: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(contract, dict):
+        return {}
+
+    payload = dict(contract)
+    payload["metadata"] = _enrich_plugin_metadata(payload)
+    return payload
+
+
+def _collect_core_plugin_presence_report(plugin_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    plugin_rows = {str(plugin_id): plugin for plugin_id, plugin in (plugin_map or {}).items()}
+    plugin_ids = list(plugin_rows.keys())
+
+    reference_lookup = [r for r in _iter_core_plugin_reference() if isinstance(r, dict)]
+    report_entries: List[Dict[str, Any]] = []
+    required_total = 0
+    required_present = 0
+    optional_total = 0
+    optional_present = 0
+    required_missing: List[str] = []
+    optional_missing: List[str] = []
+    conflicts: List[str] = []
+
+    for entry in reference_lookup:
+        plugin_id = _core_plugin_display_id(entry)
+        if not plugin_id:
+            continue
+
+        aliases = [plugin_id]
+        aliases.extend([str(alias).strip() for alias in (entry.get("aliases") or []) if str(alias).strip()])
+        reference_aliases = {_core_alias_key(alias) for alias in aliases if str(alias).strip()}
+        reference_matches = {_core_alias_key(resolve_core_plugin_alias(alias)) for alias in aliases if resolve_core_plugin_alias(alias)}
+
+        matches: List[str] = []
+        for plugin_id_entry in plugin_ids:
+            normalized_entry = _core_alias_key(plugin_id_entry)
+            if normalized_entry in reference_aliases:
+                matches.append(plugin_id_entry)
+                continue
+
+            resolved = resolve_core_plugin_alias(plugin_id_entry)
+            if resolved and _core_alias_key(resolved) in reference_matches:
+                matches.append(plugin_id_entry)
+
+        # Deduplicate preserve order for deterministic output
+        deduped: List[str] = []
+        seen_matches: set[str] = set()
+        for match in matches:
+            if match in seen_matches:
+                continue
+            seen_matches.add(match)
+            deduped.append(match)
+        matches = deduped
+
+        required = bool(entry.get("required", False))
+        required_override = bool(entry.get("required_override", False))
+        base_required = bool(entry.get("base_required", required))
+        matched_id: Optional[str] = None
+        alias_match: Optional[str] = None
+        reason_code = "P_PLUGIN_MISSING_REQUIRED" if required else "P_PLUGIN_MISSING_OPTIONAL"
+        present = False
+
+        if not matches:
+            if required:
+                required_missing.append(plugin_id)
+            else:
+                optional_missing.append(plugin_id)
+        elif len(matches) > 1:
+            reason_code = "P_PLUGIN_NAMESPACE_CONFLICT"
+            alias_match = _core_alias_key(matches[0])
+            conflicts.append(plugin_id)
+            matched_id = matches[0]
+            if required:
+                required_missing.append(plugin_id)
+            else:
+                optional_missing.append(plugin_id)
+        else:
+            matched_id = matches[0]
+            plugin_record = plugin_rows.get(matched_id, {})
+            plugin_enabled = bool(plugin_record.get("enabled", True))
+            alias_match = str(matched_id)
+            if plugin_enabled:
+                reason_code = "P_PLUGIN_PRESENT_OK"
+                present = True
+                if required:
+                    required_present += 1
+                else:
+                    optional_present += 1
+            else:
+                if required:
+                    required_missing.append(plugin_id)
+                else:
+                    optional_missing.append(plugin_id)
+
+        if required:
+            required_total += 1
+        else:
+            optional_total += 1
+
+        report_entries.append(
+            {
+                "plugin_id": plugin_id,
+                "required": required,
+                "base_required": base_required,
+                "required_override": required_override,
+                "signature_required": bool(entry.get("signature_required", False)),
+                "aliases": aliases,
+                "alias_match": alias_match,
+                "matched_plugin_id": matched_id,
+                "present": present,
+                "reason_code": reason_code,
+            },
+        )
+
+    return {
+        "plugins": report_entries,
+        "summary": {
+            "required_total": required_total,
+            "required_present": required_present,
+            "required_missing": required_missing,
+            "optional_total": optional_total,
+            "optional_present": optional_present,
+            "optional_missing": optional_missing,
+            "state": "READY" if not required_missing and not conflicts else "BLOCKED",
+            "conflicts": conflicts,
+        },
+    }
+
+
+def _build_core_plugin_coverage_report(plugin_map: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    presence = _collect_core_plugin_presence_report(plugin_map)
+    coverage: List[Dict[str, Any]] = []
+    for entry in presence.get("plugins", []):
+        if not bool(entry.get("required")):
+            continue
+
+        plugin_id = str(entry.get("plugin_id") or "").strip()
+        matched_plugin_id = entry.get("matched_plugin_id")
+        plugin_record = plugin_map.get(str(matched_plugin_id), {}) if isinstance(matched_plugin_id, str) else {}
+        metadata = plugin_record.get("metadata") if isinstance(plugin_record, dict) else None
+        has_ui_contract = isinstance(metadata, dict) and isinstance(metadata.get("ui"), dict)
+        has_debug_action = bool(_find_plugin_ui_action(plugin_record, "debug")) if isinstance(plugin_record, dict) else False
+        plugin_enabled = bool(plugin_record.get("enabled")) if isinstance(plugin_record, dict) else False
+        present = bool(entry.get("present"))
+
+        if not present:
+            coverage_state = "missing"
+        elif not plugin_enabled:
+            coverage_state = "disabled"
+        elif not has_ui_contract:
+            coverage_state = "ui_contract_missing"
+        elif not has_debug_action:
+            coverage_state = "debug_missing"
+        else:
+            coverage_state = "covered"
+
+        aliases = [str(item) for item in (entry.get("aliases") or []) if str(item).strip()]
+        if not aliases and plugin_id:
+            aliases = [plugin_id]
+
+        coverage.append(
+            {
+                "plugin_id": plugin_id,
+                "required": bool(entry.get("required")),
+                "base_required": bool(entry.get("base_required")),
+                "required_override": bool(entry.get("required_override")),
+                "signature_required": bool(entry.get("signature_required")),
+                "aliases": aliases,
+                "alias_match": entry.get("alias_match"),
+                "matched_plugin_id": matched_plugin_id,
+                "present": present,
+                "plugin_enabled": plugin_enabled,
+                "has_ui_contract": has_ui_contract,
+                "has_debug_action": has_debug_action,
+                "reason_code": entry.get("reason_code"),
+                "coverage_state": coverage_state,
+            },
+        )
+
+    covered_total = sum(1 for item in coverage if item["coverage_state"] == "covered")
+    summary = {
+        "required_total": len(coverage),
+        "required_present": len([item for item in coverage if item["present"]]),
+        "required_missing": len([item for item in coverage if item["coverage_state"] == "missing"]),
+        "required_disabled": len([item for item in coverage if item["coverage_state"] == "disabled"]),
+        "required_ui_missing": len([item for item in coverage if item["coverage_state"] == "ui_contract_missing"]),
+        "required_debug_missing": len([item for item in coverage if item["coverage_state"] == "debug_missing"]),
+        "required_covered": covered_total,
+    }
+
+    return {
+        "required_plugins": coverage,
+        "summary": summary,
+        "required_overall_state": "READY" if summary["required_missing"] == 0 and summary["required_disabled"] == 0 and summary["required_ui_missing"] == 0 and summary["required_debug_missing"] == 0 else "BLOCKED",
+        "updated_at": _now_iso(),
+    }
 
 class SettingsUpdate(BaseModel):
     heartbeat_interval: Optional[int] = None
@@ -258,6 +1020,7 @@ class GmTicketMessageCreate(BaseModel):
     sender: str
     content: str
     message_type: Optional[str] = None
+    response_required: Optional[bool] = False
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -270,9 +1033,27 @@ class GmDirectMessageCreate(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class GmTicketDispatch(BaseModel):
+    objective: Optional[str] = None
+    mission_id: Optional[str] = None
+    assigned_to: Optional[str] = None
+    role: Optional[str] = None
+    request_id: Optional[str] = None
+    gm_request_id: Optional[str] = None
+    dispatch_token: Optional[str] = None
+    dispatch_nonce: Optional[str] = None
+    build_ticket_id: Optional[str] = None
+    build_batch_id: Optional[str] = None
+    max_steps: Optional[int] = None
+    qa_max_retries: Optional[int] = None
+    acceptance_criteria: Optional[List[str]] = None
+    allowed_namespaces: Optional[List[str]] = None
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     storage.ensure_schema()
+    _run_startup_plugin_debug_checks_once()
 
 
 runtime = load_runtime_adapter()
@@ -486,6 +1267,17 @@ def _coerce_replacement_agent(agent_id: str, replacement_agent_id: str) -> Optio
     raise HTTPException(status_code=404, detail=f"replacement agent '{normalized_replacement}' not found or not active")
 
 
+def _coerce_gm_dispatch_role(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    if normalized not in _GM_TICKET_EXECUTION_ROLES:
+        raise HTTPException(status_code=400, detail=f"unsupported dispatch role: {value!r}")
+    return normalized
+
+
 def _coerce_iso_datetime(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
@@ -505,7 +1297,10 @@ def _sanitize_gm_ticket_payload(ticket: Dict[str, Any], role: str) -> Dict[str, 
 
 
 def _sanitize_gm_ticket_messages(messages: List[Dict[str, Any]], role: str) -> List[Dict[str, Any]]:
-    return [dict(msg, metadata=_redact_metadata(msg.get("metadata"), role)) for msg in messages]
+    return [
+        dict(msg, metadata=_redact_metadata(msg.get("metadata"), role), response_required=bool(msg.get("response_required", False)))
+        for msg in messages
+    ]
 
 
 def _sanitize_gm_ticket_events(events: List[Dict[str, Any]], role: str) -> List[Dict[str, Any]]:
@@ -555,17 +1350,42 @@ def _find_core_plugin_reference(plugin_id: str) -> Optional[Dict[str, Any]]:
     normalized = str(plugin_id).strip().lower()
     if not normalized:
         return None
-    candidate = _CORE_PLUGIN_INDEX.get(normalized)
+    candidate = _CORE_PLUGIN_INDEX.get(_core_alias_key(normalized))
+    if candidate is None:
+        canonical = resolve_core_plugin_alias(normalized)
+        if canonical:
+            candidate = _CORE_PLUGIN_INDEX.get(_core_alias_key(canonical))
+            if candidate is None:
+                candidate = _CORE_PLUGIN_INDEX.get(_core_alias_key(str(canonical)))
+    if candidate is None:
+        for entry in _iter_core_plugin_reference():
+            plugin_id_entry = str(entry.get("plugin_id") or "").strip().lower()
+            aliases = {str(alias).strip().lower() for alias in (entry.get("aliases") or [])}
+            if _core_alias_key(normalized) == _core_alias_key(plugin_id_entry) or (
+                canonical and _core_alias_key(normalized) == _core_alias_key(canonical)
+            ):
+                candidate = entry
+                break
+            if canonical and canonical in aliases:
+                candidate = entry
+                break
     if candidate is None:
         return None
 
+    canonical = str(candidate.get("plugin_id", "")).strip() or normalized
+    required = bool(is_required_core_plugin(canonical))
+    base_required = bool(is_base_required_core_plugin(canonical))
+    display_id = _core_plugin_display_id(candidate)
     return {
-        "plugin_id": str(candidate.get("plugin_id", "")).strip().lower() or normalized,
-        "required": bool(candidate.get("required", False)),
+        "plugin_id": display_id,
+        "required": required,
+        "base_required": base_required,
+        "required_override": bool(required and not base_required),
         "signature_required": bool(candidate.get("signature_required", False)),
         "aliases": list(candidate.get("aliases") or [normalized]),
         "depends_on": list(candidate.get("depends_on") or []),
         "matched_alias": normalized,
+        "canonical_plugin_id": canonical,
     }
 
 
@@ -597,6 +1417,30 @@ def _plugin_ui_contract_diagnostics(
         )
         return ui_warnings
 
+    source = plugin.get("source")
+    if isinstance(source, str):
+        source_path = _resolve_plugin_source_path(source)
+        if source_path:
+            ui_path = source_path / "ui"
+            if not ui_path.exists():
+                ui_warnings.append(
+                    {
+                        "code": "P_PLUGIN_UI_ASSET_MISSING",
+                        "severity": "warn",
+                        "source": "runtime",
+                        "message": "plugin source exists but has no ui directory",
+                    },
+                )
+            elif not any(ui_path.iterdir()):
+                ui_warnings.append(
+                    {
+                        "code": "P_PLUGIN_UI_ASSET_EMPTY",
+                        "severity": "warn",
+                        "source": "runtime",
+                        "message": "plugin ui directory exists but is empty",
+                    },
+                )
+
     sections = ui.get("sections")
     if not isinstance(sections, list):
         ui_warnings.append(
@@ -607,6 +1451,7 @@ def _plugin_ui_contract_diagnostics(
                 "message": "plugin.ui.sections must be a list",
             },
         )
+        ui_warnings.extend(_plugin_ui_handler_warnings_for_contract(plugin))
         return ui_warnings
     if not sections:
         ui_warnings.append(
@@ -617,6 +1462,8 @@ def _plugin_ui_contract_diagnostics(
                 "message": "plugin.ui.sections is present but empty",
             },
         )
+        ui_warnings.extend(_plugin_ui_handler_warnings_for_contract(plugin))
+        return ui_warnings
 
     seen_action_ids: set[str] = set()
     for section in sections:
@@ -675,7 +1522,35 @@ def _plugin_ui_contract_diagnostics(
                     },
                 )
 
+    ui_warnings.extend(_plugin_ui_handler_warnings_for_contract(plugin))
     return ui_warnings
+
+
+def _resolve_plugin_source_path(source: str) -> Optional[Path]:
+    """Resolve plugin `source` to a local path when possible."""
+    if not isinstance(source, str):
+        return None
+
+    raw_source = source.strip()
+    if not raw_source:
+        return None
+
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw_source):
+        return None
+
+    source_path = Path(raw_source)
+    if source_path.is_absolute():
+        return source_path if source_path.exists() else None
+
+    candidate_paths = [
+        Path(__file__).resolve().parent.parent / source_path,
+        Path.cwd() / source_path,
+    ]
+    for candidate in candidate_paths:
+        if candidate.exists():
+            return candidate
+
+    return None
 
 
 def _collect_plugin_dependencies(plugin: Dict[str, Any]) -> List[str]:
@@ -698,7 +1573,7 @@ def _collect_plugin_dependencies(plugin: Dict[str, Any]) -> List[str]:
     for value in split_values:
         if not isinstance(value, str):
             continue
-        dependency = value.strip().lower()
+        dependency = _normalize_core_plugin_dependency_id(value)
         if dependency and dependency not in normalized:
             normalized.append(dependency)
     return normalized
@@ -807,6 +1682,496 @@ def _collect_plugin_ui_actions(contract: Dict[str, Any]) -> List[Dict[str, Any]]
     return actions
 
 
+def _log_startup_debug_message(level: str, message: str, payload: Dict[str, Any]) -> None:
+    payload_text = "{}" if not payload else json.dumps(payload, sort_keys=True)
+    log_line = f"startup plugin debug: {message} | {payload_text}"
+    print(log_line)
+    log_level = (level or "info").strip().lower()
+    if log_level == "error":
+        _STARTUP_DEBUG_LOGGER.error(log_line)
+    elif log_level in {"warn", "warning"}:
+        _STARTUP_DEBUG_LOGGER.warning(log_line)
+    else:
+        _STARTUP_DEBUG_LOGGER.info(log_line)
+
+
+def _run_startup_plugin_debug_check(plugin_id: str, plugin: Dict[str, Any]) -> Dict[str, Any]:
+    normalized_plugin_id = str(plugin_id).strip()
+    if not normalized_plugin_id:
+        return {"plugin_id": "", "runtime_called": False, "runtime_success": False, "has_debug_action": False, "status": "warn", "message": "invalid plugin id"}
+
+    debug_action = _find_plugin_ui_action(plugin, "debug")
+    has_debug_action = debug_action is not None
+    if has_debug_action:
+        runtime_called = True
+        try:
+            runtime_result = runtime.plugin_ui_action(
+                plugin_id=normalized_plugin_id,
+                action_id="debug",
+                method="GET",
+                action=debug_action,
+                plugin_source=plugin.get("source"),
+            )
+        except Exception as exc:  # pragma: no cover
+            runtime_result = RuntimeActionResult(
+                success=False,
+                message=f"startup plugin debug probe raised exception: {exc}",
+                payload={
+                    "action_id": "debug",
+                    "method": "GET",
+                    "reason": "runtime_exception",
+                    "error": str(exc),
+                },
+            )
+            runtime_called = True
+    else:
+        runtime_called = False
+        runtime_result = RuntimeActionResult(
+            success=False,
+            message="debug action unavailable in plugin ui contract",
+            payload={
+                "action_id": "debug",
+                "method": "GET",
+                "reason": "action_not_declared_in_ui_contract",
+            },
+        )
+
+    event_level = "info"
+    if not runtime_result.success:
+        if has_debug_action:
+            event_level = "error"
+        else:
+            event_level = "warn"
+    _event_for(
+        "admin",
+        "plugin.startup_debug",
+        f"Startup plugin debug probe executed: {normalized_plugin_id}",
+        event_level,
+        {
+            "plugin_id": normalized_plugin_id,
+            "action_id": "debug",
+            "method": "GET",
+            "runtime_called": runtime_called,
+            "runtime_success": runtime_result.success,
+            "has_debug_action": has_debug_action,
+            "message": runtime_result.message,
+            "runtime_payload": runtime_result.payload,
+            "plugin_enabled": bool(plugin.get("enabled")),
+            "plugin_status": plugin.get("status"),
+        },
+    )
+    _log_startup_debug_message(
+        event_level,
+        f"{normalized_plugin_id}: {runtime_result.message}",
+        {
+            "plugin_id": normalized_plugin_id,
+            "action_id": "debug",
+            "runtime_called": runtime_called,
+            "runtime_success": runtime_result.success,
+            "has_debug_action": has_debug_action,
+            "plugin_enabled": bool(plugin.get("enabled")),
+            "plugin_status": plugin.get("status"),
+        },
+    )
+    return {
+        "plugin_id": normalized_plugin_id,
+        "runtime_called": runtime_called,
+        "runtime_success": runtime_result.success,
+        "has_debug_action": has_debug_action,
+        "status": event_level,
+        "message": runtime_result.message,
+        "plugin_enabled": bool(plugin.get("enabled")),
+        "plugin_status": plugin.get("status"),
+    }
+
+
+def _run_startup_plugin_debug_checks_once() -> None:
+    global _STARTUP_PLUGIN_DEBUG_CHECKS_RAN
+    if _STARTUP_PLUGIN_DEBUG_CHECKS_RAN:
+        return
+    _STARTUP_PLUGIN_DEBUG_CHECKS_RAN = True
+    try:
+        _run_startup_plugin_debug_checks()
+    except Exception as exc:  # pragma: no cover
+        _log_startup_debug_message(
+            "error",
+            "Startup plugin debug checks failed",
+            {"error": str(exc)},
+        )
+
+
+def _run_startup_plugin_debug_checks() -> None:
+    plugin_map = _plugin_map()
+    ticketing_provider_status = _collect_ticketing_provider_status(plugin_map)
+    ticketing_summary_label = (
+        f"Ticketing provider '{ticketing_provider_status.get('selected_provider_id')}' "
+        f"selection status: {ticketing_provider_status.get('status')}"
+    )
+    ticketing_level = "info"
+    if str(ticketing_provider_status.get("status") or "").strip().lower() != "ok":
+        ticketing_level = "error" if ticketing_provider_status.get("provider_is_default") else "warn"
+    _event_for(
+        "admin",
+        "plugin.startup_debug",
+        ticketing_summary_label,
+        ticketing_level,
+        dict(ticketing_provider_status),
+    )
+    _log_startup_debug_message(
+        ticketing_level,
+        ticketing_summary_label,
+        dict(ticketing_provider_status),
+    )
+
+    core_presence = _collect_core_plugin_presence_report(plugin_map)
+    core_summary = core_presence.get("summary", {})
+    core_coverage = _build_core_plugin_coverage_report(plugin_map)
+    core_coverage_summary = core_coverage.get("summary", {})
+    required_missing_plugins = [str(item) for item in core_summary.get("required_missing", [])]
+    required_disabled_plugins = [
+        str(item.get("plugin_id") or "")
+        for item in core_coverage.get("required_plugins", [])
+        if item.get("coverage_state") == "disabled"
+    ]
+    required_disabled_plugins = [item for item in required_disabled_plugins if item]
+
+    if not plugin_map:
+        _event_for(
+            "admin",
+            "plugin.startup_debug",
+            "Startup plugin debug probe skipped: no plugins discovered",
+            "warn",
+            {"count": 0},
+        )
+        _log_startup_debug_message(
+            "warn",
+            "Startup plugin debug probe skipped: no plugins discovered",
+            {"count": 0},
+        )
+        error_count = len(required_missing_plugins)
+        warn_count = len(required_missing_plugins)
+        if str(ticketing_provider_status.get("status") or "").strip().lower() != "ok":
+            if ticketing_provider_status.get("provider_is_default"):
+                error_count += 1
+            else:
+                warn_count += 1
+        startup_level = "error" if error_count else "warn"
+        for plugin_id in required_missing_plugins:
+            _event_for(
+                "admin",
+                "plugin.startup_debug",
+                f"Required core plugin missing from plugin registry: {plugin_id}",
+                "error",
+                {
+                    "plugin_id": plugin_id,
+                    "required": True,
+                    "runtime_called": False,
+                    "runtime_success": False,
+                    "presence": "missing",
+                },
+            )
+            _log_startup_debug_message(
+                "error",
+                f"{plugin_id}: required core plugin missing from plugin registry",
+                {"plugin_id": plugin_id, "required": True},
+            )
+        _event_for(
+            "admin",
+            "plugin.startup_debug_summary",
+            "Startup plugin debug probe summary: no plugins discovered",
+            startup_level,
+            {
+                "plugin_count": 0,
+                "checked": 0,
+                "runtime_called": 0,
+                "runtime_success": 0,
+                "required_total": int(core_summary.get("required_total", 0)),
+                "required_present": int(core_summary.get("required_present", 0)),
+                "required_missing": len(required_missing_plugins),
+                "required_disabled": len(required_disabled_plugins),
+                "missing_debug": 0,
+                "warn_count": warn_count,
+                "error_count": error_count,
+                "required_missing_plugins": required_missing_plugins,
+                "required_disabled_plugins": required_disabled_plugins,
+                "missing_debug_plugins": [],
+                "warn_plugins": [],
+                "error_plugins": [],
+                "checked_plugins": [],
+                "ticketing_provider": ticketing_provider_status,
+            },
+        )
+        return
+
+    summary = {
+        "plugin_count": len(plugin_map),
+        "checked": 0,
+        "runtime_called": 0,
+        "runtime_success": 0,
+        "required_total": int(core_summary.get("required_total", 0)),
+        "required_present": int(core_summary.get("required_present", 0)),
+        "required_missing": len(required_missing_plugins),
+        "required_disabled": int(core_coverage_summary.get("required_disabled", 0)),
+        "missing_debug": 0,
+        "warn_count": 0,
+        "error_count": 0,
+        "required_missing_plugins": [],
+        "required_disabled_plugins": required_disabled_plugins,
+        "missing_debug_plugins": [],
+        "warn_plugins": [],
+        "error_plugins": [],
+        "checked_plugins": [],
+        "ticketing_provider": ticketing_provider_status,
+    }
+    if str(ticketing_provider_status.get("status") or "").strip().lower() != "ok":
+        if ticketing_provider_status.get("provider_is_default"):
+            summary["error_count"] += 1
+            summary["error_plugins"].append(
+                f"ticketing_provider:{ticketing_provider_status.get('selected_provider_id')}"
+            )
+            summary["warn_plugins"].append(
+                f"ticketing_provider:{ticketing_provider_status.get('selected_provider_id')}"
+            )
+        else:
+            summary["warn_count"] += 1
+            summary["warn_plugins"].append(
+                f"ticketing_provider:{ticketing_provider_status.get('selected_provider_id')}"
+            )
+
+    for plugin_id in sorted(required_missing_plugins):
+        summary["required_missing_plugins"].append(plugin_id)
+        summary["error_count"] += 1
+        summary["warn_count"] += 1
+        summary["warn_plugins"].append(plugin_id)
+        summary["error_plugins"].append(plugin_id)
+        _event_for(
+            "admin",
+            "plugin.startup_debug",
+            f"Required core plugin missing from plugin registry: {plugin_id}",
+            "error",
+            {
+                "plugin_id": plugin_id,
+                "required": True,
+                "runtime_called": False,
+                "runtime_success": False,
+                "presence": "missing",
+                "core_reported": True,
+            },
+        )
+        _log_startup_debug_message(
+            "error",
+            f"{plugin_id}: required core plugin missing from plugin registry",
+            {"plugin_id": plugin_id, "required": True, "core_reported": True},
+        )
+
+    for normalized_plugin_id in sorted(plugin_map):
+        plugin = plugin_map[normalized_plugin_id]
+        summary["checked"] += 1
+        summary["checked_plugins"].append(normalized_plugin_id)
+        try:
+            result = _run_startup_plugin_debug_check(normalized_plugin_id, plugin)
+            if result["runtime_called"]:
+                summary["runtime_called"] += 1
+                if result["runtime_success"]:
+                    summary["runtime_success"] += 1
+                else:
+                    summary["error_count"] += 1
+                    summary["error_plugins"].append(result["plugin_id"])
+                    summary["warn_plugins"].append(result["plugin_id"])
+            elif result["has_debug_action"]:
+                summary["warn_count"] += 1
+                summary["warn_plugins"].append(result["plugin_id"])
+            else:
+                summary["missing_debug"] += 1
+                summary["warn_count"] += 1
+                summary["missing_debug_plugins"].append(result["plugin_id"])
+                summary["warn_plugins"].append(result["plugin_id"])
+        except Exception as exc:  # pragma: no cover
+            summary["error_count"] += 1
+            summary["warn_count"] += 1
+            summary["warn_plugins"].append(normalized_plugin_id)
+            if normalized_plugin_id not in summary["error_plugins"]:
+                summary["error_plugins"].append(normalized_plugin_id)
+            _event_for(
+                "admin",
+                "plugin.startup_debug",
+                f"Startup plugin debug check failed before execution: {normalized_plugin_id}",
+                "error",
+                {
+                    "plugin_id": normalized_plugin_id,
+                    "action_id": "debug",
+                    "runtime_called": False,
+                    "runtime_success": False,
+                    "error": str(exc),
+                },
+            )
+            _log_startup_debug_message(
+                "error",
+                f"{normalized_plugin_id}: startup debug check failed before execution",
+                {
+                    "plugin_id": normalized_plugin_id,
+                    "error": str(exc),
+                },
+            )
+
+    summary_level = "info"
+    if summary["error_count"]:
+        summary_level = "error"
+    elif summary["warn_count"]:
+        summary_level = "warn"
+
+    summary_suffix = ""
+    if str(ticketing_provider_status.get("status") or "").strip().lower() != "ok":
+        summary_suffix = (
+            f"; ticketing provider={ticketing_provider_status.get('selected_provider_id')} "
+            f"reason={ticketing_provider_status.get('reason_code')}"
+        )
+
+    _event_for(
+        "admin",
+        "plugin.startup_debug_summary",
+        f"Startup plugin debug probe summary: {summary['runtime_success']}/{summary['runtime_called']} debug checks succeeded; {summary['missing_debug']} missing debug handlers; {summary['required_missing']} required core plugin(s) missing; {summary['required_disabled']} required core plugin(s) disabled{summary_suffix}",
+        summary_level,
+        summary,
+    )
+    _log_startup_debug_message(
+        summary_level,
+        f"Startup plugin debug summary complete: {summary['runtime_success']}/{summary['runtime_called']} passed",
+        summary,
+    )
+
+
+def _parse_local_ui_entry_point(action: Dict[str, Any], action_id: str) -> tuple[str, str]:
+    raw_entry_point = str(action.get("entry_point") or "").strip()
+    if not raw_entry_point:
+        return "actions", f"handle_{str(action_id).strip()}"
+
+    if ":" in raw_entry_point:
+        module_expr, function_expr = raw_entry_point.split(":", 1)
+        module_expr = module_expr.strip()
+        function_expr = function_expr.strip()
+    else:
+        separator = raw_entry_point.rfind(".")
+        if separator < 0:
+            return "actions", raw_entry_point
+        module_expr = raw_entry_point[:separator].strip()
+        function_expr = raw_entry_point[separator + 1 :].strip()
+
+    if not module_expr:
+        module_expr = "actions"
+    if not function_expr:
+        function_expr = f"handle_{str(action_id).strip()}"
+    return module_expr, function_expr
+
+
+def _resolve_plugin_ui_module_file(ui_path: Path, module_name: str) -> Optional[Path]:
+    module_parts = [part for part in module_name.split(".") if part]
+    if not module_parts:
+        module_parts = ["actions"]
+
+    module_base = ui_path.joinpath(*module_parts)
+    module_file = module_base.with_suffix(".py")
+    package_init = module_base / "__init__.py"
+    if package_init.is_file():
+        return package_init
+    if module_file.is_file():
+        return module_file
+    return None
+
+
+def _plugin_ui_handler_warnings_for_contract(plugin: Dict[str, Any]) -> List[Dict[str, str]]:
+    warnings: List[Dict[str, str]] = []
+    source = plugin.get("source")
+    if not isinstance(source, str):
+        return warnings
+
+    source_path = _resolve_plugin_source_path(source)
+    if source_path is None:
+        return warnings
+
+    ui_path = source_path / "ui"
+    if not ui_path.exists() or not ui_path.is_dir():
+        return warnings
+
+    metadata = plugin.get("metadata")
+    if not isinstance(metadata, dict):
+        return warnings
+    ui = metadata.get("ui")
+    if not isinstance(ui, dict):
+        return warnings
+
+    sections = ui.get("sections")
+    if not isinstance(sections, list):
+        return warnings
+
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        for action in section.get("actions") or []:
+            if not isinstance(action, dict):
+                continue
+            action_id = str(action.get("id") or "").strip()
+            if not action_id:
+                continue
+
+            module_expr, function_expr = _parse_local_ui_entry_point(action, action_id)
+            module_file = _resolve_plugin_ui_module_file(ui_path, module_expr)
+            if module_file is None:
+                warnings.append(
+                    {
+                        "code": "P_PLUGIN_UI_HANDLER_MISSING",
+                        "severity": "warn",
+                        "source": "ui",
+                        "message": f"ui action '{action_id}' has no local entry point module '{module_expr}'",
+                    },
+                )
+                continue
+
+            try:
+                module_id = f"busy38_ui_diagnostic_{id(module_file)}_{module_expr}"
+                module_spec = importlib.util.spec_from_file_location(module_id, str(module_file))
+                if module_spec is None or module_spec.loader is None:
+                    raise RuntimeError("module spec unavailable")
+                module = importlib.util.module_from_spec(module_spec)
+                module_spec.loader.exec_module(module)
+            except Exception as exc:
+                warnings.append(
+                    {
+                        "code": "P_PLUGIN_UI_HANDLER_LOAD_FAILED",
+                        "severity": "warn",
+                        "source": "ui",
+                        "message": f"ui action '{action_id}' failed to load handler module '{module_expr}': {exc}",
+                    },
+                )
+                continue
+
+            handler = module
+            for piece in function_expr.split("."):
+                handler = getattr(handler, piece, None)
+                if handler is None:
+                    warnings.append(
+                        {
+                            "code": "P_PLUGIN_UI_HANDLER_MISSING",
+                            "severity": "warn",
+                            "source": "ui",
+                            "message": f"ui action '{action_id}' has missing handler '{function_expr}' in module '{module_expr}'",
+                        },
+                    )
+                    break
+            else:
+                if not callable(handler):
+                    warnings.append(
+                        {
+                            "code": "P_PLUGIN_UI_HANDLER_NOT_CALLABLE",
+                            "severity": "warn",
+                            "source": "ui",
+                            "message": f"ui action '{action_id}' handler '{function_expr}' in module '{module_expr}' is not callable",
+                        },
+                    )
+
+    return warnings
+
+
 def _sanitize_plugin_for_debug(plugin: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(plugin, dict):
         return {}
@@ -836,7 +2201,7 @@ def _dependency_warning(
     *,
     owner_required: bool,
 ) -> Optional[Dict[str, str]]:
-    normalized_dependency = str(dependency).strip().lower()
+    normalized_dependency = _normalize_core_plugin_dependency_id(str(dependency).strip())
     if not normalized_dependency:
         return None
 
@@ -845,17 +2210,20 @@ def _dependency_warning(
     if not aliases:
         aliases = [normalized_dependency]
 
+    dependency_lookup = {_core_alias_key(plugin_id): plugin_id for plugin_id in plugin_catalog.keys()}
     for alias in aliases:
-        if alias in plugin_catalog:
-            dependency_plugin = plugin_catalog[alias]
-            if not dependency_plugin.get("enabled", False):
-                return {
-                    "code": "P_PLUGIN_DEPENDENCY_DISABLED",
-                    "severity": "warn",
-                    "source": "runtime",
-                    "message": f"plugin dependency '{normalized_dependency}' is registered but disabled",
-                }
-            return None
+        matched = dependency_lookup.get(_core_alias_key(alias))
+        if matched is None:
+            continue
+        dependency_plugin = plugin_catalog[matched]
+        if not dependency_plugin.get("enabled", False):
+            return {
+                "code": "P_PLUGIN_DEPENDENCY_DISABLED",
+                "severity": "warn",
+                "source": "runtime",
+                "message": f"plugin dependency '{normalized_dependency}' is registered but disabled",
+            }
+        return None
 
     severity = "error" if owner_required else "warn"
     return {
@@ -867,7 +2235,10 @@ def _dependency_warning(
 
 
 def _plugin_map() -> Dict[str, Dict[str, Any]]:
-    return {str(plugin.get("id")).strip(): plugin for plugin in storage.list_plugins()}
+    return {
+        str(plugin.get("id")).strip(): _enrich_plugin_record(plugin)
+        for plugin in storage.list_plugins()
+    }
 
 
 def _sanitize_tool_payload(
@@ -2046,9 +3417,46 @@ async def update_provider_secret(
 @app.get("/api/plugins")
 async def list_plugins(request: Request) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
-    plugins = storage.list_plugins()
-    plugins = [_sanitize_plugin(plugin, role) for plugin in plugins]
+    plugins = [_sanitize_plugin(_enrich_plugin_record(plugin), role) for plugin in storage.list_plugins()]
     return {"plugins": plugins, "updated_at": _now_iso()}
+
+
+@app.get("/api/plugins/core")
+async def list_core_plugins(request: Request) -> Dict[str, Any]:
+    _require_role(request, required="viewer")
+    plugin_map = _plugin_map()
+    core_presence = _collect_core_plugin_presence_report(plugin_map)
+    core_coverage = _build_core_plugin_coverage_report(plugin_map)
+    ticketing_provider = _collect_ticketing_provider_status(plugin_map)
+    core_plugins = core_coverage.get("required_plugins") or []
+    core_summary = core_coverage.get("summary") or {}
+    return {
+        "core_plugins": core_plugins,
+        "plugins": core_plugins,
+        "summary": core_summary,
+        "required_state": core_coverage.get("required_overall_state") or "UNKNOWN",
+        "presence_report": core_presence,
+        "ticketing_provider": ticketing_provider,
+        "updated_at": _now_iso(),
+    }
+
+
+@app.get("/api/plugins/core/reference")
+async def list_core_plugin_reference(request: Request) -> Dict[str, Any]:
+    _require_role(request, required="viewer")
+    reference = _iter_core_plugin_reference()
+    sorted_reference = sorted(reference, key=lambda item: str(item.get("plugin_id") or ""))
+    required_total = sum(1 for item in sorted_reference if bool(item.get("required")))
+    optional_total = len(sorted_reference) - required_total
+    return {
+        "plugins": sorted_reference,
+        "summary": {
+            "required_total": required_total,
+            "optional_total": optional_total,
+            "total": len(sorted_reference),
+        },
+        "updated_at": _now_iso(),
+    }
 
 
 @app.post("/api/plugins")
@@ -2093,6 +3501,64 @@ async def patch_plugin(request: Request, plugin_id: str, update: PluginUpdate) -
     return {"plugin": _sanitize_plugin(plugin, role), "updated_at": _now_iso()}
 
 
+@app.post("/api/plugins/{plugin_id}/required")
+async def promote_core_plugin_requiredness(request: Request, plugin_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    normalized = str(plugin_id).strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="plugin_id is required")
+    if not is_known_core_plugin(normalized):
+        raise HTTPException(status_code=404, detail=f"plugin '{plugin_id}' is not a known core plugin")
+
+    state = set_required_plugin(normalized, True)
+    canonical = str(resolve_core_plugin_alias(normalized) or normalized).strip()
+    _event_for(
+        role,
+        "plugin.required_required",
+        f"Core plugin promoted to required: {normalized}",
+        "info",
+        {"plugin_id": normalized},
+    )
+
+    return {
+        "plugin_id": normalized,
+        "required": bool(is_required_core_plugin(canonical)),
+        "base_required": bool(is_base_required_core_plugin(canonical)),
+        "required_override": bool(is_required_core_plugin(canonical) and not is_base_required_core_plugin(canonical)),
+        "required_overrides": sorted(state.required_overrides),
+        "updated_at": _now_iso(),
+    }
+
+
+@app.delete("/api/plugins/{plugin_id}/required")
+async def clear_core_plugin_requiredness(request: Request, plugin_id: str) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    normalized = str(plugin_id).strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="plugin_id is required")
+    if not is_known_core_plugin(normalized):
+        raise HTTPException(status_code=404, detail=f"plugin '{plugin_id}' is not a known core plugin")
+
+    state = set_required_plugin(normalized, False)
+    canonical = str(resolve_core_plugin_alias(normalized) or normalized).strip()
+    _event_for(
+        role,
+        "plugin.required_cleared",
+        f"Core plugin required override cleared: {normalized}",
+        "info",
+        {"plugin_id": normalized},
+    )
+
+    return {
+        "plugin_id": normalized,
+        "required": bool(is_required_core_plugin(canonical)),
+        "base_required": bool(is_base_required_core_plugin(canonical)),
+        "required_override": bool(is_required_core_plugin(canonical) and not is_base_required_core_plugin(canonical)),
+        "required_overrides": sorted(state.required_overrides),
+        "updated_at": _now_iso(),
+    }
+
+
 @app.post("/api/plugins/{plugin_id}/ui/{action_id}")
 async def execute_plugin_ui_action(
     request: Request,
@@ -2134,6 +3600,8 @@ async def execute_plugin_ui_action(
         action_id=action_id,
         payload=payload,
         method=method,
+        action=action,
+        plugin_source=plugin.get("source"),
     )
     _event_for(
         role,
@@ -2151,11 +3619,23 @@ async def execute_plugin_ui_action(
     if not result.success:
         raise HTTPException(status_code=502, detail=result.message)
 
+    result_payload = dict(result.payload) if isinstance(result.payload, dict) else {"value": result.payload}
+    inner_payload = result_payload.get("payload")
+    if isinstance(inner_payload, dict):
+        nested_payload = inner_payload.get("payload")
+        if (
+            isinstance(nested_payload, dict)
+            and "plugin" in inner_payload
+            and "method" in inner_payload
+            and "payload" in inner_payload
+        ):
+            result_payload["payload"] = nested_payload
+
     return {
         "result": {
             "success": result.success,
             "message": result.message,
-            "payload": result.payload,
+            "payload": result_payload,
         },
         "updated_at": _now_iso(),
     }
@@ -2166,12 +3646,14 @@ async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
     normalized_plugin = str(plugin_id).strip()
     plugin_map = _plugin_map()
+    core_plugins_report = _collect_core_plugin_presence_report(plugin_map)
     plugin = plugin_map.get(normalized_plugin)
     if not plugin:
         raise HTTPException(status_code=404, detail=f"plugin '{plugin_id}' not found")
 
     ui_actions = _collect_plugin_ui_actions(plugin)
-    has_debug = any(action.get("id") == "debug" for action in ui_actions)
+    debug_action = _find_plugin_ui_action(plugin, "debug")
+    has_debug = debug_action is not None
     reference = _find_core_plugin_reference(normalized_plugin)
     reference_warnings: List[Dict[str, str]] = []
     if reference and reference.get("required"):
@@ -2210,7 +3692,7 @@ async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
     runtime_payload: Dict[str, Any]
     dependency_warnings: List[Dict[str, str]] = []
     declared_dependencies = [
-        str(dependency).strip().lower()
+        _normalize_core_plugin_dependency_id(str(dependency).strip())
         for dependency in (list(reference.get("depends_on") if reference else []) + _collect_plugin_dependencies(plugin))
         if str(dependency).strip()
     ]
@@ -2233,6 +3715,8 @@ async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
             plugin_id=normalized_plugin,
             action_id="debug",
             method="GET",
+            action=debug_action,
+            plugin_source=plugin.get("source"),
         )
     else:
         runtime_result = RuntimeActionResult(
@@ -2273,7 +3757,9 @@ async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
             },
         )
 
+    local_handler_warnings = _plugin_ui_handler_warnings_for_contract(plugin)
     ui_warnings = _plugin_ui_contract_diagnostics(plugin)
+    ui_warnings.extend(local_handler_warnings)
     if not has_debug:
         ui_warnings.append(
             {
@@ -2290,6 +3776,18 @@ async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
                 "severity": "warn",
                 "source": "runtime",
                 "message": "plugin debug action returned failure",
+            },
+        )
+    elif has_debug and any(
+        str(entry.get("code") or "").startswith("P_PLUGIN_UI_HANDLER_")
+        for entry in local_handler_warnings
+    ):
+        ui_warnings.append(
+            {
+                "code": "P_PLUGIN_RUNTIME_DEBUG_FAILED",
+                "severity": "warn",
+                "source": "runtime",
+                "message": "plugin debug action succeeded but ui handler diagnostics reported failures",
             },
         )
 
@@ -2324,6 +3822,8 @@ async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
         "plugin": _sanitize_plugin_for_debug(plugin),
         "reference": {
             "required": bool(reference.get("required")) if reference else False,
+            "base_required": bool(reference.get("base_required")) if reference else False,
+            "required_override": bool(reference.get("required_override")) if reference else False,
             "signature_required": bool(reference.get("signature_required")) if reference else False,
             "aliases": reference.get("aliases") if reference else [],
             "matched_alias": reference.get("matched_alias") if reference else normalized_plugin,
@@ -2349,6 +3849,7 @@ async def debug_plugin_ui(request: Request, plugin_id: str) -> Dict[str, Any]:
             "payload": _redact_sensitive_payload(runtime_result.payload, role),
             "runtime_called": runtime_called,
         },
+        "core_plugins": core_plugins_report,
         "dependencies": {
             "declared": unique_dependencies,
             "warnings": dependency_warnings,
@@ -3253,6 +4754,124 @@ async def update_gm_ticket(request: Request, ticket_id: str, payload: GmTicketUp
     return {"ticket": ticket, "updated_at": _now_iso()}
 
 
+@app.post("/api/gm-tickets/{ticket_id}/dispatch")
+async def dispatch_gm_ticket(request: Request, ticket_id: str, payload: GmTicketDispatch) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    normalized_ticket_id = str(ticket_id).strip()
+    if not normalized_ticket_id:
+        raise HTTPException(status_code=400, detail="ticket_id is required")
+
+    ticket = storage.get_gm_ticket(normalized_ticket_id)
+    if not ticket:
+        raise HTTPException(status_code=404, detail=f"ticket '{ticket_id}' not found")
+
+    values = payload.model_dump(exclude_unset=True)
+    objective = str(values.get("objective") or "").strip() or str(ticket.get("title") or "").strip()
+    if not objective:
+        objective = f"GM ticket {normalized_ticket_id}"
+
+    request_payload: Dict[str, Any] = {
+        "objective": objective,
+    }
+
+    def _coerce_optional_text(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _coerce_assigned_to(value: Any) -> Optional[str]:
+        text = _coerce_optional_text(value)
+        if not text:
+            return None
+        if text.lower() == "unassigned":
+            return None
+        return text
+
+    ticket_request_id = _coerce_optional_text(ticket.get("gm_request_id")) or normalized_ticket_id
+    ticket_build_ticket_id = _coerce_optional_text(ticket.get("build_ticket_id")) or normalized_ticket_id
+    ticket_build_batch_id = _coerce_optional_text(ticket.get("build_batch_id")) or f"batch-{normalized_ticket_id}"
+    ticket_dispatch_token = _coerce_optional_text(ticket.get("dispatch_token"))
+    ticket_dispatch_nonce = _coerce_optional_text(ticket.get("dispatch_nonce"))
+    ticket_assigned_to = _coerce_assigned_to(ticket.get("assigned_to"))
+    ticket_phase2_mission = _coerce_optional_text(ticket.get("phase2_mission") or ticket.get("mission_id"))
+
+    for field in (
+        "mission_id",
+        "assigned_to",
+        "request_id",
+        "gm_request_id",
+        "dispatch_token",
+        "dispatch_nonce",
+        "build_ticket_id",
+        "build_batch_id",
+        "max_steps",
+        "qa_max_retries",
+        "acceptance_criteria",
+        "allowed_namespaces",
+    ):
+        value = values.get(field)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                continue
+        if value is not None:
+            request_payload[str(field)] = value
+
+    dispatch_role = _coerce_gm_dispatch_role(values.get("role"))
+    if dispatch_role is not None:
+        request_payload["role"] = dispatch_role
+
+    request_payload.setdefault("request_id", request_payload.get("gm_request_id") or ticket_request_id)
+    request_payload.setdefault("gm_request_id", request_payload.get("request_id"))
+    request_payload.setdefault("build_ticket_id", ticket_build_ticket_id)
+    request_payload.setdefault("build_batch_id", ticket_build_batch_id)
+    request_payload.setdefault("dispatch_token", ticket_dispatch_token)
+    request_payload.setdefault("dispatch_nonce", ticket_dispatch_nonce)
+    if (not request_payload.get("mission_id") and ticket_phase2_mission):
+        request_payload.setdefault("mission_id", ticket_phase2_mission)
+    if not request_payload.get("assigned_to") and ticket_assigned_to:
+        request_payload.setdefault("assigned_to", ticket_assigned_to)
+
+    if not request_payload.get("dispatch_token") or not request_payload.get("dispatch_nonce"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "phase-2 dispatch requires dispatch_token and dispatch_nonce from the ticket lineage or request payload"
+            ),
+        )
+
+    result = runtime.dispatch_gm_ticket(
+        ticket_id=normalized_ticket_id,
+        payload=request_payload,
+    )
+    if not result.success:
+        raise HTTPException(status_code=502, detail=result.message)
+
+    _event_for(
+        role,
+        "gm_ticket.dispatch",
+        f"GM ticket dispatched: {normalized_ticket_id}",
+        "info",
+        payload={
+            "gm_ticket_id": normalized_ticket_id,
+            "objective": objective,
+            "assigned_to": request_payload.get("assigned_to"),
+            "mission_id": request_payload.get("mission_id"),
+            "role": request_payload.get("role"),
+        },
+    )
+
+    return {
+        "success": result.success,
+        "message": result.message,
+        "result": result.payload,
+        "updated_at": _now_iso(),
+    }
+
+
 @app.post("/api/gm-tickets/{ticket_id}/messages")
 async def create_gm_ticket_message(
     request: Request,
@@ -3267,6 +4886,7 @@ async def create_gm_ticket_message(
             sender=values["sender"],
             content=values["content"],
             message_type=values.get("message_type") or "comment",
+            response_required=values.get("response_required", False),
             metadata=values.get("metadata"),
         )
     except KeyError:
@@ -3283,6 +4903,7 @@ async def create_gm_ticket_message(
             "gm_ticket_id": str(ticket_id),
             "sender": message.get("sender"),
             "message_type": message.get("message_type"),
+            "response_required": bool(values.get("response_required", False)),
             "actor": role,
         },
     )
@@ -3876,6 +5497,7 @@ async def reassign_directory_scopes(
 @app.get("/api/events")
 async def get_events(request: Request, limit: int = 25) -> Dict[str, Any]:
     role = _require_role(request, required="viewer")
+    _run_startup_plugin_debug_checks_once()
     events = storage.list_events(limit)
     return {"events": events, "updated_at": _now_iso()}
 
@@ -3890,6 +5512,7 @@ async def events_ws(ws: WebSocket) -> None:
     if not role:
         await ws.close(code=4401)
         return
+    _run_startup_plugin_debug_checks_once()
 
     await ws.accept()
     last_event_id = None
