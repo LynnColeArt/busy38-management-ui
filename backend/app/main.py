@@ -4994,7 +4994,7 @@ def _coerce_import_item_intake(
 
     if decision == ATTACHMENT_DECISION_BLOCK:
         item_payload["visibility"] = "quarantined"
-        item_payload["review_state"] = "rejected"
+        item_payload["review_state"] = "quarantined"
     elif decision == ATTACHMENT_DECISION_QUARANTINE:
         item_payload["visibility"] = "quarantined"
         item_payload["review_state"] = "quarantined"

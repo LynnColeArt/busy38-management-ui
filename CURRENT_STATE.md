@@ -18,3 +18,7 @@
 - The websocket auth/role test is no longer skipped; it now exercises a real handshake against the FastAPI app.
 - Canonical details live in:
   - `docs/internal/WEBSOCKET_EVENT_STREAM_BOOTSTRAP_CHANGE_REQUEST.md`
+- Automated import intake `block` results now land in quarantine for human review instead of being marked rejected immediately.
+- Human review remains the only path that may set `review_state="rejected"`.
+- Canonical details live in:
+  - `docs/internal/IMPORT_BLOCK_QUARANTINE_REVIEW_CHANGE_REQUEST.md`

@@ -5365,7 +5365,8 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         import_id = payload["import_id"]
         items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["review_state"], "rejected")
+        self.assertEqual(items[0]["review_state"], "quarantined")
+        self.assertEqual(items[0]["metadata"]["intake_decision"], self.main.ATTACHMENT_DECISION_BLOCK)
         self.assertIn("prompt_injection_override", items[0]["metadata"]["intake_reasons"])
 
         blocked = self.client.post(
