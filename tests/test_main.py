@@ -1771,6 +1771,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             "busy-38-git",
             "openclaw-browser-for-busy38",
             "busy-38-watchdog",
+            "busy-38-onboarding",
         }
         required_items = {
             str(item.get("plugin_id") or "").strip()
