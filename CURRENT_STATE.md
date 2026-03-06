@@ -14,3 +14,7 @@
   - `docs/PLUGIN_DEBUGGER.md`
   - `docs/PROVIDER_AND_MANAGEMENT_UX_SPEC.md`
   - `docs/internal/PLUGIN_UI_BROWSER_CONSOLE_LOGGING_CHANGE_REQUEST.md`
+- Local management-ui bootstrap now includes websocket transport support for `/api/events/ws` through repository backend requirements.
+- The websocket auth/role test is no longer skipped; it now exercises a real handshake against the FastAPI app.
+- Canonical details live in:
+  - `docs/internal/WEBSOCKET_EVENT_STREAM_BOOTSTRAP_CHANGE_REQUEST.md`

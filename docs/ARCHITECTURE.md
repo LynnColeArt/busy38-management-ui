@@ -24,7 +24,7 @@ flowchart LR
     GmTickets["GM Ticket APIs<br/>/api/gm-tickets*"]
     RuntimeAPI["Runtime APIs<br/>/api/runtime/*"]
     Memory["Memory & chat APIs<br/>/api/memory, /api/chat_history"]
-    Events["Event APIs<br/>/api/events, /api/events/ws"]
+    Events["Event APIs<br/>/api/events, /api/events/ws<br/>requires websocket transport dependency in backend requirements"]
   end
 
   subgraph "Runtime bridge (backend/app/runtime.py)"

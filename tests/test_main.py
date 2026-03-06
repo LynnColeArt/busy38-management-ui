@@ -16,6 +16,8 @@ from typing import Dict, List, Tuple
 import asyncio
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from backend.app.runtime import RuntimeActionResult
 from backend.app import storage
@@ -3867,7 +3869,21 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(viewer_metadata.get("notes"), "default endpoint")
 
     def test_events_websocket_requires_token_and_returns_role(self):
-        self.skipTest("WebSocket test skipped: transport layer requires integration test harness in this environment.")
+        with TestClient(self.main.app) as client:
+            with self.assertRaises(WebSocketDisconnect) as denied:
+                with client.websocket_connect("/api/events/ws"):
+                    pass
+            self.assertEqual(denied.exception.code, 4401)
+
+            with client.websocket_connect(f"/api/events/ws?token={self.read_token}") as socket:
+                payload = socket.receive_json()
+
+        self.assertEqual(payload["type"], "events")
+        self.assertEqual(payload["role"], "viewer")
+        self.assertEqual(payload["role_source"], "read-token")
+        self.assertEqual(payload["status"], "stream-start")
+        self.assertIsInstance(payload["events"], list)
+        self.assertIn("updated_at", payload)
 
     def test_import_openai_upload_and_review_flow(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}

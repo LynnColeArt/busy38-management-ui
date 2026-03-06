@@ -25,6 +25,8 @@ pip install -r backend/requirements.txt
 cd backend && uvicorn app.main:app --reload --port 8031
 ```
 
+`backend/requirements.txt` includes the websocket transport dependency needed for the live event stream at `/api/events/ws`. A standard local install should not require an extra manual `pip install websockets`.
+
 Optional token protection:
 
 ```bash
