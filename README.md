@@ -96,6 +96,11 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - `GET /api/gm-tickets/{ticket_id}`
 - `PATCH /api/gm-tickets/{ticket_id}`
 - `POST /api/gm-tickets/{ticket_id}/messages`
+
+Import review boundary:
+- this app is local-first, not a SaaS control plane,
+- raw sensitive import content may remain available for authenticated human review,
+- downstream agent/provider-facing summaries must use security-redacted derivatives instead of raw sensitive import text.
 - `GET /api/gm-tickets/{ticket_id}/messages`
 - `GET /api/gm-tickets/{ticket_id}/audit`
 - `GET /api/events` for latest event list

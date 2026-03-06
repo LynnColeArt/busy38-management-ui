@@ -22,3 +22,7 @@
 - Human review remains the only path that may set `review_state="rejected"`.
 - Canonical details live in:
   - `docs/internal/IMPORT_BLOCK_QUARANTINE_REVIEW_CHANGE_REQUEST.md`
+- Sensitive import items now retain a local human-review copy while explicitly marking raw content as reviewer-local-only in metadata.
+- The security pipeline now persists a redacted preview derivative for sensitive/quarantined imports, and downstream agent-directory surfaces use that redacted derivative instead of raw import text.
+- Canonical details live in:
+  - `docs/internal/IMPORT_LOCAL_REVIEW_ISOLATION_CHANGE_REQUEST.md`

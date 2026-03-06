@@ -5195,7 +5195,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                             "id": "msg-1",
                             "author": {"role": "user"},
                             "create_time": "2026-01-10T12:00:00Z",
-                            "content": "This contains my password for the private account.",
+                            "content": "This contains my password for the private account and email sam@example.com.",
                         }
                     ],
                 }
@@ -5215,8 +5215,13 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         import_id = payload["import_id"]
         items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
         self.assertEqual(len(items), 1)
+        self.assertIn("sam@example.com", items[0]["content"])
         sensitive_item_id = items[0]["id"]
         self.assertEqual(items[0]["review_state"], "quarantined")
+        self.assertTrue(items[0]["metadata"]["raw_content_local_only"])
+        self.assertEqual(items[0]["metadata"]["agent_content_mode"], "redacted_preview")
+        self.assertEqual(items[0]["metadata"]["provider_content_mode"], "redacted_preview")
+        self.assertIn("[REDACTED]", items[0]["metadata"]["redacted_preview"])
 
         denied = self.client.post(
             f"/api/agents/import/{import_id}/decision",
@@ -5240,6 +5245,13 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         )
         self.assertEqual(approved.status_code, 200)
         self.assertEqual(approved.json()["updated_count"], 1)
+
+        directory_payload = self.client.get("/api/agents/directory", headers=read_headers).json()
+        directory = directory_payload["directory"]
+        self.assertEqual(len(directory), 1)
+        responsibility = directory[0]["responsibilities"][0]["summary"]
+        self.assertNotIn("sam@example.com", responsibility)
+        self.assertIn("[REDACTED]", responsibility)
 
     def test_import_decision_sets_visibility(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}

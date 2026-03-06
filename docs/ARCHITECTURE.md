@@ -174,3 +174,6 @@ sequenceDiagram
   - bridge mode when `BUSY_BRIDGE_URL` is configured
 - Import processing is contract-first:
   canonical dataclasses -> sensitivity + visibility + review state -> storage + events.
+- Import review is local-first:
+  - raw sensitive content may remain available on the authenticated local review path,
+  - security-generated redacted derivatives must be used for downstream agent/provider-facing summaries and artifacts.
