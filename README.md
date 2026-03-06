@@ -25,8 +25,6 @@ pip install -r backend/requirements.txt
 cd backend && uvicorn app.main:app --reload --port 8031
 ```
 
-`backend/requirements.txt` includes the websocket transport dependency needed for the live event stream at `/api/events/ws`. A standard local install should not require an extra manual `pip install websockets`.
-
 Optional token protection:
 
 ```bash
@@ -60,7 +58,6 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - Persistence is now backed by SQLite in `backend/data/management.db` (auto-created).
 - API is versioned by endpoint conventions and can be swapped behind a proxy later.
 - GM ticket workflow now has a management-plane interface for creation, filtering, assignment, status updates, and threaded operator notes.
-- Plugin debugger warnings/errors and plugin UI action failures now emit structured records to the browser console for operator-side debugging.
 
 ## API surface (MVP)
 
@@ -131,9 +128,7 @@ The badge tooltip displays the token source currently in use (for example `admin
 
 ```bash
 python3 -m py_compile backend/app/main.py backend/app/runtime.py
-node -c web/plugin_ui_console.js
 node -c web/app.js
-node --test tests/test_plugin_ui_console_logging.mjs
 pip install -r backend/requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest tests
 ```

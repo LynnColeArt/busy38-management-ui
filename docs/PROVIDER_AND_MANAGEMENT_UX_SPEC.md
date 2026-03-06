@@ -145,15 +145,6 @@ Track and display:
   - `provider_id`
 - Viewer should see event summaries even if payload fields are masked.
 
-### 5.3 Plugin diagnostics console telemetry
-- Plugin diagnostics and plugin UI actions may emit structured browser console telemetry for operators.
-- Browser console output is restricted to warning/error material already returned by backend contracts or fetch failures.
-- Required browser logging behavior:
-  - `console.warn` for plugin debugger warnings and action-level warning metadata
-  - `console.error` for plugin debugger errors, request failures, and action failures
-- Console payloads should include stable operator context (`pluginId`, `actionId`, `message`, `reasonCodes`, `updatedAt`) so browser-only debugging does not require DOM scraping.
-- Browser console telemetry is observability only and must not affect dispatch or permission behavior.
-
 ## 6) Proposed endpoints (backend contract)
 
 - `GET /api/providers`
