@@ -9,6 +9,7 @@
 - Plugin UI action execution logs:
   - `console.error` for transport failures and handler failures (`result.success=false`)
   - `console.warn` for successful actions that still surface warning-oriented payload data such as `warnings`, `warning_codes`, or `reason_codes`
+  - warning/reason metadata is normalized from both top-level action results and payload-nested result bodies so operator console telemetry does not under-report actionable warnings
 - Console output is browser-only telemetry for operators. It does not alter backend dispatch, plugin authority, or runtime fallback behavior.
 - Canonical details live in:
   - `docs/PLUGIN_DEBUGGER.md`

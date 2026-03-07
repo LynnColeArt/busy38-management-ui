@@ -68,6 +68,30 @@ test("logActionResult emits warning telemetry for successful actions with warnin
   assert.deepEqual(Array.from(warnCalls[0][1].reasonCodes), ["P_PLUGIN_UI_ASSET_MISSING"]);
 });
 
+test("logActionResult emits warning telemetry for top-level reason codes", () => {
+  const { helper, warnCalls, errorCalls } = loadHelper();
+  helper.logActionResult("busy-38-discord", "validate", {
+    updated_at: "2026-03-07T05:16:00Z",
+    result: {
+      success: true,
+      message: "validation completed with warnings",
+      reason_codes: ["DISCORD_SCOPE_CUSTOM_EMPTY"],
+      warnings: {
+        entries: [{ code: "DISCORD_SCOPE_CUSTOM_EMPTY", message: "custom scope is empty" }],
+      },
+      payload: {
+        policy_preview: {},
+      },
+    },
+  });
+
+  assert.equal(errorCalls.length, 0);
+  assert.equal(warnCalls.length, 1);
+  assert.equal(warnCalls[0][0], "[plugin-ui] action warnings");
+  assert.deepEqual(Array.from(warnCalls[0][1].reasonCodes), ["DISCORD_SCOPE_CUSTOM_EMPTY"]);
+  assert.equal(warnCalls[0][1].warnings[0].code, "DISCORD_SCOPE_CUSTOM_EMPTY");
+});
+
 test("logActionResult emits console errors for handler failures", () => {
   const { helper, warnCalls, errorCalls } = loadHelper();
   helper.logActionResult("busy-38-discord", "debug", {

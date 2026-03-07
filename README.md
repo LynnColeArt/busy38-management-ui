@@ -61,6 +61,9 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - API is versioned by endpoint conventions and can be swapped behind a proxy later.
 - GM ticket workflow now has a management-plane interface for creation, filtering, assignment, status updates, and threaded operator notes.
 - Plugin debugger warnings/errors and plugin UI action failures now emit structured records to the browser console for operator-side debugging.
+- Successful plugin UI actions now also log warning-oriented metadata from both
+  top-level result fields and payload-nested result bodies, matching the
+  warning shapes returned by current plugin UI handlers.
 
 ## API surface (MVP)
 

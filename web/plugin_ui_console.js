@@ -33,11 +33,19 @@
     const payload = result && typeof result.payload === "object" && result.payload ? result.payload : {};
     return {
       warnings: [
+        ...normalizeEntries(result?.warnings),
+        ...normalizeEntries(result?.warnings?.entries),
         ...normalizeEntries(payload.warnings),
         ...normalizeEntries(payload.warnings?.entries),
       ],
-      warningCodes: normalizeStringArray(payload.warning_codes),
-      reasonCodes: normalizeStringArray(payload.reason_codes),
+      warningCodes: normalizeStringArray([
+        ...normalizeEntries(result?.warning_codes),
+        ...normalizeEntries(payload.warning_codes),
+      ]),
+      reasonCodes: normalizeStringArray([
+        ...normalizeEntries(result?.reason_codes),
+        ...normalizeEntries(payload.reason_codes),
+      ]),
     };
   }
 
