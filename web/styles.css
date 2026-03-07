@@ -107,6 +107,11 @@ button:hover {
   background: #60a5fa;
 }
 
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .chain {
   display: flex;
   flex-wrap: wrap;
@@ -159,6 +164,26 @@ button:hover {
 .status-running {
   border-color: #60a5fa;
   color: #93c5fd;
+}
+
+.status-pending {
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
+.status-consumed {
+  border-color: #60a5fa;
+  color: #93c5fd;
+}
+
+.status-expired {
+  border-color: #94a3b8;
+  color: #cbd5e1;
+}
+
+.status-revoked {
+  border-color: #ef4444;
+  color: #f87171;
 }
 
 .status-unknown {

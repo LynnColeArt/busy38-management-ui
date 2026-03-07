@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -100,6 +101,39 @@ def _coerce_issue_ttl(value: Any) -> int:
     return ttl
 
 
+def _normalize_token_id(value: Any) -> str:
+    token_id = str(value or "").strip()
+    if not token_id:
+        raise PairingTokenError("PAIRING_TOKEN_INVALID", "token_id is required")
+    return token_id
+
+
+def _coerce_timestamp_text(value: Any, *, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise PairingStateError("PAIRING_STATE_INVALID", f"{field_name} is required")
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PairingStateError("PAIRING_STATE_INVALID", f"{field_name} must be ISO8601") from exc
+    return text
+
+
+def _optional_timestamp_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PairingStateError("PAIRING_STATE_INVALID", "timestamp must be ISO8601") from exc
+    return text
+
+
+def _timestamp_not_after_now(value: str) -> bool:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc) <= _now()
+
+
 def issue_pairing_code(
     *,
     actor: str,
@@ -177,43 +211,148 @@ def exchange_pairing_code(*, pairing_code: Any, device_label: Any) -> Dict[str, 
     token_expires_at = now + timedelta(
         seconds=int((os.getenv("BUSY38_MOBILE_PAIRING_TOKEN_TTL_SEC") or str(PAIRING_TOKEN_TTL_DEFAULT_SEC)).strip())
     )
+    token_id = secrets.token_hex(12)
     token = build_scoped_pairing_token(
         authorized_room_ids=normalize_room_scope_ids(record.get("authorized_room_ids")),
         orchestrator_scope=normalize_orchestrator_scope(record.get("orchestrator_scope")),
         expires_at=token_expires_at,
         issued_by=str(record.get("issued_by") or "admin"),
         device_label=resolved_device_label,
+        token_id=token_id,
     )
     record["consumed_at"] = now.isoformat()
     record["consumed_device_label"] = resolved_device_label
+    record["token_id"] = token_id
+    record["token_expires_at"] = token_expires_at.isoformat()
     state["issued_codes"][code_hash] = record
     write_pairing_state(state, _runtime_root())
     return {
         "instance_id": str(state["instance_id"]),
         "bridge_url": _bridge_url(),
         "bridge_token": token,
+        "token_id": token_id,
         "expires_at": token_expires_at.isoformat(),
         "authorized_room_ids": list(normalize_room_scope_ids(record.get("authorized_room_ids"))),
         "orchestrator_scope": list(normalize_orchestrator_scope(record.get("orchestrator_scope"))),
     }
 
+def _resolve_token_id_from_state(state: Dict[str, Any], token_id: str) -> str:
+    if token_id in state["revoked_token_ids"]:
+        raise PairingTokenError("PAIRING_TOKEN_REVOKED", "pairing token has already been revoked")
+    for record in state["issued_codes"].values():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("token_id") or "").strip() == token_id:
+            return token_id
+    raise PairingTokenError("PAIRING_TOKEN_INVALID", "pairing token id is unknown")
 
-def revoke_bridge_token(*, actor: str, bridge_token: Any) -> Dict[str, Any]:
+
+def revoke_pairing_grant(
+    *,
+    actor: str,
+    bridge_token: Any | None = None,
+    token_id: Any | None = None,
+) -> Dict[str, Any]:
     _require_available()
-    decoded = decode_scoped_pairing_token(
-        str(bridge_token or "").strip(),
-        require_not_expired=False,
-        runtime_root=_runtime_root(),
-    )
     state = load_pairing_state(_runtime_root())
+    raw_bridge_token = str(bridge_token or "").strip()
+    raw_token_id = str(token_id or "").strip()
+    if bool(raw_bridge_token) == bool(raw_token_id):
+        raise PairingStateError(
+            "PAIRING_REVOKE_INVALID",
+            "provide exactly one of bridge_token or token_id",
+        )
+    if raw_bridge_token:
+        decoded = decode_scoped_pairing_token(
+            raw_bridge_token,
+            require_not_expired=False,
+            runtime_root=_runtime_root(),
+        )
+        resolved_token_id = decoded.token_id
+        instance_id = decoded.instance_id
+    else:
+        resolved_token_id = _resolve_token_id_from_state(state, _normalize_token_id(raw_token_id))
+        instance_id = str(state["instance_id"])
     revoked_at = _now().isoformat()
-    state["revoked_token_ids"][decoded.token_id] = {
+    state["revoked_token_ids"][resolved_token_id] = {
         "revoked_at": revoked_at,
         "revoked_by": str(actor or "").strip() or "admin",
     }
     write_pairing_state(state, _runtime_root())
     return {
-        "token_id": decoded.token_id,
-        "instance_id": decoded.instance_id,
+        "token_id": resolved_token_id,
+        "instance_id": instance_id,
         "revoked_at": revoked_at,
+    }
+
+
+def list_pairing_state() -> Dict[str, Any]:
+    _require_available()
+    state = load_pairing_state(_runtime_root())
+    issued_rows: list[Dict[str, Any]] = []
+    revoked_rows: list[Dict[str, Any]] = []
+    revoked_map = state["revoked_token_ids"]
+
+    for token_id, revoked in revoked_map.items():
+        if not isinstance(revoked, dict):
+            raise PairingStateError("PAIRING_STATE_INVALID", "revoked token entry must be an object")
+        revoked_rows.append(
+            {
+                "token_id": _normalize_token_id(token_id),
+                "revoked_at": _coerce_timestamp_text(revoked.get("revoked_at"), field_name="revoked_at"),
+                "revoked_by": str(revoked.get("revoked_by") or "").strip() or "admin",
+            }
+        )
+
+    for code_hash, record in state["issued_codes"].items():
+        if not isinstance(record, dict):
+            raise PairingStateError("PAIRING_STATE_INVALID", "issued code entry must be an object")
+        issued_at = _coerce_timestamp_text(record.get("issued_at"), field_name="issued_at")
+        expires_at = _coerce_timestamp_text(record.get("expires_at"), field_name="expires_at")
+        consumed_at = _optional_timestamp_text(record.get("consumed_at"))
+        token_id = str(record.get("token_id") or "").strip() or None
+        token_expires_at = _optional_timestamp_text(record.get("token_expires_at"))
+        revoked = revoked_map.get(token_id) if token_id else None
+        revoked_at = None
+        revoked_by = None
+        if revoked is not None:
+            if not isinstance(revoked, dict):
+                raise PairingStateError("PAIRING_STATE_INVALID", "revoked token entry must be an object")
+            revoked_at = _coerce_timestamp_text(revoked.get("revoked_at"), field_name="revoked_at")
+            revoked_by = str(revoked.get("revoked_by") or "").strip() or "admin"
+
+        if revoked_at:
+            status = "revoked"
+        elif token_id and token_expires_at:
+            status = "expired" if _timestamp_not_after_now(token_expires_at) else "active"
+        elif consumed_at:
+            status = "consumed"
+        else:
+            status = "expired" if _timestamp_not_after_now(expires_at) else "pending"
+
+        issued_rows.append(
+            {
+                "pairing_code_hash": str(code_hash),
+                "device_label": _coerce_device_label(record.get("device_label")),
+                "authorized_room_ids": list(normalize_room_scope_ids(record.get("authorized_room_ids"))),
+                "orchestrator_scope": list(normalize_orchestrator_scope(record.get("orchestrator_scope"))),
+                "issued_by": str(record.get("issued_by") or "").strip() or "admin",
+                "issued_at": issued_at,
+                "expires_at": expires_at,
+                "consumed_at": consumed_at,
+                "consumed_device_label": str(record.get("consumed_device_label") or "").strip() or None,
+                "token_id": token_id,
+                "token_expires_at": token_expires_at,
+                "revoked_at": revoked_at,
+                "revoked_by": revoked_by,
+                "status": status,
+            }
+        )
+
+    issued_rows.sort(key=lambda row: (row["issued_at"], row["pairing_code_hash"]), reverse=True)
+    revoked_rows.sort(key=lambda row: (row["revoked_at"], row["token_id"]), reverse=True)
+    return {
+        "instance_id": str(state["instance_id"]),
+        "issued": issued_rows,
+        "revoked": revoked_rows,
     }

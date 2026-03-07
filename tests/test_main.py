@@ -366,15 +366,38 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 self.assertEqual(exchanged["authorized_room_ids"], ["team-room-qa"])
                 self.assertEqual(exchanged["orchestrator_scope"], ["carlo"])
                 self.assertTrue(exchanged["bridge_token"].startswith("busy_pair_v1."))
+                self.assertTrue(exchanged["token_id"])
+
+                state_before = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+                self.assertEqual(state_before.status_code, 200, state_before.text)
+                pairing_state = state_before.json()["pairing"]
+                self.assertEqual(pairing_state["instance_id"], "busy-local")
+                self.assertEqual(len(pairing_state["issued"]), 1)
+                self.assertEqual(pairing_state["issued"][0]["status"], "active")
+                self.assertEqual(pairing_state["issued"][0]["token_id"], exchanged["token_id"])
+                self.assertNotIn(issued["pairing_code"], json.dumps(pairing_state))
+                self.assertNotIn(exchanged["bridge_token"], json.dumps(pairing_state))
 
                 revoke = self.client.post(
                     "/api/mobile/pairing/revoke",
                     headers=admin_headers,
-                    json={"bridge_token": exchanged["bridge_token"]},
+                    json={"token_id": exchanged["token_id"]},
                 )
                 self.assertEqual(revoke.status_code, 200, revoke.text)
                 self.assertEqual(revoke.json()["pairing"]["instance_id"], "busy-local")
-                self.assertTrue(revoke.json()["pairing"]["token_id"])
+                self.assertEqual(revoke.json()["pairing"]["token_id"], exchanged["token_id"])
+
+                state_after = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+                self.assertEqual(state_after.status_code, 200, state_after.text)
+                after_payload = state_after.json()["pairing"]
+                self.assertEqual(after_payload["issued"][0]["status"], "revoked")
+                self.assertEqual(after_payload["issued"][0]["revoked_at"], revoke.json()["pairing"]["revoked_at"])
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
@@ -404,6 +427,12 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 )
                 self.assertEqual(denied.status_code, 403)
 
+                denied_state = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=read_headers,
+                )
+                self.assertEqual(denied_state.status_code, 403)
+
                 invalid = self.client.post(
                     "/api/mobile/pairing/issue",
                     headers=admin_headers,
@@ -416,6 +445,14 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 )
                 self.assertEqual(invalid.status_code, 400)
                 self.assertIn("authorized_room_ids", invalid.text)
+
+                invalid_revoke = self.client.post(
+                    "/api/mobile/pairing/revoke",
+                    headers=admin_headers,
+                    json={},
+                )
+                self.assertEqual(invalid_revoke.status_code, 400)
+                self.assertIn("exactly one", invalid_revoke.text)
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 

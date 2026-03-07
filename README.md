@@ -78,7 +78,10 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
   - admin-authenticated issue/revoke endpoints and an unauthenticated exchange endpoint now exist under `/api/mobile/pairing/*`
   - issued pairing state is short-lived and single-use
   - exchange returns a scoped Busy bridge token and authoritative bridge URL
-  - this slice is API-only; no dedicated browser pairing panel is shipped yet
+  - the browser now includes an admin-only pairing panel for issue + inspect + revoke
+  - browser inspection uses safe state summaries only; it does not recover raw pairing codes or bridge tokens from persisted state
+  - revoke is now keyed by explicit `token_id`, not pasted bearer tokens
+  - QR issuance and broader onboarding parity are still out of scope for this slice
 
 ## API surface (MVP)
 
@@ -129,6 +132,7 @@ Import review boundary:
 - `POST /api/chat_history`
 - `POST /api/mobile/pairing/issue`
 - `POST /api/mobile/pairing/exchange`
+- `GET /api/mobile/pairing/state`
 - `POST /api/mobile/pairing/revoke`
 - `GET  /api/runtime/status`
 - `GET  /api/runtime/services`
@@ -160,6 +164,7 @@ python3 -m py_compile backend/app/main.py backend/app/runtime.py
 node -c web/plugin_ui_console.js
 node -c web/app.js
 node --test tests/test_plugin_ui_console_logging.mjs
+node --test tests/test_mobile_pairing_ui.mjs
 pip install -r backend/requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest tests
 ```

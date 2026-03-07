@@ -1063,7 +1063,8 @@ class PairingExchangeRequest(BaseModel):
 
 
 class PairingRevokeRequest(BaseModel):
-    bridge_token: str
+    bridge_token: Optional[str] = None
+    token_id: Optional[str] = None
 
 
 @app.on_event("startup")
@@ -5726,6 +5727,19 @@ async def exchange_mobile_pairing_code(
     return {"pairing": result, "updated_at": _now_iso()}
 
 
+@app.get("/api/mobile/pairing/state")
+async def get_mobile_pairing_state(request: Request) -> Dict[str, Any]:
+    _require_role(request, required="admin")
+    try:
+        result = mobile_pairing.list_pairing_state()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return {"pairing": result, "updated_at": _now_iso()}
+
+
 @app.post("/api/mobile/pairing/revoke")
 async def revoke_mobile_pairing_token(
     request: Request,
@@ -5733,9 +5747,10 @@ async def revoke_mobile_pairing_token(
 ) -> Dict[str, Any]:
     role = _require_role(request, required="admin")
     try:
-        result = mobile_pairing.revoke_bridge_token(
+        result = mobile_pairing.revoke_pairing_grant(
             actor=role,
             bridge_token=payload.bridge_token,
+            token_id=payload.token_id,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

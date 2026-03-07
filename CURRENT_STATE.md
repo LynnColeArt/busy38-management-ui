@@ -9,6 +9,14 @@
     scoped Busy bridge bearer token plus authoritative bridge URL.
   - `POST /api/mobile/pairing/revoke` is admin-authenticated and revokes an
     issued scoped bridge token by token ID.
+- The bounded operator/browser pairing surface is now also implemented:
+  - admins can issue pairing codes directly in the browser,
+  - the browser now loads an admin-only safe pairing-state summary from
+    `GET /api/mobile/pairing/state`,
+  - exchanged grants can be revoked by `token_id` from the browser without
+    pasting raw bridge bearer tokens,
+  - raw pairing codes remain visible only from the live issuance response and
+    are not recoverable from persisted state after refresh.
 - Pairing authority remains API-owned in this first slice:
   - this repo is the canonical pairing authority surface,
   - Busy bridge core only validates the plugin-issued scoped token and enforces
@@ -22,6 +30,7 @@
 - Canonical details live in:
   - `docs/internal/PAIRING_CONTROL_PLANE_SLICE_SPEC.md` in Busy
   - `docs/internal/PAIRING_PLUGIN_SCOPED_BRIDGE_TOKEN_VALIDATION_CHANGE_REQUEST.md` in Busy
+  - `docs/internal/PAIRING_OPERATOR_BROWSER_SURFACE_SPEC.md` in Busy
 
 ## 2026-03-05
 

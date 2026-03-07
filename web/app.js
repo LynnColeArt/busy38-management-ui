@@ -27,6 +27,8 @@ const state = {
   startupDebugSummary: null,
   corePlugins: [],
   runtimeServices: [],
+  latestPairingIssue: null,
+  mobilePairingState: null,
   role: "unknown",
   roleSource: "unknown",
   providerChain: [],
@@ -712,6 +714,7 @@ function updateRoleBadge(role, source) {
   el.textContent = `Role: ${nextRole}`;
   el.className = `role-badge role-${nextRole}`;
   el.title = `Token source: ${tokenSource}`;
+  syncMobilePairingAccess();
 }
 
 function buildProviderCard(provider) {
@@ -1227,6 +1230,203 @@ function renderRuntimeServices(services) {
   `;
 
   renderCards("#runtimeServices", services || [], renderService);
+}
+
+function setMobilePairingControlsDisabled(disabled) {
+  const form = qs("#mobilePairingIssueForm");
+  if (form) {
+    form.querySelectorAll("input, button").forEach((node) => {
+      node.disabled = Boolean(disabled);
+    });
+  }
+  qs('[data-action="refresh-mobile-pairing"]')?.toggleAttribute("disabled", Boolean(disabled));
+}
+
+function renderMobilePairingLatest(issue) {
+  const root = qs("#mobilePairingLatest");
+  if (!root) {
+    return;
+  }
+  if (state.role !== "admin") {
+    root.innerHTML = "<p>Admin token required to issue pairing codes.</p>";
+    return;
+  }
+  if (!issue || typeof issue !== "object") {
+    root.innerHTML = "<p>No pairing code issued in this browser session.</p>";
+    return;
+  }
+  root.innerHTML = `
+    <div class="card-list">
+      <div class="card">
+        <h3>Latest issued pairing code</h3>
+        <p><strong>Code:</strong> <code>${escapeHtml(issue.pairing_code || "")}</code></p>
+        <p><strong>Expires:</strong> ${escapeHtml(issue.expires_at || "n/a")}</p>
+        <p><strong>Rooms:</strong> ${Array.isArray(issue.authorized_room_ids) && issue.authorized_room_ids.length ? issue.authorized_room_ids.map(escapeHtml).join(", ") : "n/a"}</p>
+        <p><strong>Orchestrators:</strong> ${Array.isArray(issue.orchestrator_scope) && issue.orchestrator_scope.length ? issue.orchestrator_scope.map(escapeHtml).join(", ") : "n/a"}</p>
+        <p>
+          <button type="button" data-action="copy-mobile-pairing-code" data-code="${escapeHtml(issue.pairing_code || "")}">
+            Copy pairing code
+          </button>
+        </p>
+        <p class="meta">The raw pairing code is only shown from the live issuance response. Persisted state does not re-display it after refresh.</p>
+      </div>
+    </div>
+  `;
+}
+
+function renderMobilePairingState(pairing) {
+  const root = qs("#mobilePairingState");
+  if (!root) {
+    return;
+  }
+  if (state.role !== "admin") {
+    root.innerHTML = "<p>Admin token required to inspect or revoke pairing grants.</p>";
+    return;
+  }
+  if (!pairing || typeof pairing !== "object") {
+    root.innerHTML = "<p>No pairing state loaded.</p>";
+    return;
+  }
+
+  const issued = Array.isArray(pairing.issued) ? pairing.issued : [];
+  const revoked = Array.isArray(pairing.revoked) ? pairing.revoked : [];
+  const issuedCards = issued.map((entry) => {
+    const tokenId = entry.token_id ? escapeHtml(entry.token_id) : "n/a";
+    const canRevoke = Boolean(entry.token_id) && entry.status === "active";
+    const revokeButton = canRevoke
+      ? `<button type="button" data-action="revoke-mobile-pairing" data-token-id="${tokenId}">Revoke grant</button>`
+      : "";
+    return `
+      <div class="card">
+        <h3>${formatProviderStatusChip(entry.status || "unknown")} ${escapeHtml(entry.device_label || "unknown device")}</h3>
+        <p><strong>Code hash:</strong> ${escapeHtml(entry.pairing_code_hash || "n/a")}</p>
+        <p><strong>Rooms:</strong> ${Array.isArray(entry.authorized_room_ids) && entry.authorized_room_ids.length ? entry.authorized_room_ids.map(escapeHtml).join(", ") : "n/a"}</p>
+        <p><strong>Orchestrators:</strong> ${Array.isArray(entry.orchestrator_scope) && entry.orchestrator_scope.length ? entry.orchestrator_scope.map(escapeHtml).join(", ") : "n/a"}</p>
+        <p><strong>Issued:</strong> ${escapeHtml(entry.issued_at || "n/a")}</p>
+        <p><strong>Code expires:</strong> ${escapeHtml(entry.expires_at || "n/a")}</p>
+        <p><strong>Consumed:</strong> ${escapeHtml(entry.consumed_at || "n/a")}</p>
+        <p><strong>Token ID:</strong> ${tokenId}</p>
+        <p><strong>Token expires:</strong> ${escapeHtml(entry.token_expires_at || "n/a")}</p>
+        <p><strong>Revoked:</strong> ${escapeHtml(entry.revoked_at || "n/a")}</p>
+        ${revokeButton ? `<p>${revokeButton}</p>` : ""}
+      </div>
+    `;
+  }).join("");
+
+  const revokedCards = revoked.map((entry) => `
+    <div class="card">
+      <h3>${formatProviderStatusChip("revoked")} ${escapeHtml(entry.token_id || "unknown token")}</h3>
+      <p><strong>Revoked at:</strong> ${escapeHtml(entry.revoked_at || "n/a")}</p>
+      <p><strong>Revoked by:</strong> ${escapeHtml(entry.revoked_by || "n/a")}</p>
+    </div>
+  `).join("");
+
+  root.innerHTML = `
+    <div class="card-list">
+      <div class="card">
+        <h3>Pairing state</h3>
+        <p><strong>Instance:</strong> ${escapeHtml(pairing.instance_id || "n/a")}</p>
+        <p><strong>Issued records:</strong> ${escapeHtml(String(issued.length))}</p>
+        <p><strong>Revoked tokens:</strong> ${escapeHtml(String(revoked.length))}</p>
+      </div>
+      ${issuedCards || "<p>No pairing grants recorded.</p>"}
+      <h3>Revoked grants</h3>
+      ${revokedCards || "<p>No revoked grants.</p>"}
+    </div>
+  `;
+}
+
+function syncMobilePairingAccess() {
+  const locked = state.role !== "admin";
+  setMobilePairingControlsDisabled(locked);
+  renderMobilePairingLatest(state.latestPairingIssue);
+  renderMobilePairingState(state.mobilePairingState);
+}
+
+function parseCommaSeparatedList(raw) {
+  return String(raw || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const helper = document.createElement("textarea");
+  helper.value = text;
+  helper.setAttribute("readonly", "readonly");
+  helper.style.position = "absolute";
+  helper.style.left = "-9999px";
+  document.body.appendChild(helper);
+  helper.select();
+  document.execCommand("copy");
+  document.body.removeChild(helper);
+}
+
+async function submitMobilePairingIssue(event) {
+  event.preventDefault();
+  if (state.role !== "admin") {
+    setStatus("#mobilePairingStatus", "admin token required", "err");
+    return;
+  }
+  const deviceLabel = qs('input[name="mobilePairingDeviceLabel"]')?.value.trim() || "";
+  const roomIds = parseCommaSeparatedList(qs('input[name="mobilePairingRoomIds"]')?.value || "");
+  const orchestrators = parseCommaSeparatedList(qs('input[name="mobilePairingOrchestrators"]')?.value || "");
+  const ttlValue = qs('input[name="mobilePairingTtlSec"]')?.value.trim() || "";
+  const ttlSec = Number(ttlValue || "300");
+
+  if (!deviceLabel) {
+    setStatus("#mobilePairingStatus", "device label is required", "err");
+    return;
+  }
+  if (!roomIds.length) {
+    setStatus("#mobilePairingStatus", "at least one room id is required", "err");
+    return;
+  }
+  if (!orchestrators.length) {
+    setStatus("#mobilePairingStatus", "at least one orchestrator id is required", "err");
+    return;
+  }
+  if (!Number.isInteger(ttlSec) || ttlSec <= 0) {
+    setStatus("#mobilePairingStatus", "ttl_sec must be a positive integer", "err");
+    return;
+  }
+
+  setStatus("#mobilePairingStatus", "issuing pairing code...", "");
+  try {
+    const payload = await postJson("/api/mobile/pairing/issue", {
+      device_label: deviceLabel,
+      authorized_room_ids: roomIds,
+      orchestrator_scope: orchestrators,
+      ttl_sec: ttlSec,
+    });
+    state.latestPairingIssue = payload.pairing || null;
+    renderMobilePairingLatest(state.latestPairingIssue);
+    setStatus("#mobilePairingStatus", `pairing code issued for ${deviceLabel}`, "ok");
+    await loadMobilePairingState();
+  } catch (err) {
+    setStatus("#mobilePairingStatus", `pairing issue failed: ${err.message}`, "err");
+  }
+}
+
+async function loadMobilePairingState() {
+  if (state.role !== "admin") {
+    state.mobilePairingState = null;
+    syncMobilePairingAccess();
+    return;
+  }
+  try {
+    const payload = await fetchJson("/api/mobile/pairing/state");
+    state.mobilePairingState = payload.pairing || null;
+    renderMobilePairingState(state.mobilePairingState);
+  } catch (err) {
+    state.mobilePairingState = null;
+    renderMobilePairingState(null);
+    setStatus("#mobilePairingStatus", `pairing state failed: ${err.message}`, "err");
+  }
 }
 
 function renderEvents(items) {
@@ -3577,6 +3777,11 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "refresh-mobile-pairing") {
+    await loadMobilePairingState();
+    return;
+  }
+
   if (action === "load-tool-log-session") {
     await loadToolLogBySession();
     return;
@@ -4031,6 +4236,19 @@ async function onTableChange(event) {
       return;
     }
 
+    if (action === "revoke-mobile-pairing") {
+      const tokenId = target.dataset.tokenId || "";
+      if (!tokenId) {
+        setStatus("#mobilePairingStatus", "token_id is required", "err");
+        return;
+      }
+      setStatus("#mobilePairingStatus", `revoking ${tokenId}...`, "");
+      await postJson("/api/mobile/pairing/revoke", { token_id: tokenId });
+      setStatus("#mobilePairingStatus", `revoked ${tokenId}`, "ok");
+      await loadMobilePairingState();
+      return;
+    }
+
     if (action === "execute-plugin-ui-action") {
       const pluginId = target.dataset.pluginId || "";
       const actionId = target.dataset.actionId || "";
@@ -4146,6 +4364,9 @@ async function onTableChange(event) {
     }
   } catch (err) {
     setStatus("#healthState", `update failed: ${err.message}`, "err");
+    if (action === "revoke-mobile-pairing") {
+      setStatus("#mobilePairingStatus", `revoke failed: ${err.message}`, "err");
+    }
   }
 }
 
@@ -4158,7 +4379,7 @@ async function boot() {
 
   try {
     await loadSettings();
-    await Promise.all([
+    const loadTasks = [
       loadHealth(),
       loadProviders(),
       loadProviderChain(),
@@ -4173,7 +4394,15 @@ async function boot() {
       loadChatHistory(),
       loadToolUsage(),
       loadRuntime(),
-    ]);
+    ];
+    if (state.role === "admin") {
+      loadTasks.push(loadMobilePairingState());
+    } else {
+      state.latestPairingIssue = null;
+      state.mobilePairingState = null;
+      syncMobilePairingAccess();
+    }
+    await Promise.all(loadTasks);
     connectEvents();
   } catch (err) {
     if (err?.status === 401) {
@@ -4194,6 +4423,7 @@ qs("#chatForm")?.addEventListener("submit", submitChat);
 qs("#importForm")?.addEventListener("submit", submitImport);
 qs("#providerCreateForm")?.addEventListener("submit", submitProvider);
 qs("#pluginCreateForm")?.addEventListener("submit", submitPlugin);
+qs("#mobilePairingIssueForm")?.addEventListener("submit", submitMobilePairingIssue);
 qs("#providerFilterKind")?.addEventListener("change", loadProviders);
 qs("#providerFilterStatus")?.addEventListener("change", loadProviders);
 qs("#providerFilterSecret")?.addEventListener("change", loadProviders);
@@ -4204,6 +4434,17 @@ document.body.addEventListener("change", onTableChange);
 document.body.addEventListener("click", (event) => {
   const target = event.target;
   const action = target?.dataset?.action;
+  if (action === "copy-mobile-pairing-code") {
+    const code = target.dataset.code || "";
+    if (!code) {
+      setStatus("#mobilePairingStatus", "pairing code is unavailable", "err");
+      return;
+    }
+    copyTextToClipboard(code)
+      .then(() => setStatus("#mobilePairingStatus", "pairing code copied", "ok"))
+      .catch((err) => setStatus("#mobilePairingStatus", `copy failed: ${err.message}`, "err"));
+    return;
+  }
   if (!action || (
     !action.startsWith("runtime-")
     && action !== "discover-provider-models"
@@ -4212,6 +4453,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "refresh-tool-log"
     && action !== "load-tool-log-session"
     && action !== "refresh-gm-tickets"
+    && action !== "refresh-mobile-pairing"
     && action !== "open-gm-ticket"
     && action !== "rerun-import"
     && action !== "open-tool-context"
@@ -4245,6 +4487,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "set-plugin-command"
     && action !== "show-plugin-diagnostics"
     && action !== "execute-plugin-ui-action"
+    && action !== "revoke-mobile-pairing"
     && action !== "archive-agent"
     && action !== "restore-agent"
   )) {
