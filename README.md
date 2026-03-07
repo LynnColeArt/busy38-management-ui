@@ -22,10 +22,20 @@ Start backend + static UI:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-cd backend && uvicorn app.main:app --reload --port 8031
+cd backend
+PYTHONPATH="/path/to/Busy:$PWD" \
+BUSY_RUNTIME_PATH="/path/to/Busy" \
+uvicorn app.main:app --reload --port 8031
 ```
 
 `backend/requirements.txt` includes the websocket transport dependency needed for the live event stream at `/api/events/ws`. A standard local install should not require an extra manual `pip install websockets`.
+
+The backend imports Busy core modules directly. Pairing endpoints additionally
+require:
+
+```bash
+export BUSY38_MOBILE_PAIRING_SECRET="replace-with-local-secret"
+```
 
 Optional token protection:
 
@@ -64,6 +74,11 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - Successful plugin UI actions now also log warning-oriented metadata from both
   top-level result fields and payload-nested result bodies, matching the
   warning shapes returned by current plugin UI handlers.
+- Mobile pairing is now plugin-owned in this repo for the first bounded slice:
+  - admin-authenticated issue/revoke endpoints and an unauthenticated exchange endpoint now exist under `/api/mobile/pairing/*`
+  - issued pairing state is short-lived and single-use
+  - exchange returns a scoped Busy bridge token and authoritative bridge URL
+  - this slice is API-only; no dedicated browser pairing panel is shipped yet
 
 ## API surface (MVP)
 
@@ -112,6 +127,9 @@ Import review boundary:
 - `GET /api/chat_history`
 - `POST /api/memory`
 - `POST /api/chat_history`
+- `POST /api/mobile/pairing/issue`
+- `POST /api/mobile/pairing/exchange`
+- `POST /api/mobile/pairing/revoke`
 - `GET  /api/runtime/status`
 - `GET  /api/runtime/services`
 - `POST /api/runtime/services/{service_name}/start`
