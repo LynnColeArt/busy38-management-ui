@@ -98,6 +98,7 @@ test("logActionResult emits console errors for handler failures", () => {
     result: {
       success: false,
       message: "debug failed",
+      errors: ["handler exploded"],
       payload: {
         reason_codes: ["P_PLUGIN_RUNTIME_DEBUG_FAILED"],
       },
@@ -109,6 +110,7 @@ test("logActionResult emits console errors for handler failures", () => {
   assert.equal(errorCalls[0][0], "[plugin-ui] action failed");
   assert.equal(errorCalls[0][1].message, "debug failed");
   assert.deepEqual(Array.from(errorCalls[0][1].reasonCodes), ["P_PLUGIN_RUNTIME_DEBUG_FAILED"]);
+  assert.deepEqual(Array.from(errorCalls[0][1].errors), ["handler exploded"]);
 });
 
 test("logActionRequestFailure emits console errors for transport failures", () => {

@@ -29,7 +29,7 @@
     return normalized;
   }
 
-  function warningDetailsFromActionResult(result) {
+  function telemetryDetailsFromActionResult(result) {
     const payload = result && typeof result.payload === "object" && result.payload ? result.payload : {};
     return {
       warnings: [
@@ -37,6 +37,12 @@
         ...normalizeEntries(result?.warnings?.entries),
         ...normalizeEntries(payload.warnings),
         ...normalizeEntries(payload.warnings?.entries),
+      ],
+      errors: [
+        ...normalizeEntries(result?.errors),
+        ...normalizeEntries(result?.errors?.entries),
+        ...normalizeEntries(payload.errors),
+        ...normalizeEntries(payload.errors?.entries),
       ],
       warningCodes: normalizeStringArray([
         ...normalizeEntries(result?.warning_codes),
@@ -75,7 +81,7 @@
   function logActionResult(pluginId, actionId, response, consoleRef) {
     const logger = getConsole(consoleRef);
     const result = response && typeof response.result === "object" && response.result ? response.result : {};
-    const warningDetails = warningDetailsFromActionResult(result);
+    const telemetryDetails = telemetryDetailsFromActionResult(result);
     const record = {
       pluginId: String(pluginId || "").trim(),
       actionId: String(actionId || "").trim(),
@@ -83,9 +89,10 @@
       message: String(result.message || "").trim() || null,
       updatedAt: response?.updated_at || null,
       payload: result.payload && typeof result.payload === "object" ? result.payload : {},
-      reasonCodes: warningDetails.reasonCodes,
-      warningCodes: warningDetails.warningCodes,
-      warnings: warningDetails.warnings,
+      reasonCodes: telemetryDetails.reasonCodes,
+      warningCodes: telemetryDetails.warningCodes,
+      warnings: telemetryDetails.warnings,
+      errors: telemetryDetails.errors,
     };
     if (result.success === false) {
       if (typeof logger.error === "function") {
@@ -93,7 +100,7 @@
       }
       return;
     }
-    if ((warningDetails.warnings.length || warningDetails.warningCodes.length || warningDetails.reasonCodes.length) && typeof logger.warn === "function") {
+    if ((telemetryDetails.warnings.length || telemetryDetails.warningCodes.length || telemetryDetails.reasonCodes.length) && typeof logger.warn === "function") {
       logger.warn("[plugin-ui] action warnings", record);
     }
   }
