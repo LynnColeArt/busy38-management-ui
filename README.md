@@ -22,10 +22,20 @@ Start backend + static UI:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-cd backend && uvicorn app.main:app --reload --port 8031
+cd backend
+PYTHONPATH="/path/to/Busy:$PWD" \
+BUSY_RUNTIME_PATH="/path/to/Busy" \
+uvicorn app.main:app --reload --port 8031
 ```
 
 `backend/requirements.txt` includes the websocket transport dependency needed for the live event stream at `/api/events/ws`. A standard local install should not require an extra manual `pip install websockets`.
+
+The backend imports Busy core modules directly. Pairing endpoints additionally
+require:
+
+```bash
+export BUSY38_MOBILE_PAIRING_SECRET="replace-with-local-secret"
+```
 
 Optional token protection:
 
@@ -48,11 +58,21 @@ Token is stored locally in browser for this UI only (client-side convenience) vi
 
 Then open `web/index.html` in a browser (or serve it from any static host).
 
-Set this environment variable if you want different backend routing:
+If you need a different backend base than the default:
 
 ```bash
 export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 ```
+
+For the shipped static page, runtime resolution is literal in this order:
+
+1. `window.MANAGEMENT_API_BASE`
+2. `meta[name="busy38-management-api-base"]`
+3. served `window.location.origin` for HTTP(S) pages
+4. `http://127.0.0.1:8031` only for local file/offline dev
+
+Setting a shell variable alone does not inject it into `web/index.html`; use a
+served page override if the UI and API are not on the same origin.
 
 ## Current behavior
 
@@ -64,6 +84,18 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 - Successful plugin UI actions now also log warning-oriented metadata from both
   top-level result fields and payload-nested result bodies, matching the
   warning shapes returned by current plugin UI handlers.
+- Mobile pairing is now plugin-owned in this repo for the first bounded slice:
+  - admin-authenticated issue/revoke endpoints and an unauthenticated exchange endpoint now exist under `/api/mobile/pairing/*`
+  - issued pairing state is short-lived and single-use
+  - persisted pairing state must match the live Busy instance id; stale instance state fails closed before issue/exchange
+  - exchange returns a scoped Busy bridge token and authoritative bridge URL
+  - exchange bridge URL resolution is literal: explicit bridge URL override, then explicit bridge host, then exchange request host, then loopback fallback only for local dev
+  - the browser now includes an admin-only pairing panel for issue + inspect + revoke
+  - browser inspection uses safe state summaries only; it does not recover raw pairing codes or bridge tokens from persisted state
+  - revoke is now keyed by explicit `token_id`, not pasted bearer tokens
+  - the browser now also renders a QR locally from the live issue response plus the resolved control-plane URL
+  - QR control-plane URL resolution is literal: explicit runtime override, then document override, then served origin, then loopback fallback
+  - QR copy/render is live-response-only; reload requires issuing a new code
 
 ## API surface (MVP)
 
@@ -112,6 +144,10 @@ Import review boundary:
 - `GET /api/chat_history`
 - `POST /api/memory`
 - `POST /api/chat_history`
+- `POST /api/mobile/pairing/issue`
+- `POST /api/mobile/pairing/exchange`
+- `GET /api/mobile/pairing/state`
+- `POST /api/mobile/pairing/revoke`
 - `GET  /api/runtime/status`
 - `GET  /api/runtime/services`
 - `POST /api/runtime/services/{service_name}/start`
@@ -142,6 +178,7 @@ python3 -m py_compile backend/app/main.py backend/app/runtime.py
 node -c web/plugin_ui_console.js
 node -c web/app.js
 node --test tests/test_plugin_ui_console_logging.mjs
+node --test tests/test_mobile_pairing_ui.mjs
 pip install -r backend/requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest tests
 ```

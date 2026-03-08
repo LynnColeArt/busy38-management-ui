@@ -107,6 +107,11 @@ button:hover {
   background: #60a5fa;
 }
 
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .chain {
   display: flex;
   flex-wrap: wrap;
@@ -161,6 +166,26 @@ button:hover {
   color: #93c5fd;
 }
 
+.status-pending {
+  border-color: #f59e0b;
+  color: #fbbf24;
+}
+
+.status-consumed {
+  border-color: #60a5fa;
+  color: #93c5fd;
+}
+
+.status-expired {
+  border-color: #94a3b8;
+  color: #cbd5e1;
+}
+
+.status-revoked {
+  border-color: #ef4444;
+  color: #f87171;
+}
+
 .status-unknown {
   border-color: #6b7280;
   color: #d1d5db;
@@ -205,6 +230,26 @@ button:hover {
 
 .card h3 {
   margin-top: 0;
+}
+
+.pairing-qr-block {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.pairing-qr-visual {
+  width: fit-content;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #243455;
+}
+
+.pairing-qr-visual svg {
+  display: block;
+  width: 196px;
+  height: 196px;
 }
 
 .status {

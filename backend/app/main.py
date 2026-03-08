@@ -53,7 +53,7 @@ except Exception:  # pragma: no cover
 from .import_adapters import get_import_adapter
 from .import_contract import checksum_payload
 
-from . import storage
+from . import mobile_pairing, storage
 from .runtime import RuntimeActionResult, load_runtime_adapter
 
 try:
@@ -1048,6 +1048,24 @@ class GmTicketDispatch(BaseModel):
     qa_max_retries: Optional[int] = None
     acceptance_criteria: Optional[List[str]] = None
     allowed_namespaces: Optional[List[str]] = None
+
+
+class PairingIssueRequest(BaseModel):
+    device_label: str
+    authorized_room_ids: List[str]
+    orchestrator_scope: List[str]
+    ttl_sec: int
+
+
+class PairingExchangeRequest(BaseModel):
+    pairing_code: str
+    device_label: Optional[str] = None
+    expected_instance_id: Optional[str] = None
+
+
+class PairingRevokeRequest(BaseModel):
+    bridge_token: Optional[str] = None
+    token_id: Optional[str] = None
 
 
 @app.on_event("startup")
@@ -5657,6 +5675,104 @@ async def restart_runtime_service(request: Request, service_name: str) -> Dict[s
     role = _require_role(request, required="admin")
     result = _run_runtime_action("restart", service_name, role=role)
     return {"updated_at": _now_iso(), **result}
+
+
+@app.post("/api/mobile/pairing/issue")
+async def issue_mobile_pairing_code(
+    request: Request,
+    payload: PairingIssueRequest,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    try:
+        result = mobile_pairing.issue_pairing_code(
+            actor=role,
+            device_label=payload.device_label,
+            authorized_room_ids=payload.authorized_room_ids,
+            orchestrator_scope=payload.orchestrator_scope,
+            ttl_sec=payload.ttl_sec,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    _event_for(
+        role,
+        "mobile.pairing.issue",
+        f"Mobile pairing code issued for {payload.device_label}",
+        "info",
+        {
+            "device_label": payload.device_label,
+            "authorized_room_ids": list(result["authorized_room_ids"]),
+            "orchestrator_scope": list(result["orchestrator_scope"]),
+            "expires_at": result["expires_at"],
+        },
+    )
+    return {"pairing": result, "updated_at": _now_iso()}
+
+
+@app.post("/api/mobile/pairing/exchange")
+async def exchange_mobile_pairing_code(
+    request: Request,
+    payload: PairingExchangeRequest,
+) -> Dict[str, Any]:
+    try:
+        result = mobile_pairing.exchange_pairing_code(
+            pairing_code=payload.pairing_code,
+            device_label=payload.device_label,
+            expected_instance_id=payload.expected_instance_id,
+            request_url=str(request.url),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return {"pairing": result, "updated_at": _now_iso()}
+
+
+@app.get("/api/mobile/pairing/state")
+async def get_mobile_pairing_state(request: Request) -> Dict[str, Any]:
+    _require_role(request, required="admin")
+    try:
+        result = mobile_pairing.list_pairing_state()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return {"pairing": result, "updated_at": _now_iso()}
+
+
+@app.post("/api/mobile/pairing/revoke")
+async def revoke_mobile_pairing_token(
+    request: Request,
+    payload: PairingRevokeRequest,
+) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    try:
+        result = mobile_pairing.revoke_pairing_grant(
+            actor=role,
+            bridge_token=payload.bridge_token,
+            token_id=payload.token_id,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    _event_for(
+        role,
+        "mobile.pairing.revoke",
+        f"Mobile pairing token revoked: {result['token_id']}",
+        "info",
+        {
+            "token_id": result["token_id"],
+            "instance_id": result["instance_id"],
+            "revoked_at": result["revoked_at"],
+        },
+    )
+    return {"pairing": result, "updated_at": _now_iso()}
 
 
 def _run_runtime_action(action: str, service_name: str, role: str) -> Dict[str, Any]:
