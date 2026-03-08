@@ -257,6 +257,12 @@ def exchange_pairing_code(*, pairing_code: Any, device_label: Any) -> Dict[str, 
         raise PairingStateError("PAIRING_CODE_CONSUMED", "pairing code has already been used")
     if expires_at <= now:
         raise PairingStateError("PAIRING_CODE_EXPIRED", "pairing code is expired")
+    normalized_room_ids = normalize_room_scope_ids(record.get("authorized_room_ids"))
+    normalized_orchestrators = normalize_orchestrator_scope(record.get("orchestrator_scope"))
+    _validate_known_pairing_scopes(
+        authorized_room_ids=normalized_room_ids,
+        orchestrator_scope=normalized_orchestrators,
+    )
 
     resolved_device_label = normalized_device_label or str(record.get("device_label") or "").strip() or "Busy mobile device"
     token_expires_at = now + timedelta(
@@ -264,8 +270,8 @@ def exchange_pairing_code(*, pairing_code: Any, device_label: Any) -> Dict[str, 
     )
     token_id = secrets.token_hex(12)
     token = build_scoped_pairing_token(
-        authorized_room_ids=normalize_room_scope_ids(record.get("authorized_room_ids")),
-        orchestrator_scope=normalize_orchestrator_scope(record.get("orchestrator_scope")),
+        authorized_room_ids=normalized_room_ids,
+        orchestrator_scope=normalized_orchestrators,
         expires_at=token_expires_at,
         issued_by=str(record.get("issued_by") or "admin"),
         device_label=resolved_device_label,
@@ -283,8 +289,8 @@ def exchange_pairing_code(*, pairing_code: Any, device_label: Any) -> Dict[str, 
         "bridge_token": token,
         "token_id": token_id,
         "expires_at": token_expires_at.isoformat(),
-        "authorized_room_ids": list(normalize_room_scope_ids(record.get("authorized_room_ids"))),
-        "orchestrator_scope": list(normalize_orchestrator_scope(record.get("orchestrator_scope"))),
+        "authorized_room_ids": list(normalized_room_ids),
+        "orchestrator_scope": list(normalized_orchestrators),
     }
 
 def _resolve_token_id_from_state(state: Dict[str, Any], token_id: str) -> str:

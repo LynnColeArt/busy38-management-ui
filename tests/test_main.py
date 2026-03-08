@@ -18,6 +18,7 @@ import asyncio
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from core.bridge.pairing import PAIRING_STATE_SCHEMA_VERSION, pairing_code_hash, write_pairing_state
 
 from backend.app.runtime import RuntimeActionResult
 from backend.app import storage
@@ -356,13 +357,17 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 self.assertEqual(issued["authorized_room_ids"], ["team-room-qa"])
                 self.assertEqual(issued["orchestrator_scope"], ["carlo"])
 
-                exchange = self.client.post(
-                    "/api/mobile/pairing/exchange",
-                    json={
-                        "pairing_code": issued["pairing_code"],
-                        "device_label": "Sam iPhone",
-                    },
-                )
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    exchange = self.client.post(
+                        "/api/mobile/pairing/exchange",
+                        json={
+                            "pairing_code": issued["pairing_code"],
+                            "device_label": "Sam iPhone",
+                        },
+                    )
                 self.assertEqual(exchange.status_code, 200, exchange.text)
                 exchanged = exchange.json()["pairing"]
                 self.assertEqual(exchanged["instance_id"], "busy-local")
@@ -510,6 +515,66 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 self.assertIn("unknown authorized_room_ids", unknown_room.text)
                 self.assertEqual(unknown_orchestrator.status_code, 400, unknown_orchestrator.text)
                 self.assertIn("unknown orchestrator_scope", unknown_orchestrator.text)
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_exchange_rejects_stale_unknown_scope_without_consuming_code(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            state_path = os.path.join(pairing_state_dir, "state.json")
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": state_path,
+                },
+                clear=False,
+            ):
+                pairing_code = "ABCD-2345"
+                write_pairing_state(
+                    {
+                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "instance_id": "busy-local",
+                        "issued_codes": {
+                            pairing_code_hash(pairing_code): {
+                                "device_label": "Sam iPhone",
+                                "authorized_room_ids": ["totally-made-up-room"],
+                                "orchestrator_scope": ["nonesuch"],
+                                "issued_at": "2026-03-07T20:00:00+00:00",
+                                "expires_at": "2036-03-07T20:05:00+00:00",
+                                "issued_by": "admin",
+                                "consumed_at": None,
+                            }
+                        },
+                        "revoked_token_ids": {},
+                    }
+                )
+
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    exchange = self.client.post(
+                        "/api/mobile/pairing/exchange",
+                        json={
+                            "pairing_code": pairing_code,
+                            "device_label": "Sam iPhone",
+                        },
+                    )
+
+                    self.assertEqual(exchange.status_code, 400, exchange.text)
+                    self.assertIn("unknown authorized_room_ids", exchange.text)
+
+                    state_after = self.client.get(
+                        "/api/mobile/pairing/state",
+                        headers=admin_headers,
+                    )
+                    self.assertEqual(state_after.status_code, 200, state_after.text)
+                    pairing_state = state_after.json()["pairing"]
+                    self.assertEqual(pairing_state["issued"][0]["status"], "pending")
+                    self.assertIsNone(pairing_state["issued"][0]["consumed_at"])
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 

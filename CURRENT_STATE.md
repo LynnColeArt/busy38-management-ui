@@ -10,6 +10,10 @@
     the bounded known orchestrator set for this slice before minting a code.
   - `POST /api/mobile/pairing/exchange` exchanges that pairing code into a
     scoped Busy bridge bearer token plus authoritative bridge URL.
+  - exchange now also revalidates the persisted issued-code room/orchestrator
+    scope against the current bounded known set before minting a live bridge
+    token, and invalid persisted scope leaves the code pending instead of
+    consuming it.
   - `POST /api/mobile/pairing/revoke` is admin-authenticated and revokes an
     issued scoped bridge token by token ID.
 - The bounded operator/browser pairing surface is now also implemented:
