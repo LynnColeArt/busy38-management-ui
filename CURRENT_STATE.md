@@ -14,6 +14,9 @@
     scope against the current bounded known set before minting a live bridge
     token, and invalid persisted scope leaves the code pending instead of
     consuming it.
+  - pairing state now also fails closed unless its persisted `instance_id`
+    matches the live Busy instance id used for scoped bridge token minting, so
+    QR issue/exchange and minted tokens share one literal instance authority.
   - `POST /api/mobile/pairing/revoke` is admin-authenticated and revokes an
     issued scoped bridge token by token ID.
 - The bounded operator/browser pairing surface is now also implemented:

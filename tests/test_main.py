@@ -637,6 +637,50 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
+    def test_mobile_pairing_issue_rejects_stale_pairing_state_instance_mismatch(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            state_path = os.path.join(pairing_state_dir, "state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "instance_id": "busy-stale",
+                        "issued_codes": {},
+                        "revoked_token_ids": {},
+                    },
+                    handle,
+                )
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-live",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": state_path,
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    issue = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                self.assertEqual(issue.status_code, 400, issue.text)
+                self.assertIn("busy-stale", issue.text)
+                self.assertIn("busy-live", issue.text)
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
     def test_mobile_pairing_bridge_url_derives_from_request_host_without_override(self):
         with patch.dict(
             os.environ,

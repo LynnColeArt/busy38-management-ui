@@ -87,6 +87,7 @@ served page override if the UI and API are not on the same origin.
 - Mobile pairing is now plugin-owned in this repo for the first bounded slice:
   - admin-authenticated issue/revoke endpoints and an unauthenticated exchange endpoint now exist under `/api/mobile/pairing/*`
   - issued pairing state is short-lived and single-use
+  - persisted pairing state must match the live Busy instance id; stale instance state fails closed before issue/exchange
   - exchange returns a scoped Busy bridge token and authoritative bridge URL
   - exchange bridge URL resolution is literal: explicit bridge URL override, then explicit bridge host, then exchange request host, then loopback fallback only for local dev
   - the browser now includes an admin-only pairing panel for issue + inspect + revoke
