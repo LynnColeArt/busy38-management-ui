@@ -26,6 +26,9 @@
     are not recoverable from persisted state after refresh,
   - the browser now also derives a QR locally from the live issue response plus
     a literally resolved control-plane URL,
+  - exchange now derives returned `bridge_url` literally from explicit bridge
+    URL override -> explicit bridge host -> exchange request host -> loopback
+    fallback only for local dev,
   - control-plane URL resolution now uses:
     - `window.MANAGEMENT_API_BASE` first,
     - `meta[name="busy38-management-api-base"]` second,

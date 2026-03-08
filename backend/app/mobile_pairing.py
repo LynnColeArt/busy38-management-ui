@@ -5,6 +5,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
+from urllib.parse import urlparse
 
 try:
     from core.bridge.pairing import (
@@ -60,25 +61,50 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _bridge_url() -> str:
+def _normalize_bridge_url(raw: str) -> str:
+    normalized = str(raw or "").strip()
+    if not normalized:
+        raise RuntimeError("bridge URL is unavailable")
+    if normalized.startswith("http://"):
+        normalized = normalized.replace("http://", "ws://", 1)
+    elif normalized.startswith("https://"):
+        normalized = normalized.replace("https://", "wss://", 1)
+    elif not normalized.startswith("ws://") and not normalized.startswith("wss://"):
+        normalized = f"ws://{normalized}"
+    if normalized.endswith("/"):
+        normalized = normalized[:-1]
+    if not normalized.endswith("/ws"):
+        normalized = f"{normalized}/ws"
+    return normalized
+
+
+def _request_bridge_origin(request_url: str | None) -> str:
+    parsed = urlparse(str(request_url or "").strip())
+    host = str(parsed.hostname or "").strip()
+    if not host:
+        return ""
+    scheme = "wss" if parsed.scheme == "https" else "ws"
+    port = (os.getenv("BUSY38_BRIDGE_PORT") or "8787").strip() or "8787"
+    return f"{scheme}://{host}:{port}"
+
+
+def _bridge_url(*, request_url: str | None = None) -> str:
     override = (os.getenv("BUSY38_MOBILE_PAIRING_BRIDGE_URL") or "").strip()
     raw = override or (os.getenv("BUSY_BRIDGE_URL") or "").strip()
     if raw:
-        if raw.startswith("http://"):
-            raw = raw.replace("http://", "ws://", 1)
-        elif raw.startswith("https://"):
-            raw = raw.replace("https://", "wss://", 1)
-        elif not raw.startswith("ws://") and not raw.startswith("wss://"):
-            raw = f"ws://{raw}"
-        if raw.endswith("/"):
-            raw = raw[:-1]
-        if not raw.endswith("/ws"):
-            raw = f"{raw}/ws"
-        return raw
+        return _normalize_bridge_url(raw)
 
-    host = (os.getenv("BUSY38_BRIDGE_HOST") or "127.0.0.1").strip() or "127.0.0.1"
-    port = (os.getenv("BUSY38_BRIDGE_PORT") or "8787").strip() or "8787"
-    return f"ws://{host}:{port}/ws"
+    host = (os.getenv("BUSY38_BRIDGE_HOST") or "").strip()
+    if host:
+        scheme = "wss" if urlparse(str(request_url or "").strip()).scheme == "https" else "ws"
+        port = (os.getenv("BUSY38_BRIDGE_PORT") or "8787").strip() or "8787"
+        return _normalize_bridge_url(f"{scheme}://{host}:{port}")
+
+    request_origin = _request_bridge_origin(request_url)
+    if request_origin:
+        return _normalize_bridge_url(request_origin)
+
+    return _normalize_bridge_url("ws://127.0.0.1:8787")
 
 
 def _coerce_device_label(value: Any) -> str:
@@ -106,6 +132,11 @@ def _normalize_token_id(value: Any) -> str:
     if not token_id:
         raise PairingTokenError("PAIRING_TOKEN_INVALID", "token_id is required")
     return token_id
+
+
+def _normalize_expected_instance_id(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
 
 
 def _coerce_timestamp_text(value: Any, *, field_name: str) -> str:
@@ -241,11 +272,27 @@ def issue_pairing_code(
     }
 
 
-def exchange_pairing_code(*, pairing_code: Any, device_label: Any) -> Dict[str, Any]:
+def exchange_pairing_code(
+    *,
+    pairing_code: Any,
+    device_label: Any,
+    expected_instance_id: Any | None = None,
+    request_url: str | None = None,
+) -> Dict[str, Any]:
     _require_available()
     normalized_code = normalize_pairing_code(pairing_code)
     normalized_device_label = str(device_label or "").strip()
     state = load_pairing_state(_runtime_root())
+    resolved_expected_instance_id = _normalize_expected_instance_id(expected_instance_id)
+    state_instance_id = str(state["instance_id"])
+    if (
+        resolved_expected_instance_id is not None and
+        resolved_expected_instance_id != state_instance_id
+    ):
+        raise PairingStateError(
+            "PAIRING_INSTANCE_MISMATCH",
+            f"expected Busy instance {resolved_expected_instance_id}, but control plane is {state_instance_id}",
+        )
     code_hash = pairing_code_hash(normalized_code)
     record = state["issued_codes"].get(code_hash)
     if not isinstance(record, dict):
@@ -284,8 +331,8 @@ def exchange_pairing_code(*, pairing_code: Any, device_label: Any) -> Dict[str, 
     state["issued_codes"][code_hash] = record
     write_pairing_state(state, _runtime_root())
     return {
-        "instance_id": str(state["instance_id"]),
-        "bridge_url": _bridge_url(),
+        "instance_id": state_instance_id,
+        "bridge_url": _bridge_url(request_url=request_url),
         "bridge_token": token,
         "token_id": token_id,
         "expires_at": token_expires_at.isoformat(),

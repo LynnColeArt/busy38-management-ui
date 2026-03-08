@@ -1060,6 +1060,7 @@ class PairingIssueRequest(BaseModel):
 class PairingExchangeRequest(BaseModel):
     pairing_code: str
     device_label: Optional[str] = None
+    expected_instance_id: Optional[str] = None
 
 
 class PairingRevokeRequest(BaseModel):
@@ -5712,12 +5713,15 @@ async def issue_mobile_pairing_code(
 
 @app.post("/api/mobile/pairing/exchange")
 async def exchange_mobile_pairing_code(
+    request: Request,
     payload: PairingExchangeRequest,
 ) -> Dict[str, Any]:
     try:
         result = mobile_pairing.exchange_pairing_code(
             pairing_code=payload.pairing_code,
             device_label=payload.device_label,
+            expected_instance_id=payload.expected_instance_id,
+            request_url=str(request.url),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

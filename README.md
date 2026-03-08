@@ -88,6 +88,7 @@ served page override if the UI and API are not on the same origin.
   - admin-authenticated issue/revoke endpoints and an unauthenticated exchange endpoint now exist under `/api/mobile/pairing/*`
   - issued pairing state is short-lived and single-use
   - exchange returns a scoped Busy bridge token and authoritative bridge URL
+  - exchange bridge URL resolution is literal: explicit bridge URL override, then explicit bridge host, then exchange request host, then loopback fallback only for local dev
   - the browser now includes an admin-only pairing panel for issue + inspect + revoke
   - browser inspection uses safe state summaries only; it does not recover raw pairing codes or bridge tokens from persisted state
   - revoke is now keyed by explicit `token_id`, not pasted bearer tokens
