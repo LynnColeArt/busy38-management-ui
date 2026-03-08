@@ -2805,6 +2805,24 @@ def get_import_job(import_id: str) -> Optional[Dict[str, Any]]:
         return _enrich_import_job_payload(payload)
 
 
+def _import_downstream_content(item_metadata: Dict[str, Any], content: str) -> str:
+    if not isinstance(item_metadata, dict):
+        return str(content or "")
+    mode = str(item_metadata.get("agent_content_mode") or item_metadata.get("provider_content_mode") or "raw").strip().lower()
+    if mode == "redacted_preview":
+        preview = str(item_metadata.get("redacted_preview") or "").strip()
+        if preview:
+            return preview
+    return str(content or "")
+
+
+def _import_uses_redacted_downstream_content(item_metadata: Dict[str, Any]) -> bool:
+    if not isinstance(item_metadata, dict):
+        return False
+    mode = str(item_metadata.get("agent_content_mode") or item_metadata.get("provider_content_mode") or "raw").strip().lower()
+    return mode == "redacted_preview"
+
+
 def _build_directory_snapshot_for_import(conn: sqlite3.Connection, import_id: str) -> Optional[Dict[str, Any]]:
     job_row = conn.execute("SELECT * FROM import_jobs WHERE id = ?", (import_id,)).fetchone()
     if not job_row:
@@ -2834,6 +2852,7 @@ def _build_directory_snapshot_for_import(conn: sqlite3.Connection, import_id: st
         if not isinstance(metadata, dict):
             metadata = {}
         scope = str(item.get("agent_scope") or "global").strip() or "global"
+        downstream_content = _import_downstream_content(metadata, str(item.get("content") or ""))
         normalized_title = str(
             metadata.get("agent_name")
             or metadata.get("name")
@@ -2841,7 +2860,10 @@ def _build_directory_snapshot_for_import(conn: sqlite3.Connection, import_id: st
             or metadata.get("display_name")
             or scope
         ).strip() or scope
-        responsibility = str(metadata.get("summary") or metadata.get("description") or item.get("content") or "").strip()
+        if _import_uses_redacted_downstream_content(metadata):
+            responsibility = downstream_content
+        else:
+            responsibility = str(metadata.get("summary") or metadata.get("description") or downstream_content).strip()
         responsibility = " ".join(responsibility.split())
         if len(responsibility) > 180:
             responsibility = f"{responsibility[:177]}…"
@@ -3423,9 +3445,11 @@ def list_agent_directory() -> List[Dict[str, Any]]:
         return scope
 
     def _normalize_summary(item_metadata: Dict[str, Any], content: str) -> str:
-        summary = str(item_metadata.get("summary") or item_metadata.get("description") or "").strip()
+        summary = ""
+        if not _import_uses_redacted_downstream_content(item_metadata):
+            summary = str(item_metadata.get("summary") or item_metadata.get("description") or "").strip()
         if not summary:
-            summary = str(content or "").strip()
+            summary = _import_downstream_content(item_metadata, content).strip()
         summary = " ".join(summary.split())
         if len(summary) <= 180:
             return summary

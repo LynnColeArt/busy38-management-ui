@@ -4946,6 +4946,9 @@ def _normalise_intake_reason(value: str) -> str:
     return mapping.get(value, value)
 
 
+_IMPORT_LOCAL_REVIEW_ONLY_PLACEHOLDER = "[REDACTED: local human review required]"
+
+
 def _coerce_import_item_intake(
     item: Dict[str, Any],
     *,
@@ -4972,11 +4975,23 @@ def _coerce_import_item_intake(
     decision = _make_import_intake_decision(entry)  # type: ignore[arg-type]
     reasons = [_normalise_intake_reason(str(reason)) for reason in list(entry.get("intake_reasons") or [])]
     reasons = list(dict.fromkeys([reason for reason in reasons if str(reason).strip()]))
+    redacted_preview = str(entry.get("text_preview") or "").strip()
+    redaction_changed_preview = bool(content) and redacted_preview and redacted_preview != content
 
     if decision == ATTACHMENT_DECISION_BLOCK and "blocked_by_intake_policy" not in reasons:
         reasons.append("blocked_by_intake_policy")
 
     metadata = dict(item.get("metadata") or {})
+    raw_content_local_only = bool(
+        decision != ATTACHMENT_DECISION_ACCEPT
+        or redaction_changed_preview
+        or metadata.get("requires_review")
+        or metadata.get("sensitive_flags")
+    )
+    downstream_content_mode = "redacted_preview" if raw_content_local_only else "raw"
+    downstream_redacted_preview = ""
+    if raw_content_local_only:
+        downstream_redacted_preview = redacted_preview if redaction_changed_preview else _IMPORT_LOCAL_REVIEW_ONLY_PLACEHOLDER
     metadata.update(
         {
             "requires_review": decision != ATTACHMENT_DECISION_ACCEPT,
@@ -4986,6 +5001,11 @@ def _coerce_import_item_intake(
             "intake_source": entry.get("source"),
             "intake_warnings": reasons,
             "intake_text_preview_present": bool(content),
+            "contains_sensitive_content": raw_content_local_only,
+            "raw_content_local_only": raw_content_local_only,
+            "agent_content_mode": downstream_content_mode,
+            "provider_content_mode": downstream_content_mode,
+            "redacted_preview": downstream_redacted_preview,
         }
     )
 
@@ -4994,7 +5014,7 @@ def _coerce_import_item_intake(
 
     if decision == ATTACHMENT_DECISION_BLOCK:
         item_payload["visibility"] = "quarantined"
-        item_payload["review_state"] = "rejected"
+        item_payload["review_state"] = "quarantined"
     elif decision == ATTACHMENT_DECISION_QUARANTINE:
         item_payload["visibility"] = "quarantined"
         item_payload["review_state"] = "quarantined"

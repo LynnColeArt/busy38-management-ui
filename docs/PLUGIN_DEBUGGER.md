@@ -16,6 +16,8 @@ The same startup path also writes `startup plugin debug: ...` lines to process s
 Payload includes all checked installed plugins plus required core plugin presence summary from the core reference table.
 When required core plugins are absent from the registry, they are surfaced in `required_missing`/`required_missing_plugins` and promoted to startup-level errors.
 
+The browser management UI also mirrors debug warning/error findings into the browser console so operators can inspect structured diagnostics without scraping rendered cards.
+
 ## Purpose
 
 - Validate `metadata.ui` contract shape.
@@ -159,3 +161,10 @@ dependencies are validated even when plugin metadata is sparse.
   - module/file discovery under `ui/`
   - import/load success
   - handler symbol presence and callability
+
+## Browser console telemetry
+
+- The management UI emits `console.warn(...)` for debugger `warnings.entries`.
+- The management UI emits `console.error(...)` for debugger `errors.entries`.
+- Console records include the plugin id, debugger status, update timestamp, and the original warning/error entry arrays.
+- This telemetry is additive only. It does not alter debugger status calculation or action dispatch.

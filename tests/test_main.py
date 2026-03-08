@@ -16,6 +16,8 @@ from typing import Dict, List, Tuple
 import asyncio
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from backend.app.runtime import RuntimeActionResult
 from backend.app import storage
@@ -1769,6 +1771,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             "busy-38-git",
             "openclaw-browser-for-busy38",
             "busy-38-watchdog",
+            "busy-38-onboarding",
         }
         required_items = {
             str(item.get("plugin_id") or "").strip()
@@ -3867,7 +3870,21 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(viewer_metadata.get("notes"), "default endpoint")
 
     def test_events_websocket_requires_token_and_returns_role(self):
-        self.skipTest("WebSocket test skipped: transport layer requires integration test harness in this environment.")
+        with TestClient(self.main.app) as client:
+            with self.assertRaises(WebSocketDisconnect) as denied:
+                with client.websocket_connect("/api/events/ws"):
+                    pass
+            self.assertEqual(denied.exception.code, 4401)
+
+            with client.websocket_connect(f"/api/events/ws?token={self.read_token}") as socket:
+                payload = socket.receive_json()
+
+        self.assertEqual(payload["type"], "events")
+        self.assertEqual(payload["role"], "viewer")
+        self.assertEqual(payload["role_source"], "read-token")
+        self.assertEqual(payload["status"], "stream-start")
+        self.assertIsInstance(payload["events"], list)
+        self.assertIn("updated_at", payload)
 
     def test_import_openai_upload_and_review_flow(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
@@ -5178,7 +5195,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                             "id": "msg-1",
                             "author": {"role": "user"},
                             "create_time": "2026-01-10T12:00:00Z",
-                            "content": "This contains my password for the private account.",
+                            "content": "This contains my password for the private account and email sam@example.com.",
                         }
                     ],
                 }
@@ -5198,8 +5215,13 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         import_id = payload["import_id"]
         items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
         self.assertEqual(len(items), 1)
+        self.assertIn("sam@example.com", items[0]["content"])
         sensitive_item_id = items[0]["id"]
         self.assertEqual(items[0]["review_state"], "quarantined")
+        self.assertTrue(items[0]["metadata"]["raw_content_local_only"])
+        self.assertEqual(items[0]["metadata"]["agent_content_mode"], "redacted_preview")
+        self.assertEqual(items[0]["metadata"]["provider_content_mode"], "redacted_preview")
+        self.assertIn("[REDACTED]", items[0]["metadata"]["redacted_preview"])
 
         denied = self.client.post(
             f"/api/agents/import/{import_id}/decision",
@@ -5223,6 +5245,13 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         )
         self.assertEqual(approved.status_code, 200)
         self.assertEqual(approved.json()["updated_count"], 1)
+
+        directory_payload = self.client.get("/api/agents/directory", headers=read_headers).json()
+        directory = directory_payload["directory"]
+        self.assertEqual(len(directory), 1)
+        responsibility = directory[0]["responsibilities"][0]["summary"]
+        self.assertNotIn("sam@example.com", responsibility)
+        self.assertIn("[REDACTED]", responsibility)
 
     def test_import_decision_sets_visibility(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
@@ -5348,7 +5377,8 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         import_id = payload["import_id"]
         items = self.client.get(f"/api/agents/import/{import_id}", headers=read_headers).json()["items"]
         self.assertEqual(len(items), 1)
-        self.assertEqual(items[0]["review_state"], "rejected")
+        self.assertEqual(items[0]["review_state"], "quarantined")
+        self.assertEqual(items[0]["metadata"]["intake_decision"], self.main.ATTACHMENT_DECISION_BLOCK)
         self.assertIn("prompt_injection_override", items[0]["metadata"]["intake_reasons"])
 
         blocked = self.client.post(

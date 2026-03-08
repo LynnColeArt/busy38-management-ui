@@ -164,6 +164,23 @@ async function patchJson(path, body) {
   });
 }
 
+function pluginUiConsoleLogger() {
+  const logger = window.Busy38PluginUiConsole;
+  if (!logger || typeof logger !== "object") {
+    return null;
+  }
+  if (typeof logger.logDiagnostics !== "function") {
+    return null;
+  }
+  if (typeof logger.logActionResult !== "function") {
+    return null;
+  }
+  if (typeof logger.logActionRequestFailure !== "function") {
+    return null;
+  }
+  return logger;
+}
+
 function downloadTextFile(filename, content, mimeType = "application/json") {
   const body = typeof content === "string" ? content : JSON.stringify(content, null, 2);
   const blob = new Blob([body], { type: `${mimeType};charset=utf-8` });
@@ -1794,11 +1811,13 @@ async function loadPluginDiagnostics(pluginId) {
   root.innerHTML = "<p>Loading plugin diagnostics…</p>";
   try {
     const payload = await fetchJson(`/api/plugins/${encodeURIComponent(normalizedPluginId)}/ui/debug`);
+    pluginUiConsoleLogger()?.logDiagnostics(normalizedPluginId, payload);
     root.innerHTML = renderPluginDiagnosticsHtml(payload);
     setStatus("#healthState", `plugin diagnostics loaded for ${normalizedPluginId}`, "ok");
   } catch (err) {
     root.innerHTML = `<p>Plugin diagnostics failed: ${escapeHtml(err.message || "unknown error")}</p>`;
     setStatus("#healthState", `plugin diagnostics failed for ${normalizedPluginId}: ${err.message}`, "err");
+    pluginUiConsoleLogger()?.logActionRequestFailure(normalizedPluginId, "debug", err);
   }
 }
 
@@ -4096,12 +4115,15 @@ async function onTableChange(event) {
       } catch (err) {
         const message = `plugin action failed: ${err.message}`;
         setStatus("#healthState", message, "err");
+        pluginUiConsoleLogger()?.logActionRequestFailure(pluginId, actionId, err);
         if (statusEl) {
           statusEl.textContent = message;
           statusEl.className = "status err";
         }
         return;
       }
+
+      pluginUiConsoleLogger()?.logActionResult(pluginId, actionId, response);
 
       if (response?.result?.success) {
         const msg = response.result?.message || "action executed";

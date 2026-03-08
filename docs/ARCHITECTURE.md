@@ -24,7 +24,7 @@ flowchart LR
     GmTickets["GM Ticket APIs<br/>/api/gm-tickets*"]
     RuntimeAPI["Runtime APIs<br/>/api/runtime/*"]
     Memory["Memory & chat APIs<br/>/api/memory, /api/chat_history"]
-    Events["Event APIs<br/>/api/events, /api/events/ws"]
+    Events["Event APIs<br/>/api/events, /api/events/ws<br/>requires websocket transport dependency in backend requirements"]
   end
 
   subgraph "Runtime bridge (backend/app/runtime.py)"
@@ -174,3 +174,6 @@ sequenceDiagram
   - bridge mode when `BUSY_BRIDGE_URL` is configured
 - Import processing is contract-first:
   canonical dataclasses -> sensitivity + visibility + review state -> storage + events.
+- Import review is local-first:
+  - raw sensitive content may remain available on the authenticated local review path,
+  - security-generated redacted derivatives must be used for downstream agent/provider-facing summaries and artifacts.
