@@ -134,6 +134,53 @@ def _timestamp_not_after_now(value: str) -> bool:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc) <= _now()
 
 
+def _load_known_pairing_scopes() -> tuple[set[str], set[str]]:
+    try:
+        from core.bridge import service as bridge_service
+    except Exception as exc:
+        raise RuntimeError(f"pairing scope validation unavailable: {exc}") from exc
+
+    room_records = bridge_service._build_discovered_room_records()
+    known_room_ids = {
+        str(record.get("room_id") or "").strip().lower()
+        for record in room_records
+        if str(record.get("room_id") or "").strip()
+    }
+
+    known_orchestrator_inputs = [
+        str(record.get("room_owner_identity") or "").strip()
+        for record in room_records
+        if str(record.get("room_owner_identity") or "").strip()
+    ]
+    known_orchestrator_inputs.append("GM")
+    known_orchestrators = set(normalize_orchestrator_scope(known_orchestrator_inputs))
+    return known_room_ids, known_orchestrators
+
+
+def _validate_known_pairing_scopes(
+    *,
+    authorized_room_ids: tuple[str, ...],
+    orchestrator_scope: tuple[str, ...],
+) -> None:
+    known_room_ids, known_orchestrators = _load_known_pairing_scopes()
+
+    unknown_room_ids = [room_id for room_id in authorized_room_ids if room_id not in known_room_ids]
+    if unknown_room_ids:
+        raise PairingStateError(
+            "PAIRING_SCOPE_INVALID",
+            f"unknown authorized_room_ids: {', '.join(unknown_room_ids)}",
+        )
+
+    unknown_orchestrators = [
+        orchestrator_id for orchestrator_id in orchestrator_scope if orchestrator_id not in known_orchestrators
+    ]
+    if unknown_orchestrators:
+        raise PairingStateError(
+            "PAIRING_SCOPE_INVALID",
+            f"unknown orchestrator_scope: {', '.join(unknown_orchestrators)}",
+        )
+
+
 def issue_pairing_code(
     *,
     actor: str,
@@ -146,6 +193,10 @@ def issue_pairing_code(
     normalized_device_label = _coerce_device_label(device_label)
     normalized_room_ids = normalize_room_scope_ids(authorized_room_ids)
     normalized_orchestrators = normalize_orchestrator_scope(orchestrator_scope)
+    _validate_known_pairing_scopes(
+        authorized_room_ids=normalized_room_ids,
+        orchestrator_scope=normalized_orchestrators,
+    )
     resolved_ttl = _coerce_issue_ttl(ttl_sec)
     now = _now()
     expires_at = now + timedelta(seconds=resolved_ttl)

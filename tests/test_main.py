@@ -336,16 +336,20 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 },
                 clear=False,
             ):
-                issue = self.client.post(
-                    "/api/mobile/pairing/issue",
-                    headers=admin_headers,
-                    json={
-                        "device_label": "Sam iPhone",
-                        "authorized_room_ids": ["team-room-qa"],
-                        "orchestrator_scope": ["Carlo"],
-                        "ttl_sec": 300,
-                    },
-                )
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    issue = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
                 self.assertEqual(issue.status_code, 200, issue.text)
                 issued = issue.json()["pairing"]
                 self.assertEqual(issued["instance_id"], "busy-local")
@@ -415,16 +419,20 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 },
                 clear=False,
             ):
-                denied = self.client.post(
-                    "/api/mobile/pairing/issue",
-                    headers=read_headers,
-                    json={
-                        "device_label": "Sam iPhone",
-                        "authorized_room_ids": ["team-room-qa"],
-                        "orchestrator_scope": ["Carlo"],
-                        "ttl_sec": 300,
-                    },
-                )
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    denied = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=read_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
                 self.assertEqual(denied.status_code, 403)
 
                 denied_state = self.client.get(
@@ -433,16 +441,20 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 )
                 self.assertEqual(denied_state.status_code, 403)
 
-                invalid = self.client.post(
-                    "/api/mobile/pairing/issue",
-                    headers=admin_headers,
-                    json={
-                        "device_label": "Sam iPhone",
-                        "authorized_room_ids": [],
-                        "orchestrator_scope": ["Carlo"],
-                        "ttl_sec": 300,
-                    },
-                )
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    invalid = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": [],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
                 self.assertEqual(invalid.status_code, 400)
                 self.assertIn("authorized_room_ids", invalid.text)
 
@@ -453,6 +465,51 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 )
                 self.assertEqual(invalid_revoke.status_code, 400)
                 self.assertIn("exactly one", invalid_revoke.text)
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_issue_rejects_unknown_room_and_orchestrator_scope(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    unknown_room = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-ops"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                    unknown_orchestrator = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Nonesuch"],
+                            "ttl_sec": 300,
+                        },
+                    )
+
+                self.assertEqual(unknown_room.status_code, 400, unknown_room.text)
+                self.assertIn("unknown authorized_room_ids", unknown_room.text)
+                self.assertEqual(unknown_orchestrator.status_code, 400, unknown_orchestrator.text)
+                self.assertIn("unknown orchestrator_scope", unknown_orchestrator.text)
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 

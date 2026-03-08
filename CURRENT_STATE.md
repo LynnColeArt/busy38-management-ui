@@ -5,6 +5,9 @@
 - Plugin-owned mobile pairing is now implemented through the management API:
   - `POST /api/mobile/pairing/issue` is admin-authenticated and issues a
     short-lived single-use pairing code with explicit room/orchestrator scope.
+  - issuance now also validates requested room ids against the current
+    GM-derived logical room set and validates requested orchestrator ids against
+    the bounded known orchestrator set for this slice before minting a code.
   - `POST /api/mobile/pairing/exchange` exchanges that pairing code into a
     scoped Busy bridge bearer token plus authoritative bridge URL.
   - `POST /api/mobile/pairing/revoke` is admin-authenticated and revokes an
