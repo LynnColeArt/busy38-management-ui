@@ -81,7 +81,8 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
   - the browser now includes an admin-only pairing panel for issue + inspect + revoke
   - browser inspection uses safe state summaries only; it does not recover raw pairing codes or bridge tokens from persisted state
   - revoke is now keyed by explicit `token_id`, not pasted bearer tokens
-  - QR issuance and broader onboarding parity are still out of scope for this slice
+  - the browser now also renders a QR locally from the live issue response plus the active control-plane URL
+  - QR copy/render is live-response-only; reload requires issuing a new code
 
 ## API surface (MVP)
 

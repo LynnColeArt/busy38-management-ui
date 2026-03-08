@@ -232,6 +232,26 @@ button:disabled {
   margin-top: 0;
 }
 
+.pairing-qr-block {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.pairing-qr-visual {
+  width: fit-content;
+  padding: 10px;
+  border-radius: 8px;
+  background: #ffffff;
+  border: 1px solid #243455;
+}
+
+.pairing-qr-visual svg {
+  display: block;
+  width: 196px;
+  height: 196px;
+}
+
 .status {
   min-height: 20px;
   color: #9ec5ff;

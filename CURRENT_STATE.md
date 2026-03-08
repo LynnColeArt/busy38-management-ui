@@ -16,7 +16,11 @@
   - exchanged grants can be revoked by `token_id` from the browser without
     pasting raw bridge bearer tokens,
   - raw pairing codes remain visible only from the live issuance response and
-    are not recoverable from persisted state after refresh.
+    are not recoverable from persisted state after refresh,
+  - the browser now also derives a QR locally from the live issue response plus
+    the active control-plane URL,
+  - QR payload copy/render remains browser-local and is not recoverable from
+    persisted state after refresh.
 - Pairing authority remains API-owned in this first slice:
   - this repo is the canonical pairing authority surface,
   - Busy bridge core only validates the plugin-issued scoped token and enforces

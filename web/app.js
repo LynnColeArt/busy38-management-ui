@@ -183,6 +183,20 @@ function pluginUiConsoleLogger() {
   return logger;
 }
 
+function mobilePairingQrApi() {
+  const api = window.Busy38MobilePairingQr;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.buildPairingQrPayload !== "function") {
+    return null;
+  }
+  if (typeof api.renderPairingQrSvg !== "function") {
+    return null;
+  }
+  return api;
+}
+
 function downloadTextFile(filename, content, mimeType = "application/json") {
   const body = typeof content === "string" ? content : JSON.stringify(content, null, 2);
   const blob = new Blob([body], { type: `${mimeType};charset=utf-8` });
@@ -1255,6 +1269,35 @@ function renderMobilePairingLatest(issue) {
     root.innerHTML = "<p>No pairing code issued in this browser session.</p>";
     return;
   }
+  const qrApi = mobilePairingQrApi();
+  let qrMarkup = '<p class="status err">QR renderer unavailable in this browser session.</p>';
+  try {
+    if (!qrApi) {
+      throw new Error("QR renderer unavailable in this browser session.");
+    }
+    const qrPayload = qrApi.buildPairingQrPayload({
+      issue,
+      controlPlaneUrl: API_BASE,
+      now: new Date(),
+    });
+    const qrSvg = qrApi.renderPairingQrSvg(qrPayload);
+    qrMarkup = `
+      <div class="pairing-qr-block">
+        <div class="pairing-qr-visual">${qrSvg}</div>
+        <p>
+          <button
+            type="button"
+            data-action="copy-mobile-pairing-qr-payload"
+            data-payload="${escapeHtml(qrPayload)}"
+          >
+            Copy QR payload
+          </button>
+        </p>
+      </div>
+    `;
+  } catch (err) {
+    qrMarkup = `<p class="status err">QR unavailable: ${escapeHtml(err.message || String(err))}</p>`;
+  }
   root.innerHTML = `
     <div class="card-list">
       <div class="card">
@@ -1268,7 +1311,9 @@ function renderMobilePairingLatest(issue) {
             Copy pairing code
           </button>
         </p>
+        ${qrMarkup}
         <p class="meta">The raw pairing code is only shown from the live issuance response. Persisted state does not re-display it after refresh.</p>
+        <p class="meta">The QR is browser-generated from the live issue response and the active control-plane URL. Reload the page or issue a new code if you need it again.</p>
       </div>
     </div>
   `;
@@ -4445,6 +4490,17 @@ document.body.addEventListener("click", (event) => {
       .catch((err) => setStatus("#mobilePairingStatus", `copy failed: ${err.message}`, "err"));
     return;
   }
+  if (action === "copy-mobile-pairing-qr-payload") {
+    const payload = target.dataset.payload || "";
+    if (!payload) {
+      setStatus("#mobilePairingStatus", "pairing QR payload is unavailable", "err");
+      return;
+    }
+    copyTextToClipboard(payload)
+      .then(() => setStatus("#mobilePairingStatus", "pairing QR payload copied", "ok"))
+      .catch((err) => setStatus("#mobilePairingStatus", `copy failed: ${err.message}`, "err"));
+    return;
+  }
   if (!action || (
     !action.startsWith("runtime-")
     && action !== "discover-provider-models"
@@ -4454,6 +4510,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "load-tool-log-session"
     && action !== "refresh-gm-tickets"
     && action !== "refresh-mobile-pairing"
+    && action !== "copy-mobile-pairing-qr-payload"
     && action !== "open-gm-ticket"
     && action !== "rerun-import"
     && action !== "open-tool-context"
