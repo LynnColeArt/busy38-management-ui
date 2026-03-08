@@ -10,6 +10,8 @@ test("index exposes the mobile pairing operator panel", () => {
   assert.match(html, /id="mobilePairingLatest"/);
   assert.match(html, /id="mobilePairingState"/);
   assert.match(html, /mobile_pairing_qr\.js/);
+  assert.match(html, /management_api_base\.js/);
+  assert.match(html, /busy38-management-api-base/);
 });
 
 test("app wires mobile pairing issue, QR, state, copy, and revoke actions literally", () => {
@@ -22,4 +24,6 @@ test("app wires mobile pairing issue, QR, state, copy, and revoke actions litera
   assert.match(source, /revoke-mobile-pairing/);
   assert.match(source, /buildPairingQrPayload/);
   assert.match(source, /renderPairingQrSvg/);
+  assert.match(source, /resolveManagementApiBase/);
+  assert.match(source, /Control plane URL:/);
 });

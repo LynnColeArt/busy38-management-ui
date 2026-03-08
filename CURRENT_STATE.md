@@ -18,7 +18,12 @@
   - raw pairing codes remain visible only from the live issuance response and
     are not recoverable from persisted state after refresh,
   - the browser now also derives a QR locally from the live issue response plus
-    the active control-plane URL,
+    a literally resolved control-plane URL,
+  - control-plane URL resolution now uses:
+    - `window.MANAGEMENT_API_BASE` first,
+    - `meta[name="busy38-management-api-base"]` second,
+    - served `window.location.origin` for HTTP(S) pages third,
+    - loopback fallback only for local file/offline dev,
   - QR payload copy/render remains browser-local and is not recoverable from
     persisted state after refresh.
 - Pairing authority remains API-owned in this first slice:

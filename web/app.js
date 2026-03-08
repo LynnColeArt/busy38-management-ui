@@ -1,6 +1,16 @@
 const API_BASE = (() => {
+  const api = window.busyManagementApiBase;
+  if (api && typeof api.resolveManagementApiBase === "function") {
+    return api.resolveManagementApiBase(window, document);
+  }
   const configured = (window.MANAGEMENT_API_BASE || "").trim();
-  return configured !== "" ? configured : "http://127.0.0.1:8031";
+  if (configured !== "") {
+    return configured;
+  }
+  if (window.location && /^(http|https):$/i.test(window.location.protocol || "")) {
+    return window.location.origin;
+  }
+  return "http://127.0.0.1:8031";
 })();
 
 const TOKEN_KEY = "busy38-management-token";
@@ -1303,6 +1313,7 @@ function renderMobilePairingLatest(issue) {
       <div class="card">
         <h3>Latest issued pairing code</h3>
         <p><strong>Code:</strong> <code>${escapeHtml(issue.pairing_code || "")}</code></p>
+        <p><strong>Control plane URL:</strong> <code>${escapeHtml(API_BASE)}</code></p>
         <p><strong>Expires:</strong> ${escapeHtml(issue.expires_at || "n/a")}</p>
         <p><strong>Rooms:</strong> ${Array.isArray(issue.authorized_room_ids) && issue.authorized_room_ids.length ? issue.authorized_room_ids.map(escapeHtml).join(", ") : "n/a"}</p>
         <p><strong>Orchestrators:</strong> ${Array.isArray(issue.orchestrator_scope) && issue.orchestrator_scope.length ? issue.orchestrator_scope.map(escapeHtml).join(", ") : "n/a"}</p>

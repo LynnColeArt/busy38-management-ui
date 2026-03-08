@@ -58,11 +58,21 @@ Token is stored locally in browser for this UI only (client-side convenience) vi
 
 Then open `web/index.html` in a browser (or serve it from any static host).
 
-Set this environment variable if you want different backend routing:
+If you need a different backend base than the default:
 
 ```bash
 export MANAGEMENT_API_BASE=http://127.0.0.1:8031
 ```
+
+For the shipped static page, runtime resolution is literal in this order:
+
+1. `window.MANAGEMENT_API_BASE`
+2. `meta[name="busy38-management-api-base"]`
+3. served `window.location.origin` for HTTP(S) pages
+4. `http://127.0.0.1:8031` only for local file/offline dev
+
+Setting a shell variable alone does not inject it into `web/index.html`; use a
+served page override if the UI and API are not on the same origin.
 
 ## Current behavior
 
@@ -81,7 +91,8 @@ export MANAGEMENT_API_BASE=http://127.0.0.1:8031
   - the browser now includes an admin-only pairing panel for issue + inspect + revoke
   - browser inspection uses safe state summaries only; it does not recover raw pairing codes or bridge tokens from persisted state
   - revoke is now keyed by explicit `token_id`, not pasted bearer tokens
-  - the browser now also renders a QR locally from the live issue response plus the active control-plane URL
+  - the browser now also renders a QR locally from the live issue response plus the resolved control-plane URL
+  - QR control-plane URL resolution is literal: explicit runtime override, then document override, then served origin, then loopback fallback
   - QR copy/render is live-response-only; reload requires issuing a new code
 
 ## API surface (MVP)
