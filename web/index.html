@@ -43,6 +43,34 @@
             <span>Keep mobile and desktop in sync</span>
             <input name="appearance_sync_enabled" type="checkbox" checked />
           </label>
+          <label>
+            <span>Contrast policy</span>
+            <select name="appearance_contrast_policy">
+              <option value="aa">WCAG 2.2 AA</option>
+              <option value="aaa">WCAG 2.2 AAA</option>
+            </select>
+          </label>
+          <label>
+            <span>Motion policy</span>
+            <select name="appearance_motion_policy">
+              <option value="default">Default motion</option>
+              <option value="reduced">Reduced motion</option>
+            </select>
+          </label>
+          <label>
+            <span>Color separation</span>
+            <select name="appearance_color_separation_policy">
+              <option value="default">Default separation</option>
+              <option value="stronger">Stronger separation</option>
+            </select>
+          </label>
+          <label>
+            <span>Text spacing</span>
+            <select name="appearance_text_spacing_policy">
+              <option value="default">Default spacing</option>
+              <option value="increased">Increased spacing</option>
+            </select>
+          </label>
           <button type="submit">Save appearance</button>
           <p id="appearanceStatus" class="status"></p>
         </form>

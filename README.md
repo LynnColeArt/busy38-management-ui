@@ -82,6 +82,12 @@ Appearance preference authority uses the same Busy runtime path:
 - app override supports `system`, `light`, and `dark`
 - when override is enabled, sync remains on by default so desktop and mobile
   share one app-owned theme preference unless the user explicitly splits them
+- default accessibility/readability policy is WCAG 2.2 AA
+- the same Busy-owned record now also carries:
+  - `AAA` contrast override
+  - reduced motion
+  - stronger color separation
+  - increased text spacing
 
 ## Current behavior
 
@@ -110,8 +116,8 @@ Appearance preference authority uses the same Busy runtime path:
     Busy appearance record
   - the browser applies the resolved desktop theme to the document root on load
     and after save
-  - current scope is bounded to theme authority and sync; broader
-    accessibility/readability controls are still a later slice
+  - the browser also applies the shared accessibility/readability policy to the
+    document immediately after load/save
 
 ## API surface (MVP)
 

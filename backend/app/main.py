@@ -869,6 +869,10 @@ class AppearanceUpdate(BaseModel):
     sync_theme_preferences: Optional[bool] = None
     shared_theme_mode: Optional[Literal["system", "light", "dark"]] = None
     desktop_theme_mode: Optional[Literal["system", "light", "dark"]] = None
+    contrast_policy: Optional[Literal["aa", "aaa"]] = None
+    motion_policy: Optional[Literal["default", "reduced"]] = None
+    color_separation_policy: Optional[Literal["default", "stronger"]] = None
+    text_spacing_policy: Optional[Literal["default", "increased"]] = None
 
 
 class PluginUpdate(BaseModel):

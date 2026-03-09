@@ -245,6 +245,18 @@ function normalizeAppearancePreferences(raw) {
     desktop_theme_mode: ["system", "light", "dark"].includes(source.desktop_theme_mode)
       ? source.desktop_theme_mode
       : "system",
+    contrast_policy: ["aa", "aaa"].includes(source.contrast_policy)
+      ? source.contrast_policy
+      : "aa",
+    motion_policy: ["default", "reduced"].includes(source.motion_policy)
+      ? source.motion_policy
+      : "default",
+    color_separation_policy: ["default", "stronger"].includes(source.color_separation_policy)
+      ? source.color_separation_policy
+      : "default",
+    text_spacing_policy: ["default", "increased"].includes(source.text_spacing_policy)
+      ? source.text_spacing_policy
+      : "default",
   };
 }
 
@@ -264,6 +276,10 @@ function syncAppearanceFormState() {
   const themeSelect = qs('select[name="appearance_theme_mode"]');
   const syncRow = qs("#appearanceSyncRow");
   const themeLabel = qs("#appearanceThemeModeLabel");
+  const contrastSelect = qs('select[name="appearance_contrast_policy"]');
+  const motionSelect = qs('select[name="appearance_motion_policy"]');
+  const colorSelect = qs('select[name="appearance_color_separation_policy"]');
+  const spacingSelect = qs('select[name="appearance_text_spacing_policy"]');
   if (!overrideInput || !syncInput || !themeSelect) {
     return;
   }
@@ -275,6 +291,11 @@ function syncAppearanceFormState() {
   }
   if (themeLabel) {
     themeLabel.textContent = syncEnabled ? "Theme mode" : "Desktop theme mode";
+  }
+  for (const control of [contrastSelect, motionSelect, colorSelect, spacingSelect]) {
+    if (control) {
+      control.disabled = false;
+    }
   }
 }
 
@@ -2094,6 +2115,10 @@ async function loadAppearance() {
   const overrideInput = qs('input[name="appearance_override_enabled"]');
   const syncInput = qs('input[name="appearance_sync_enabled"]');
   const themeSelect = qs('select[name="appearance_theme_mode"]');
+  const contrastSelect = qs('select[name="appearance_contrast_policy"]');
+  const motionSelect = qs('select[name="appearance_motion_policy"]');
+  const colorSelect = qs('select[name="appearance_color_separation_policy"]');
+  const spacingSelect = qs('select[name="appearance_text_spacing_policy"]');
   if (overrideInput) {
     overrideInput.checked = Boolean(preferences.override_enabled);
   }
@@ -2106,6 +2131,18 @@ async function loadAppearance() {
         ? preferences.shared_theme_mode
         : preferences.desktop_theme_mode)
       : "system";
+  }
+  if (contrastSelect) {
+    contrastSelect.value = preferences.contrast_policy;
+  }
+  if (motionSelect) {
+    motionSelect.value = preferences.motion_policy;
+  }
+  if (colorSelect) {
+    colorSelect.value = preferences.color_separation_policy;
+  }
+  if (spacingSelect) {
+    spacingSelect.value = preferences.text_spacing_policy;
   }
   syncAppearanceFormState();
   updateRoleBadge(payload.role, payload.role_source);
@@ -3578,18 +3615,33 @@ async function saveAppearance(event) {
   );
   const selectedThemeMode =
     qs('select[name="appearance_theme_mode"]')?.value || "system";
+  const contrastPolicy =
+    qs('select[name="appearance_contrast_policy"]')?.value || "aa";
+  const motionPolicy =
+    qs('select[name="appearance_motion_policy"]')?.value || "default";
+  const colorSeparationPolicy =
+    qs('select[name="appearance_color_separation_policy"]')?.value || "default";
+  const textSpacingPolicy =
+    qs('select[name="appearance_text_spacing_policy"]')?.value || "default";
 
-  let payload;
+  let payload = {
+    contrast_policy: contrastPolicy,
+    motion_policy: motionPolicy,
+    color_separation_policy: colorSeparationPolicy,
+    text_spacing_policy: textSpacingPolicy,
+  };
   if (!overrideEnabled) {
-    payload = { override_enabled: false };
+    payload.override_enabled = false;
   } else if (syncEnabled) {
     payload = {
+      ...payload,
       override_enabled: true,
       sync_theme_preferences: true,
       shared_theme_mode: selectedThemeMode,
     };
   } else {
     payload = {
+      ...payload,
       override_enabled: true,
       sync_theme_preferences: false,
       desktop_theme_mode: selectedThemeMode,

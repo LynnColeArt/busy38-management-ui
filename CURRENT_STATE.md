@@ -11,11 +11,15 @@
     - default `system`
     - app override `system` / `light` / `dark`
     - sync-on-by-default when override is enabled
+    - default accessibility/readability policy is WCAG 2.2 AA
+    - stronger overrides now exist for `AAA` contrast, reduced motion,
+      stronger color separation, and increased text spacing
   - the browser uses the same document theme helper for both initial load and
     post-save updates, so served pages now switch between light/dark without
     separate local-only theme state
-  - the current slice is authority-only; broader accessibility/readability
-    controls remain a later follow-on.
+  - the browser now also applies those accessibility/readability preferences
+    immediately at the document level through the same Busy-owned authority
+    path.
 
 ## 2026-03-07
 

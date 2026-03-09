@@ -349,18 +349,30 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                         "override_enabled": True,
                         "sync_theme_preferences": True,
                         "shared_theme_mode": "dark",
+                        "contrast_policy": "aaa",
+                        "motion_policy": "reduced",
+                        "color_separation_policy": "stronger",
+                        "text_spacing_policy": "increased",
                     },
                 )
                 self.assertEqual(updated.status_code, 200, updated.text)
                 appearance = updated.json()["appearance_preferences"]
                 self.assertEqual(appearance["shared_theme_mode"], "dark")
                 self.assertEqual(appearance["override_enabled"], True)
+                self.assertEqual(appearance["contrast_policy"], "aaa")
+                self.assertEqual(appearance["motion_policy"], "reduced")
+                self.assertEqual(appearance["color_separation_policy"], "stronger")
+                self.assertEqual(appearance["text_spacing_policy"], "increased")
 
                 reader_view = self.client.get("/api/appearance", headers=admin_headers)
                 self.assertEqual(reader_view.status_code, 200, reader_view.text)
                 self.assertEqual(
                     reader_view.json()["appearance_preferences"]["shared_theme_mode"],
                     "dark",
+                )
+                self.assertEqual(
+                    reader_view.json()["appearance_preferences"]["contrast_policy"],
+                    "aaa",
                 )
         finally:
             shutil.rmtree(appearance_state_dir)
