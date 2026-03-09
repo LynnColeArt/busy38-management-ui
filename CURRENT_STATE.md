@@ -1,5 +1,59 @@
 # Current State
 
+## 2026-03-07
+
+- Plugin-owned mobile pairing is now implemented through the management API:
+  - `POST /api/mobile/pairing/issue` is admin-authenticated and issues a
+    short-lived single-use pairing code with explicit room/orchestrator scope.
+  - issuance now also validates requested room ids against the current
+    GM-derived logical room set and validates requested orchestrator ids against
+    the bounded known orchestrator set for this slice before minting a code.
+  - `POST /api/mobile/pairing/exchange` exchanges that pairing code into a
+    scoped Busy bridge bearer token plus authoritative bridge URL.
+  - exchange now also revalidates the persisted issued-code room/orchestrator
+    scope against the current bounded known set before minting a live bridge
+    token, and invalid persisted scope leaves the code pending instead of
+    consuming it.
+  - pairing state now also fails closed unless its persisted `instance_id`
+    matches the live Busy instance id used for scoped bridge token minting, so
+    QR issue/exchange and minted tokens share one literal instance authority.
+  - `POST /api/mobile/pairing/revoke` is admin-authenticated and revokes an
+    issued scoped bridge token by token ID.
+- The bounded operator/browser pairing surface is now also implemented:
+  - admins can issue pairing codes directly in the browser,
+  - the browser now loads an admin-only safe pairing-state summary from
+    `GET /api/mobile/pairing/state`,
+  - exchanged grants can be revoked by `token_id` from the browser without
+    pasting raw bridge bearer tokens,
+  - raw pairing codes remain visible only from the live issuance response and
+    are not recoverable from persisted state after refresh,
+  - the browser now also derives a QR locally from the live issue response plus
+    a literally resolved control-plane URL,
+  - exchange now derives returned `bridge_url` literally from explicit bridge
+    URL override -> explicit bridge host -> exchange request host -> loopback
+    fallback only for local dev,
+  - control-plane URL resolution now uses:
+    - `window.MANAGEMENT_API_BASE` first,
+    - `meta[name="busy38-management-api-base"]` second,
+    - served `window.location.origin` for HTTP(S) pages third,
+    - loopback fallback only for local file/offline dev,
+  - QR payload copy/render remains browser-local and is not recoverable from
+    persisted state after refresh.
+- Pairing authority remains API-owned in this first slice:
+  - this repo is the canonical pairing authority surface,
+  - Busy bridge core only validates the plugin-issued scoped token and enforces
+    room/orchestrator scope at runtime,
+  - no duplicate Busy-core pairing issuance endpoint exists.
+- Pairing state uses the shared Busy runtime artifact and signature secret:
+  - backend pairing helpers import Busy core pairing utilities directly,
+  - pairing requires `BUSY_RUNTIME_PATH` plus `PYTHONPATH` access to the Busy
+    checkout,
+  - pairing also requires `BUSY38_MOBILE_PAIRING_SECRET` to be set explicitly.
+- Canonical details live in:
+  - `docs/internal/PAIRING_CONTROL_PLANE_SLICE_SPEC.md` in Busy
+  - `docs/internal/PAIRING_PLUGIN_SCOPED_BRIDGE_TOKEN_VALIDATION_CHANGE_REQUEST.md` in Busy
+  - `docs/internal/PAIRING_OPERATOR_BROWSER_SURFACE_SPEC.md` in Busy
+
 ## 2026-03-05
 
 - Plugin UI diagnostics and plugin UI action handlers now emit structured warning/error records to the browser console.

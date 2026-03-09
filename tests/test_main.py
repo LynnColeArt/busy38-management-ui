@@ -18,6 +18,7 @@ import asyncio
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from core.bridge.pairing import PAIRING_STATE_SCHEMA_VERSION, pairing_code_hash, write_pairing_state
 
 from backend.app.runtime import RuntimeActionResult
 from backend.app import storage
@@ -321,6 +322,382 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(reader_settings["proxy_http"], update_payload["proxy_http"])
         self.assertEqual(reader_settings["proxy_https"], update_payload["proxy_https"])
         self.assertEqual(reader_settings["proxy_no_proxy"], update_payload["proxy_no_proxy"])
+
+    def test_mobile_pairing_issue_exchange_and_revoke(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                    "BUSY38_MOBILE_PAIRING_BRIDGE_URL": "ws://busy.local:8787/ws",
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    issue = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                self.assertEqual(issue.status_code, 200, issue.text)
+                issued = issue.json()["pairing"]
+                self.assertEqual(issued["instance_id"], "busy-local")
+                self.assertEqual(issued["authorized_room_ids"], ["team-room-qa"])
+                self.assertEqual(issued["orchestrator_scope"], ["carlo"])
+
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    exchange = self.client.post(
+                        "/api/mobile/pairing/exchange",
+                        json={
+                            "pairing_code": issued["pairing_code"],
+                            "device_label": "Sam iPhone",
+                        },
+                    )
+                self.assertEqual(exchange.status_code, 200, exchange.text)
+                exchanged = exchange.json()["pairing"]
+                self.assertEqual(exchanged["instance_id"], "busy-local")
+                self.assertEqual(exchanged["bridge_url"], "ws://busy.local:8787/ws")
+                self.assertEqual(exchanged["authorized_room_ids"], ["team-room-qa"])
+                self.assertEqual(exchanged["orchestrator_scope"], ["carlo"])
+                self.assertTrue(exchanged["bridge_token"].startswith("busy_pair_v1."))
+                self.assertTrue(exchanged["token_id"])
+
+                state_before = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+                self.assertEqual(state_before.status_code, 200, state_before.text)
+                pairing_state = state_before.json()["pairing"]
+                self.assertEqual(pairing_state["instance_id"], "busy-local")
+                self.assertEqual(len(pairing_state["issued"]), 1)
+                self.assertEqual(pairing_state["issued"][0]["status"], "active")
+                self.assertEqual(pairing_state["issued"][0]["token_id"], exchanged["token_id"])
+                self.assertNotIn(issued["pairing_code"], json.dumps(pairing_state))
+                self.assertNotIn(exchanged["bridge_token"], json.dumps(pairing_state))
+
+                revoke = self.client.post(
+                    "/api/mobile/pairing/revoke",
+                    headers=admin_headers,
+                    json={"token_id": exchanged["token_id"]},
+                )
+                self.assertEqual(revoke.status_code, 200, revoke.text)
+                self.assertEqual(revoke.json()["pairing"]["instance_id"], "busy-local")
+                self.assertEqual(revoke.json()["pairing"]["token_id"], exchanged["token_id"])
+
+                state_after = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+                self.assertEqual(state_after.status_code, 200, state_after.text)
+                after_payload = state_after.json()["pairing"]
+                self.assertEqual(after_payload["issued"][0]["status"], "revoked")
+                self.assertEqual(after_payload["issued"][0]["revoked_at"], revoke.json()["pairing"]["revoked_at"])
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_issue_rejects_non_admin_and_bad_payload(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    denied = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=read_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                self.assertEqual(denied.status_code, 403)
+
+                denied_state = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=read_headers,
+                )
+                self.assertEqual(denied_state.status_code, 403)
+
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    invalid = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": [],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                self.assertEqual(invalid.status_code, 400)
+                self.assertIn("authorized_room_ids", invalid.text)
+
+                invalid_revoke = self.client.post(
+                    "/api/mobile/pairing/revoke",
+                    headers=admin_headers,
+                    json={},
+                )
+                self.assertEqual(invalid_revoke.status_code, 400)
+                self.assertIn("exactly one", invalid_revoke.text)
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_issue_rejects_unknown_room_and_orchestrator_scope(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    unknown_room = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-ops"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                    unknown_orchestrator = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Nonesuch"],
+                            "ttl_sec": 300,
+                        },
+                    )
+
+                self.assertEqual(unknown_room.status_code, 400, unknown_room.text)
+                self.assertIn("unknown authorized_room_ids", unknown_room.text)
+                self.assertEqual(unknown_orchestrator.status_code, 400, unknown_orchestrator.text)
+                self.assertIn("unknown orchestrator_scope", unknown_orchestrator.text)
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_exchange_rejects_stale_unknown_scope_without_consuming_code(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            state_path = os.path.join(pairing_state_dir, "state.json")
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": state_path,
+                },
+                clear=False,
+            ):
+                pairing_code = "ABCD-2345"
+                write_pairing_state(
+                    {
+                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "instance_id": "busy-local",
+                        "issued_codes": {
+                            pairing_code_hash(pairing_code): {
+                                "device_label": "Sam iPhone",
+                                "authorized_room_ids": ["totally-made-up-room"],
+                                "orchestrator_scope": ["nonesuch"],
+                                "issued_at": "2026-03-07T20:00:00+00:00",
+                                "expires_at": "2036-03-07T20:05:00+00:00",
+                                "issued_by": "admin",
+                                "consumed_at": None,
+                            }
+                        },
+                        "revoked_token_ids": {},
+                    }
+                )
+
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    exchange = self.client.post(
+                        "/api/mobile/pairing/exchange",
+                        json={
+                            "pairing_code": pairing_code,
+                            "device_label": "Sam iPhone",
+                        },
+                    )
+
+                    self.assertEqual(exchange.status_code, 400, exchange.text)
+                    self.assertIn("unknown authorized_room_ids", exchange.text)
+
+                    state_after = self.client.get(
+                        "/api/mobile/pairing/state",
+                        headers=admin_headers,
+                    )
+                    self.assertEqual(state_after.status_code, 200, state_after.text)
+                    pairing_state = state_after.json()["pairing"]
+                    self.assertEqual(pairing_state["issued"][0]["status"], "pending")
+                    self.assertIsNone(pairing_state["issued"][0]["consumed_at"])
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_exchange_rejects_expected_instance_mismatch_without_consuming_code(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                    "BUSY38_MOBILE_PAIRING_BRIDGE_URL": "ws://busy.local:8787/ws",
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    issue = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                self.assertEqual(issue.status_code, 200, issue.text)
+                issued = issue.json()["pairing"]
+
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    exchange = self.client.post(
+                        "/api/mobile/pairing/exchange",
+                        json={
+                            "pairing_code": issued["pairing_code"],
+                            "device_label": "Sam iPhone",
+                            "expected_instance_id": "busy-other",
+                        },
+                    )
+                self.assertEqual(exchange.status_code, 400, exchange.text)
+                self.assertIn("expected Busy instance busy-other", exchange.text)
+                self.assertIn("busy-local", exchange.text)
+
+                state_after = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+                self.assertEqual(state_after.status_code, 200, state_after.text)
+                pairing_state = state_after.json()["pairing"]
+                self.assertEqual(pairing_state["issued"][0]["status"], "pending")
+                self.assertIsNone(pairing_state["issued"][0]["consumed_at"])
+                self.assertIsNone(pairing_state["issued"][0]["token_id"])
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_issue_rejects_stale_pairing_state_instance_mismatch(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            state_path = os.path.join(pairing_state_dir, "state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "instance_id": "busy-stale",
+                        "issued_codes": {},
+                        "revoked_token_ids": {},
+                    },
+                    handle,
+                )
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-live",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": state_path,
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    issue = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                self.assertEqual(issue.status_code, 400, issue.text)
+                self.assertIn("busy-stale", issue.text)
+                self.assertIn("busy-live", issue.text)
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_bridge_url_derives_from_request_host_without_override(self):
+        with patch.dict(
+            os.environ,
+            {
+                "BUSY38_MOBILE_PAIRING_BRIDGE_URL": "",
+                "BUSY_BRIDGE_URL": "",
+                "BUSY38_BRIDGE_HOST": "",
+                "BUSY38_BRIDGE_PORT": "",
+            },
+            clear=False,
+        ):
+            self.assertEqual(
+                self.main.mobile_pairing._bridge_url(
+                    request_url="https://ops.busy.local/api/mobile/pairing/exchange",
+                ),
+                "wss://ops.busy.local:8787/ws",
+            )
 
     def test_plugin_management_crud_and_viewer_redaction(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
