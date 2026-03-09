@@ -30,6 +30,7 @@ const GM_TICKET_DISPATCH_ROLES = ["portia", "nora", "mini", "mission_agent"];
 const GM_TICKET_MESSAGE_TYPES = ["comment", "status", "request"];
 const state = {
   settings: {},
+  appearance: {},
   providers: [],
   plugins: [],
   agents: [],
@@ -65,6 +66,8 @@ const state = {
   gmTicketAudit: null,
 };
 let eventSocket = null;
+
+applyAppearanceTheme({});
 
 const qs = (selector) => document.querySelector(selector);
 
@@ -205,6 +208,74 @@ function mobilePairingQrApi() {
     return null;
   }
   return api;
+}
+
+function appearanceThemeApi() {
+  const api = window.Busy38AppearanceTheme;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.normalizeAppearancePreferences !== "function") {
+    return null;
+  }
+  if (typeof api.effectiveDesktopThemeValue !== "function") {
+    return null;
+  }
+  if (typeof api.applyDocumentTheme !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function normalizeAppearancePreferences(raw) {
+  const api = appearanceThemeApi();
+  if (api) {
+    return api.normalizeAppearancePreferences(raw);
+  }
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    override_enabled: Boolean(source.override_enabled),
+    sync_theme_preferences:
+      typeof source.sync_theme_preferences === "boolean"
+        ? source.sync_theme_preferences
+        : true,
+    shared_theme_mode: ["system", "light", "dark"].includes(source.shared_theme_mode)
+      ? source.shared_theme_mode
+      : "system",
+    desktop_theme_mode: ["system", "light", "dark"].includes(source.desktop_theme_mode)
+      ? source.desktop_theme_mode
+      : "system",
+  };
+}
+
+function applyAppearanceTheme(preferences) {
+  state.appearance = normalizeAppearancePreferences(preferences);
+  const api = appearanceThemeApi();
+  if (api) {
+    return api.applyDocumentTheme(window, document, state.appearance);
+  }
+  document.documentElement.dataset.theme = "dark";
+  return "dark";
+}
+
+function syncAppearanceFormState() {
+  const overrideInput = qs('input[name="appearance_override_enabled"]');
+  const syncInput = qs('input[name="appearance_sync_enabled"]');
+  const themeSelect = qs('select[name="appearance_theme_mode"]');
+  const syncRow = qs("#appearanceSyncRow");
+  const themeLabel = qs("#appearanceThemeModeLabel");
+  if (!overrideInput || !syncInput || !themeSelect) {
+    return;
+  }
+  const overrideEnabled = overrideInput.checked;
+  const syncEnabled = syncInput.checked;
+  themeSelect.disabled = !overrideEnabled;
+  if (syncRow) {
+    syncRow.hidden = !overrideEnabled;
+  }
+  if (themeLabel) {
+    themeLabel.textContent = syncEnabled ? "Theme mode" : "Desktop theme mode";
+  }
 }
 
 function downloadTextFile(filename, content, mimeType = "application/json") {
@@ -2014,6 +2085,33 @@ async function loadSettings() {
   return payload;
 }
 
+async function loadAppearance() {
+  const payload = await fetchJson("/api/appearance");
+  const preferences = normalizeAppearancePreferences(
+    payload.appearance_preferences || {},
+  );
+  applyAppearanceTheme(preferences);
+  const overrideInput = qs('input[name="appearance_override_enabled"]');
+  const syncInput = qs('input[name="appearance_sync_enabled"]');
+  const themeSelect = qs('select[name="appearance_theme_mode"]');
+  if (overrideInput) {
+    overrideInput.checked = Boolean(preferences.override_enabled);
+  }
+  if (syncInput) {
+    syncInput.checked = Boolean(preferences.sync_theme_preferences);
+  }
+  if (themeSelect) {
+    themeSelect.value = preferences.override_enabled
+      ? (preferences.sync_theme_preferences
+        ? preferences.shared_theme_mode
+        : preferences.desktop_theme_mode)
+      : "system";
+  }
+  syncAppearanceFormState();
+  updateRoleBadge(payload.role, payload.role_source);
+  return payload;
+}
+
 async function loadProviders() {
   const filters = getProviderFilterState();
   const params = new URLSearchParams();
@@ -3470,6 +3568,49 @@ async function saveSettings(event) {
   }
 }
 
+async function saveAppearance(event) {
+  event.preventDefault();
+  const overrideEnabled = Boolean(
+    qs('input[name="appearance_override_enabled"]')?.checked,
+  );
+  const syncEnabled = Boolean(
+    qs('input[name="appearance_sync_enabled"]')?.checked,
+  );
+  const selectedThemeMode =
+    qs('select[name="appearance_theme_mode"]')?.value || "system";
+
+  let payload;
+  if (!overrideEnabled) {
+    payload = { override_enabled: false };
+  } else if (syncEnabled) {
+    payload = {
+      override_enabled: true,
+      sync_theme_preferences: true,
+      shared_theme_mode: selectedThemeMode,
+    };
+  } else {
+    payload = {
+      override_enabled: true,
+      sync_theme_preferences: false,
+      desktop_theme_mode: selectedThemeMode,
+    };
+  }
+
+  setStatus("#appearanceStatus", "saving", "");
+  try {
+    const response = await patchJson("/api/appearance", payload);
+    const preferences = normalizeAppearancePreferences(
+      response.appearance_preferences || {},
+    );
+    applyAppearanceTheme(preferences);
+    syncAppearanceFormState();
+    setStatus("#appearanceStatus", "appearance saved", "ok");
+    await loadAppearance();
+  } catch (err) {
+    setStatus("#appearanceStatus", `save failed: ${err.message}`, "err");
+  }
+}
+
 async function submitMemory(event) {
   event.preventDefault();
   const scope = qs('input[name="memoryScope"]').value.trim();
@@ -4434,6 +4575,7 @@ async function boot() {
   }
 
   try {
+    await loadAppearance();
     await loadSettings();
     const loadTasks = [
       loadHealth(),
@@ -4473,6 +4615,9 @@ async function boot() {
 }
 
 qs("#saveToken")?.addEventListener("click", saveToken);
+qs("#appearanceForm")?.addEventListener("submit", saveAppearance);
+qs('input[name="appearance_override_enabled"]')?.addEventListener("change", syncAppearanceFormState);
+qs('input[name="appearance_sync_enabled"]')?.addEventListener("change", syncAppearanceFormState);
 qs("#settingsForm")?.addEventListener("submit", saveSettings);
 qs("#memoryForm")?.addEventListener("submit", submitMemory);
 qs("#chatForm")?.addEventListener("submit", submitChat);

@@ -55,6 +55,12 @@ from .import_contract import checksum_payload
 
 from . import mobile_pairing, storage
 from .runtime import RuntimeActionResult, load_runtime_adapter
+from core.bridge.appearance_preferences import (
+    AppearancePreferencesError,
+    apply_appearance_update,
+    load_appearance_preferences,
+    write_appearance_preferences,
+)
 
 try:
     from core.plugins.state import (
@@ -856,6 +862,13 @@ class SettingsUpdate(BaseModel):
     proxy_http: Optional[str] = None
     proxy_https: Optional[str] = None
     proxy_no_proxy: Optional[str] = None
+
+
+class AppearanceUpdate(BaseModel):
+    override_enabled: Optional[bool] = None
+    sync_theme_preferences: Optional[bool] = None
+    shared_theme_mode: Optional[Literal["system", "light", "dark"]] = None
+    desktop_theme_mode: Optional[Literal["system", "light", "dark"]] = None
 
 
 class PluginUpdate(BaseModel):
@@ -3009,6 +3022,44 @@ async def update_settings(request: Request, update: SettingsUpdate) -> Dict[str,
     settings = storage.set_settings(payload)
     _event_for(role, "settings", "Settings updated via management UI", "info")
     return {"settings": settings, "updated_at": settings["updated_at"]}
+
+
+@app.get("/api/appearance")
+async def get_appearance(
+    request: Request,
+    token: Optional[str] = Query(default=None, alias="token"),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer", token=token)
+    auth_header = request.headers.get("Authorization") if request else None
+    try:
+        appearance = load_appearance_preferences()
+    except AppearancePreferencesError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return {
+        "appearance_preferences": appearance,
+        "updated_at": appearance["updated_at"],
+        "role": role,
+        "role_source": _token_source(auth_header, token),
+    }
+
+
+@app.patch("/api/appearance")
+async def update_appearance(request: Request, update: AppearanceUpdate) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer")
+    payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
+    if not payload:
+        raise HTTPException(status_code=400, detail="No appearance fields provided")
+    try:
+        current = load_appearance_preferences()
+        updated = apply_appearance_update(current, payload)
+        write_appearance_preferences(updated)
+    except AppearancePreferencesError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    _event_for(role, "appearance", "Appearance preferences updated via management UI", "info")
+    return {
+        "appearance_preferences": updated,
+        "updated_at": updated["updated_at"],
+    }
 
 
 @app.get("/api/providers")

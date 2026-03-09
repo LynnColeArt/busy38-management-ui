@@ -74,6 +74,15 @@ For the shipped static page, runtime resolution is literal in this order:
 Setting a shell variable alone does not inject it into `web/index.html`; use a
 served page override if the UI and API are not on the same origin.
 
+Appearance preference authority uses the same Busy runtime path:
+
+- the browser reads and writes Busy-owned appearance preferences through
+  `/api/appearance`
+- default behavior is `system`
+- app override supports `system`, `light`, and `dark`
+- when override is enabled, sync remains on by default so desktop and mobile
+  share one app-owned theme preference unless the user explicitly splits them
+
 ## Current behavior
 
 - Seeded defaults are loaded on first run and persisted in local SQLite storage.
@@ -96,6 +105,13 @@ served page override if the UI and API are not on the same origin.
   - the browser now also renders a QR locally from the live issue response plus the resolved control-plane URL
   - QR control-plane URL resolution is literal: explicit runtime override, then document override, then served origin, then loopback fallback
   - QR copy/render is live-response-only; reload requires issuing a new code
+- Desktop appearance preferences are now part of the control plane:
+  - `GET /api/appearance` and `PATCH /api/appearance` read/write the canonical
+    Busy appearance record
+  - the browser applies the resolved desktop theme to the document root on load
+    and after save
+  - current scope is bounded to theme authority and sync; broader
+    accessibility/readability controls are still a later slice
 
 ## API surface (MVP)
 
@@ -153,6 +169,8 @@ Import review boundary:
 - `POST /api/runtime/services/{service_name}/start`
 - `POST /api/runtime/services/{service_name}/stop`
 - `POST /api/runtime/services/{service_name}/restart`
+- `GET /api/appearance`
+- `PATCH /api/appearance`
 
 ### Notable settings fields
 

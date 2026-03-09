@@ -323,6 +323,48 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(reader_settings["proxy_https"], update_payload["proxy_https"])
         self.assertEqual(reader_settings["proxy_no_proxy"], update_payload["proxy_no_proxy"])
 
+    def test_appearance_preferences_round_trip_for_viewer(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+        appearance_state_dir = tempfile.mkdtemp(prefix="busy38-appearance-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY_RUNTIME_PATH": appearance_state_dir,
+                },
+                clear=False,
+            ):
+                loaded = self.client.get("/api/appearance", headers=read_headers)
+                self.assertEqual(loaded.status_code, 200, loaded.text)
+                self.assertEqual(
+                    loaded.json()["appearance_preferences"]["override_enabled"],
+                    False,
+                )
+
+                updated = self.client.patch(
+                    "/api/appearance",
+                    headers=read_headers,
+                    json={
+                        "override_enabled": True,
+                        "sync_theme_preferences": True,
+                        "shared_theme_mode": "dark",
+                    },
+                )
+                self.assertEqual(updated.status_code, 200, updated.text)
+                appearance = updated.json()["appearance_preferences"]
+                self.assertEqual(appearance["shared_theme_mode"], "dark")
+                self.assertEqual(appearance["override_enabled"], True)
+
+                reader_view = self.client.get("/api/appearance", headers=admin_headers)
+                self.assertEqual(reader_view.status_code, 200, reader_view.text)
+                self.assertEqual(
+                    reader_view.json()["appearance_preferences"]["shared_theme_mode"],
+                    "dark",
+                )
+        finally:
+            shutil.rmtree(appearance_state_dir)
+
     def test_mobile_pairing_issue_exchange_and_revoke(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")

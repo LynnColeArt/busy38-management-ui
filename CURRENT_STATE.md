@@ -1,5 +1,22 @@
 # Current State
 
+## 2026-03-09
+
+- Busy-owned appearance preferences are now implemented in this repo's control
+  plane:
+  - `GET /api/appearance` returns the current canonical Busy appearance record
+  - `PATCH /api/appearance` updates that record with fail-closed validation
+  - the browser now applies the resolved desktop theme literally from one
+    shared preference model:
+    - default `system`
+    - app override `system` / `light` / `dark`
+    - sync-on-by-default when override is enabled
+  - the browser uses the same document theme helper for both initial load and
+    post-save updates, so served pages now switch between light/dark without
+    separate local-only theme state
+  - the current slice is authority-only; broader accessibility/readability
+    controls remain a later follow-on.
+
 ## 2026-03-07
 
 - Plugin-owned mobile pairing is now implemented through the management API:
