@@ -168,6 +168,7 @@ Import review boundary:
 - `POST /api/chat_history`
 - `POST /api/mobile/pairing/issue`
 - `POST /api/mobile/pairing/exchange`
+- `POST /api/mobile/trust/refresh`
 - `GET /api/mobile/pairing/state`
 - `POST /api/mobile/pairing/revoke`
 - `GET  /api/runtime/status`

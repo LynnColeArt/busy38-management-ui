@@ -1080,6 +1080,12 @@ class PairingExchangeRequest(BaseModel):
     expected_instance_id: Optional[str] = None
 
 
+class PairingRefreshRequest(BaseModel):
+    device_relationship_id: str
+    refresh_grant: str
+    expected_instance_id: Optional[str] = None
+
+
 class PairingRevokeRequest(BaseModel):
     bridge_token: Optional[str] = None
     token_id: Optional[str] = None
@@ -5791,6 +5797,26 @@ async def get_mobile_pairing_state(request: Request) -> Dict[str, Any]:
     _require_role(request, required="admin")
     try:
         result = mobile_pairing.list_pairing_state()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return {"pairing": result, "updated_at": _now_iso()}
+
+
+@app.post("/api/mobile/trust/refresh")
+async def refresh_mobile_trusted_device(
+    request: Request,
+    payload: PairingRefreshRequest,
+) -> Dict[str, Any]:
+    try:
+        result = mobile_pairing.refresh_trusted_device(
+            device_relationship_id=payload.device_relationship_id,
+            refresh_grant=payload.refresh_grant,
+            expected_instance_id=payload.expected_instance_id,
+            request_url=str(request.url),
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:

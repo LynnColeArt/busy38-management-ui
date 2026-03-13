@@ -1,5 +1,21 @@
 # Current State
 
+## 2026-03-13
+
+- The management backend now owns the first trusted-device continuity slice:
+  - `POST /api/mobile/pairing/exchange` now persists a durable trusted-device
+    relationship in the shared Busy pairing state and returns
+    `device_relationship_id`, a refresh grant, and
+    `trusted_device_expires_at`
+  - `POST /api/mobile/trust/refresh` now rotates the short-lived bridge token
+    and the refresh grant for an active trusted device
+  - refresh revokes the superseded bridge token instead of accumulating
+    parallel long-lived active grants for one device relationship
+  - `POST /api/mobile/pairing/revoke` now also revokes the linked trusted
+    device relationship when revoking its active token
+  - `GET /api/mobile/pairing/state` now exposes safe trusted-device summaries
+    with no raw refresh-grant recovery
+
 ## 2026-03-09
 
 - Busy-owned appearance preferences are now implemented in this repo's control
