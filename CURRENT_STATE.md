@@ -1,5 +1,26 @@
 # Current State
 
+## 2026-03-13
+
+- The management backend now serves the browser app at the same origin:
+  - `GET /` returns `web/index.html`
+  - unknown non-API browser paths such as `/admin` fall back to the same SPA
+    entrypoint
+  - local operator launch can now open `http://127.0.0.1:8031/` directly
+- The management backend now also owns the first trusted-device continuity
+  slice:
+  - `POST /api/mobile/pairing/exchange` now persists a durable trusted-device
+    relationship in the shared Busy pairing state and returns
+    `device_relationship_id`, a refresh grant, and `trusted_device_expires_at`
+  - `POST /api/mobile/trust/refresh` now rotates the short-lived bridge token
+    and the refresh grant for an active trusted device
+  - refresh revokes the superseded bridge token instead of accumulating
+    parallel long-lived active grants for one device relationship
+  - `POST /api/mobile/pairing/revoke` now also revokes the linked trusted
+    device relationship when revoking its active token
+  - `GET /api/mobile/pairing/state` now exposes safe trusted-device summaries
+    with no raw refresh-grant recovery
+
 ## 2026-03-07
 
 - Plugin-owned mobile pairing is now implemented through the management API:
@@ -10,6 +31,9 @@
     the bounded known orchestrator set for this slice before minting a code.
   - `POST /api/mobile/pairing/exchange` exchanges that pairing code into a
     scoped Busy bridge bearer token plus authoritative bridge URL.
+  - exchange now also persists a trusted-device relationship so successful
+    first-pair bootstrap can later refresh and recover continuity without
+    re-scanning QR.
   - exchange now also revalidates the persisted issued-code room/orchestrator
     scope against the current bounded known set before minting a live bridge
     token, and invalid persisted scope leaves the code pending instead of

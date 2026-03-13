@@ -281,6 +281,20 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self._loop.close()
         os.remove(self.db_file.name)
 
+    def test_root_serves_management_ui_html(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers.get("content-type", ""))
+        self.assertIn("busy38-management-api-base", response.text)
+
+    def test_unknown_non_api_path_falls_back_to_management_ui_html(self):
+        response = self.client.get("/admin")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers.get("content-type", ""))
+        self.assertIn("busy38-management-api-base", response.text)
+
     def test_viewer_and_admin_tokens(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
@@ -376,6 +390,9 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 self.assertEqual(exchanged["orchestrator_scope"], ["carlo"])
                 self.assertTrue(exchanged["bridge_token"].startswith("busy_pair_v1."))
                 self.assertTrue(exchanged["token_id"])
+                self.assertTrue(exchanged["device_relationship_id"].startswith("tdr_"))
+                self.assertTrue(exchanged["refresh_grant"].startswith("busy_refresh_v1."))
+                self.assertTrue(exchanged["trusted_device_expires_at"])
 
                 state_before = self.client.get(
                     "/api/mobile/pairing/state",
@@ -387,8 +404,15 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 self.assertEqual(len(pairing_state["issued"]), 1)
                 self.assertEqual(pairing_state["issued"][0]["status"], "active")
                 self.assertEqual(pairing_state["issued"][0]["token_id"], exchanged["token_id"])
+                self.assertEqual(len(pairing_state["trusted_devices"]), 1)
+                self.assertEqual(
+                    pairing_state["trusted_devices"][0]["device_relationship_id"],
+                    exchanged["device_relationship_id"],
+                )
+                self.assertEqual(pairing_state["trusted_devices"][0]["status"], "active")
                 self.assertNotIn(issued["pairing_code"], json.dumps(pairing_state))
                 self.assertNotIn(exchanged["bridge_token"], json.dumps(pairing_state))
+                self.assertNotIn(exchanged["refresh_grant"], json.dumps(pairing_state))
 
                 revoke = self.client.post(
                     "/api/mobile/pairing/revoke",
@@ -407,6 +431,85 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 after_payload = state_after.json()["pairing"]
                 self.assertEqual(after_payload["issued"][0]["status"], "revoked")
                 self.assertEqual(after_payload["issued"][0]["revoked_at"], revoke.json()["pairing"]["revoked_at"])
+                self.assertEqual(after_payload["trusted_devices"][0]["status"], "revoked")
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_refresh_rotates_bridge_token_and_refresh_grant(self):
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                    "BUSY38_MOBILE_PAIRING_BRIDGE_URL": "ws://busy.local:8787/ws",
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    issue = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers={"Authorization": f"Bearer {self.admin_token}"},
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                    self.assertEqual(issue.status_code, 200, issue.text)
+                    issued = issue.json()["pairing"]
+
+                    exchange = self.client.post(
+                        "/api/mobile/pairing/exchange",
+                        json={
+                            "pairing_code": issued["pairing_code"],
+                            "device_label": "Sam iPhone",
+                        },
+                    )
+                    self.assertEqual(exchange.status_code, 200, exchange.text)
+                    exchanged = exchange.json()["pairing"]
+
+                    refresh = self.client.post(
+                        "/api/mobile/trust/refresh",
+                        json={
+                            "device_relationship_id": exchanged["device_relationship_id"],
+                            "refresh_grant": exchanged["refresh_grant"],
+                            "expected_instance_id": "busy-local",
+                        },
+                    )
+                self.assertEqual(refresh.status_code, 200, refresh.text)
+                refreshed = refresh.json()["pairing"]
+                self.assertEqual(refreshed["instance_id"], "busy-local")
+                self.assertEqual(refreshed["bridge_url"], "ws://busy.local:8787/ws")
+                self.assertEqual(refreshed["device_relationship_id"], exchanged["device_relationship_id"])
+                self.assertNotEqual(refreshed["token_id"], exchanged["token_id"])
+                self.assertNotEqual(refreshed["refresh_grant"], exchanged["refresh_grant"])
+
+                state_after = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers={"Authorization": f"Bearer {self.admin_token}"},
+                )
+                self.assertEqual(state_after.status_code, 200, state_after.text)
+                pairing_state = state_after.json()["pairing"]
+                self.assertEqual(pairing_state["trusted_devices"][0]["token_id"], refreshed["token_id"])
+                revoked_token_ids = {row["token_id"] for row in pairing_state["revoked"]}
+                self.assertIn(exchanged["token_id"], revoked_token_ids)
+
+                denied = self.client.post(
+                    "/api/mobile/trust/refresh",
+                    json={
+                        "device_relationship_id": exchanged["device_relationship_id"],
+                        "refresh_grant": exchanged["refresh_grant"],
+                    },
+                )
+                self.assertEqual(denied.status_code, 400, denied.text)
+                self.assertIn("refresh grant is invalid", denied.text)
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
@@ -549,6 +652,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                             }
                         },
                         "revoked_token_ids": {},
+                        "trusted_devices": {},
                     }
                 )
 
@@ -573,8 +677,8 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                     )
                     self.assertEqual(state_after.status_code, 200, state_after.text)
                     pairing_state = state_after.json()["pairing"]
-                    self.assertEqual(pairing_state["issued"][0]["status"], "pending")
-                    self.assertIsNone(pairing_state["issued"][0]["consumed_at"])
+                self.assertEqual(pairing_state["issued"][0]["status"], "pending")
+                self.assertIsNone(pairing_state["issued"][0]["consumed_at"])
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
@@ -649,6 +753,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                         "instance_id": "busy-stale",
                         "issued_codes": {},
                         "revoked_token_ids": {},
+                        "trusted_devices": {},
                     },
                     handle,
                 )
