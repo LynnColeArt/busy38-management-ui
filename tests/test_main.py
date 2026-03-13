@@ -323,7 +323,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(reader_settings["proxy_https"], update_payload["proxy_https"])
         self.assertEqual(reader_settings["proxy_no_proxy"], update_payload["proxy_no_proxy"])
 
-    def test_appearance_preferences_round_trip_for_viewer(self):
+    def test_appearance_preferences_require_admin_for_write(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
         appearance_state_dir = tempfile.mkdtemp(prefix="busy38-appearance-")
@@ -342,9 +342,24 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                     False,
                 )
 
-                updated = self.client.patch(
+                viewer_blocked = self.client.patch(
                     "/api/appearance",
                     headers=read_headers,
+                    json={
+                        "override_enabled": True,
+                        "sync_theme_preferences": True,
+                        "shared_theme_mode": "dark",
+                        "contrast_policy": "aaa",
+                        "motion_policy": "reduced",
+                        "color_separation_policy": "stronger",
+                        "text_spacing_policy": "increased",
+                    },
+                )
+                self.assertEqual(viewer_blocked.status_code, 403, viewer_blocked.text)
+
+                updated = self.client.patch(
+                    "/api/appearance",
+                    headers=admin_headers,
                     json={
                         "override_enabled": True,
                         "sync_theme_preferences": True,
@@ -364,7 +379,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 self.assertEqual(appearance["color_separation_policy"], "stronger")
                 self.assertEqual(appearance["text_spacing_policy"], "increased")
 
-                reader_view = self.client.get("/api/appearance", headers=admin_headers)
+                reader_view = self.client.get("/api/appearance", headers=read_headers)
                 self.assertEqual(reader_view.status_code, 200, reader_view.text)
                 self.assertEqual(
                     reader_view.json()["appearance_preferences"]["shared_theme_mode"],

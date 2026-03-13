@@ -3049,7 +3049,7 @@ async def get_appearance(
 
 @app.patch("/api/appearance")
 async def update_appearance(request: Request, update: AppearanceUpdate) -> Dict[str, Any]:
-    role = _require_role(request, required="viewer")
+    role = _require_role(request, required="admin")
     payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
     if not payload:
         raise HTTPException(status_code=400, detail="No appearance fields provided")

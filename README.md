@@ -78,6 +78,7 @@ Appearance preference authority uses the same Busy runtime path:
 
 - the browser reads and writes Busy-owned appearance preferences through
   `/api/appearance`
+- `PATCH /api/appearance` is admin-authenticated; viewer tokens remain read-only
 - default behavior is `system`
 - app override supports `system`, `light`, and `dark`
 - when override is enabled, sync remains on by default so desktop and mobile

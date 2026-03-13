@@ -280,12 +280,16 @@ function syncAppearanceFormState() {
   const motionSelect = qs('select[name="appearance_motion_policy"]');
   const colorSelect = qs('select[name="appearance_color_separation_policy"]');
   const spacingSelect = qs('select[name="appearance_text_spacing_policy"]');
+  const saveButton = qs('#appearanceForm button[type="submit"]');
   if (!overrideInput || !syncInput || !themeSelect) {
     return;
   }
+  const isAdmin = state.role === "admin";
   const overrideEnabled = overrideInput.checked;
   const syncEnabled = syncInput.checked;
-  themeSelect.disabled = !overrideEnabled;
+  overrideInput.disabled = !isAdmin;
+  syncInput.disabled = !isAdmin || !overrideEnabled;
+  themeSelect.disabled = !isAdmin || !overrideEnabled;
   if (syncRow) {
     syncRow.hidden = !overrideEnabled;
   }
@@ -294,8 +298,11 @@ function syncAppearanceFormState() {
   }
   for (const control of [contrastSelect, motionSelect, colorSelect, spacingSelect]) {
     if (control) {
-      control.disabled = false;
+      control.disabled = !isAdmin;
     }
+  }
+  if (saveButton) {
+    saveButton.disabled = !isAdmin;
   }
 }
 
@@ -3607,6 +3614,10 @@ async function saveSettings(event) {
 
 async function saveAppearance(event) {
   event.preventDefault();
+  if (state.role !== "admin") {
+    setStatus("#appearanceStatus", "admin token required", "err");
+    return;
+  }
   const overrideEnabled = Boolean(
     qs('input[name="appearance_override_enabled"]')?.checked,
   );
