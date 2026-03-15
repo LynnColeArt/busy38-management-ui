@@ -1083,7 +1083,11 @@ class PairingExchangeRequest(BaseModel):
 class PairingRefreshRequest(BaseModel):
     device_relationship_id: str
     refresh_grant: str
+    instance_id: Optional[str] = None
     expected_instance_id: Optional[str] = None
+    device_label: Optional[str] = None
+    client_platform: Optional[str] = None
+    last_transport: Optional[Dict[str, Any]] = None
 
 
 class PairingRevokeRequest(BaseModel):
@@ -5814,14 +5818,28 @@ async def refresh_mobile_trusted_device(
         result = mobile_pairing.refresh_trusted_device(
             device_relationship_id=payload.device_relationship_id,
             refresh_grant=payload.refresh_grant,
-            expected_instance_id=payload.expected_instance_id,
+            expected_instance_id=payload.instance_id or payload.expected_instance_id,
+            device_label=payload.device_label,
+            client_platform=payload.client_platform,
+            last_transport=payload.last_transport,
             request_url=str(request.url),
         )
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "control_plane_temporarily_unavailable",
+                "message": str(exc),
+            },
+        ) from exc
     except ValueError as exc:
         detail = getattr(exc, "message", str(exc))
-        raise HTTPException(status_code=400, detail=detail) from exc
+        code = getattr(exc, "code", "")
+        normalized_code = mobile_pairing.refresh_error_code(code)
+        payload_detail: Dict[str, Any] = {"message": detail}
+        if normalized_code:
+            payload_detail["code"] = normalized_code
+        raise HTTPException(status_code=400, detail=payload_detail) from exc
     return {"pairing": result, "updated_at": _now_iso()}
 
 

@@ -520,7 +520,13 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                         json={
                             "device_relationship_id": exchanged["device_relationship_id"],
                             "refresh_grant": exchanged["refresh_grant"],
-                            "expected_instance_id": "busy-local",
+                            "instance_id": "busy-local",
+                            "client_platform": "ios_flutter",
+                            "last_transport": {
+                                "bridge_mode": "realtime_v1",
+                                "bridge_url": exchanged["bridge_url"],
+                                "transport_credential_expires_at": exchanged["expires_at"],
+                            },
                         },
                     )
                 self.assertEqual(refresh.status_code, 200, refresh.text)
@@ -530,6 +536,16 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 self.assertEqual(refreshed["device_relationship_id"], exchanged["device_relationship_id"])
                 self.assertNotEqual(refreshed["token_id"], exchanged["token_id"])
                 self.assertNotEqual(refreshed["refresh_grant"], exchanged["refresh_grant"])
+                self.assertEqual(refreshed["transport"]["bridge_url"], refreshed["bridge_url"])
+                self.assertEqual(refreshed["transport"]["bridge_token"], refreshed["bridge_token"])
+                self.assertEqual(refreshed["transport"]["expires_at"], refreshed["expires_at"])
+                self.assertEqual(refreshed["transport"]["auth_mode"], "pairing_scoped_token")
+                self.assertEqual(refreshed["refresh"]["refresh_grant"], refreshed["refresh_grant"])
+                self.assertTrue(refreshed["refresh"]["rotated"])
+                self.assertTrue(refreshed["refresh"]["refresh_after"])
+                self.assertTrue(refreshed["continuity"]["refresh_capable"])
+                self.assertFalse(refreshed["continuity"]["re_pair_required"])
+                self.assertFalse(refreshed["continuity"]["policy_requires_reverification"])
 
                 state_after = self.client.get(
                     "/api/mobile/pairing/state",
@@ -549,7 +565,13 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                     },
                 )
                 self.assertEqual(denied.status_code, 400, denied.text)
-                self.assertIn("refresh grant is invalid", denied.text)
+                self.assertEqual(
+                    denied.json()["detail"],
+                    {
+                        "code": "refresh_grant_invalid",
+                        "message": "refresh grant is invalid",
+                    },
+                )
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
