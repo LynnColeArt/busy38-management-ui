@@ -15,6 +15,14 @@
     device relationship when revoking its active token
   - `GET /api/mobile/pairing/state` now exposes safe trusted-device summaries
     with no raw refresh-grant recovery
+- The management backend now also owns the bounded LAN discovery descriptor:
+  - `GET /api/mobile/pairing/discovery` exposes a read-only candidate surface
+    for local-network pairing discovery
+  - the descriptor returns `version`, `service_type`, `instance_id`,
+    `display_label`, `control_plane_url`, `bridge_url`, `bootstrap_methods`,
+    and `supports_pairing_code`
+  - the descriptor does not issue trust; short pairing-code confirmation
+    remains mandatory through `POST /api/mobile/pairing/exchange`
 
 ## 2026-03-09
 
