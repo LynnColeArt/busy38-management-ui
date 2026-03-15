@@ -553,6 +553,76 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
+    def test_mobile_pairing_revoke_accepts_active_refreshed_token_id(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                    "BUSY38_MOBILE_PAIRING_BRIDGE_URL": "ws://busy.local:8787/ws",
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    issue = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                    self.assertEqual(issue.status_code, 200, issue.text)
+                    issued = issue.json()["pairing"]
+
+                    exchange = self.client.post(
+                        "/api/mobile/pairing/exchange",
+                        json={
+                            "pairing_code": issued["pairing_code"],
+                            "device_label": "Sam iPhone",
+                        },
+                    )
+                    self.assertEqual(exchange.status_code, 200, exchange.text)
+                    exchanged = exchange.json()["pairing"]
+
+                    refresh = self.client.post(
+                        "/api/mobile/trust/refresh",
+                        json={
+                            "device_relationship_id": exchanged["device_relationship_id"],
+                            "refresh_grant": exchanged["refresh_grant"],
+                            "expected_instance_id": "busy-local",
+                        },
+                    )
+                    self.assertEqual(refresh.status_code, 200, refresh.text)
+                    refreshed = refresh.json()["pairing"]
+
+                revoke = self.client.post(
+                    "/api/mobile/pairing/revoke",
+                    headers=admin_headers,
+                    json={"token_id": refreshed["token_id"]},
+                )
+                self.assertEqual(revoke.status_code, 200, revoke.text)
+
+                state_after = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+                self.assertEqual(state_after.status_code, 200, state_after.text)
+                trusted_device = state_after.json()["pairing"]["trusted_devices"][0]
+                self.assertEqual(trusted_device["token_id"], refreshed["token_id"])
+                self.assertEqual(trusted_device["status"], "revoked")
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
     def test_mobile_pairing_issue_rejects_non_admin_and_bad_payload(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}

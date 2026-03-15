@@ -556,6 +556,14 @@ def _resolve_token_id_from_state(state: Dict[str, Any], token_id: str) -> str:
             continue
         if str(record.get("token_id") or "").strip() == token_id:
             return token_id
+    trusted_devices = state.get("trusted_devices")
+    if not isinstance(trusted_devices, dict):
+        raise PairingStateError("PAIRING_STATE_INVALID", "trusted_devices must be an object")
+    for record in trusted_devices.values():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("token_id") or "").strip() == token_id:
+            return token_id
     raise PairingTokenError("PAIRING_TOKEN_INVALID", "pairing token id is unknown")
 
 
