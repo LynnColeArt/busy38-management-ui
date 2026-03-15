@@ -5800,7 +5800,7 @@ async def serve_web_root() -> FileResponse:
 
 @app.get("/{asset_path:path}", include_in_schema=False)
 async def serve_web_asset(asset_path: str) -> FileResponse:
-    if asset_path.startswith("api/"):
+    if asset_path == "api" or asset_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="Not Found")
 
     candidate = (_WEB_ROOT / asset_path).resolve()

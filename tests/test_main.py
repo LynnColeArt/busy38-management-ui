@@ -295,6 +295,13 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertIn("text/html", response.headers.get("content-type", ""))
         self.assertIn("busy38-management-api-base", response.text)
 
+    def test_bare_api_namespace_root_stays_a_404(self):
+        response = self.client.get("/api")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("application/json", response.headers.get("content-type", ""))
+        self.assertEqual(response.json(), {"detail": "Not Found"})
+
     def test_viewer_and_admin_tokens(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
