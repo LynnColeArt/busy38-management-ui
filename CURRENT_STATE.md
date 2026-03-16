@@ -1,5 +1,13 @@
 # Current State
 
+## 2026-03-13
+
+- The management backend now serves the browser app at the same origin:
+  - `GET /` returns `web/index.html`
+  - unknown non-API browser paths such as `/admin` fall back to the same SPA
+    entrypoint
+  - local operator launch can now open `http://127.0.0.1:8031/` directly
+
 ## 2026-03-09
 
 - Busy-owned appearance preferences are now implemented in this repo's control
