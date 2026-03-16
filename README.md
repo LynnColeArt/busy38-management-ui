@@ -101,6 +101,7 @@ Appearance preference authority uses the same Busy runtime path:
   warning shapes returned by current plugin UI handlers.
 - Mobile pairing is now plugin-owned in this repo for the first bounded slice:
   - admin-authenticated issue/revoke endpoints and an unauthenticated exchange endpoint now exist under `/api/mobile/pairing/*`
+  - unauthenticated read-only LAN discovery now exists at `GET /api/mobile/pairing/discovery`
   - issued pairing state is short-lived and single-use
   - persisted pairing state must match the live Busy instance id; stale instance state fails closed before issue/exchange
   - exchange returns a scoped Busy bridge token and authoritative bridge URL
@@ -167,6 +168,7 @@ Import review boundary:
 - `POST /api/memory`
 - `POST /api/chat_history`
 - `POST /api/mobile/pairing/issue`
+- `GET /api/mobile/pairing/discovery`
 - `POST /api/mobile/pairing/exchange`
 - `POST /api/mobile/trust/refresh`
 - `GET /api/mobile/pairing/state`

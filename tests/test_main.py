@@ -645,6 +645,38 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
+    def test_mobile_pairing_discovery_descriptor_exposes_lan_candidate_metadata(self):
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                    "BUSY38_MOBILE_PAIRING_BRIDGE_URL": "ws://busy.local:8787/ws",
+                    "BUSY38_MOBILE_DISCOVERY_LABEL": "Office PillowFort",
+                },
+                clear=False,
+            ):
+                response = self.client.get("/api/mobile/pairing/discovery")
+
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()["discovery"]
+            self.assertEqual(payload["version"], "1")
+            self.assertEqual(payload["service_type"], "_busy38pair._tcp")
+            self.assertEqual(payload["instance_id"], "busy-local")
+            self.assertEqual(payload["display_label"], "Office PillowFort")
+            self.assertEqual(payload["control_plane_url"], "http://testserver")
+            self.assertEqual(payload["bridge_url"], "ws://busy.local:8787/ws")
+            self.assertEqual(
+                payload["bootstrap_methods"],
+                ["local_network_code", "qr_code", "manual_details"],
+            )
+            self.assertTrue(payload["supports_pairing_code"])
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
     def test_mobile_pairing_issue_rejects_non_admin_and_bad_payload(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
