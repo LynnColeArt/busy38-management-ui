@@ -14,6 +14,11 @@ const API_BASE = (() => {
 })();
 
 const TOKEN_KEY = "busy38-management-token";
+const SEEN_EVENT_STORAGE_FALLBACK = {
+  event_ids: [],
+  card_reviews: {},
+  updated_at: "",
+};
 const GM_TICKET_STATUS_OPTIONS = [
   "requested",
   "queued",
@@ -30,19 +35,24 @@ const GM_TICKET_DISPATCH_ROLES = ["portia", "nora", "mini", "mission_agent"];
 const GM_TICKET_MESSAGE_TYPES = ["comment", "status", "request"];
 const state = {
   settings: {},
+  appearance: {},
   providers: [],
+  selectedProviderId: "",
   plugins: [],
   agents: [],
   events: [],
   startupDebugSummary: null,
   corePlugins: [],
+  runtimeStatus: null,
   runtimeServices: [],
+  visibleEvents: [],
   latestPairingIssue: null,
   mobilePairingState: null,
   role: "unknown",
   roleSource: "unknown",
   providerChain: [],
   providerDiagnostics: null,
+  providerActionResults: {},
   importJobs: [],
   importItems: [],
   importAudit: null,
@@ -55,6 +65,12 @@ const state = {
   agentToolAudit: null,
   toolUsage: [],
   toolUsageCount: 0,
+  eventFilters: {
+    domain: "",
+    level: "",
+    query: "",
+    limit: 50,
+  },
   agentOverlayHistory: [],
   agentOverlayHistoryCount: 0,
   gmTickets: [],
@@ -63,8 +79,15 @@ const state = {
   gmTicketMessages: [],
   gmTicketMessageCount: 0,
   gmTicketAudit: null,
+  attentionSeen: SEEN_EVENT_STORAGE_FALLBACK,
+  dashboardOverview: null,
+  selectedAttentionCardId: "",
+  attentionHistoryExpandedCards: {},
 };
 let eventSocket = null;
+
+applyAppearanceTheme({});
+loadAttentionSeenState();
 
 const qs = (selector) => document.querySelector(selector);
 
@@ -205,6 +228,206 @@ function mobilePairingQrApi() {
     return null;
   }
   return api;
+}
+
+function appearanceThemeApi() {
+  const api = window.Busy38AppearanceTheme;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.normalizeAppearancePreferences !== "function") {
+    return null;
+  }
+  if (typeof api.effectiveDesktopThemeValue !== "function") {
+    return null;
+  }
+  if (typeof api.applyDocumentTheme !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function runtimeUiApi() {
+  const api = window.Busy38RuntimeUi;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.buildRuntimeViewModel !== "function") {
+    return null;
+  }
+  if (typeof api.renderServiceCard !== "function") {
+    return null;
+  }
+  if (typeof api.formatActionStatus !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function attentionStateApi() {
+  const api = window.Busy38AttentionState;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.readSeenState !== "function") {
+    return null;
+  }
+  if (typeof api.markEventsSeen !== "function") {
+    return null;
+  }
+  if (typeof api.markCardReviewed !== "function") {
+    return null;
+  }
+  if (typeof api.getCardReviewedAt !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function eventsUiApi() {
+  const api = window.Busy38EventsUi;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.buildEventViewModel !== "function") {
+    return null;
+  }
+  if (typeof api.renderEventItem !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function dashboardOverviewApi() {
+  const api = window.Busy38DashboardOverview;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.buildDashboardViewModel !== "function") {
+    return null;
+  }
+  if (typeof api.renderDashboardCard !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function providerRoutingSummaryApi() {
+  const api = window.Busy38ProviderRoutingSummary;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.buildProviderRoutingSummary !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function providerHealthUiApi() {
+  const api = window.Busy38ProviderHealthUi;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.buildProviderHealthSummary !== "function") {
+    return null;
+  }
+  if (typeof api.renderProviderHealthSummary !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function providerActionUiApi() {
+  const api = window.Busy38ProviderActionUi;
+  if (!api || typeof api !== "object") {
+    return null;
+  }
+  if (typeof api.normalizeProviderActionResult !== "function") {
+    return null;
+  }
+  if (typeof api.renderProviderActionResult !== "function") {
+    return null;
+  }
+  return api;
+}
+
+function normalizeAppearancePreferences(raw) {
+  const api = appearanceThemeApi();
+  if (api) {
+    return api.normalizeAppearancePreferences(raw);
+  }
+  const source = raw && typeof raw === "object" ? raw : {};
+  return {
+    override_enabled: Boolean(source.override_enabled),
+    sync_theme_preferences:
+      typeof source.sync_theme_preferences === "boolean"
+        ? source.sync_theme_preferences
+        : true,
+    shared_theme_mode: ["system", "light", "dark"].includes(source.shared_theme_mode)
+      ? source.shared_theme_mode
+      : "system",
+    desktop_theme_mode: ["system", "light", "dark"].includes(source.desktop_theme_mode)
+      ? source.desktop_theme_mode
+      : "system",
+    contrast_policy: ["aa", "aaa"].includes(source.contrast_policy)
+      ? source.contrast_policy
+      : "aa",
+    motion_policy: ["default", "reduced"].includes(source.motion_policy)
+      ? source.motion_policy
+      : "default",
+    color_separation_policy: ["default", "stronger"].includes(source.color_separation_policy)
+      ? source.color_separation_policy
+      : "default",
+    text_spacing_policy: ["default", "increased"].includes(source.text_spacing_policy)
+      ? source.text_spacing_policy
+      : "default",
+  };
+}
+
+function applyAppearanceTheme(preferences) {
+  state.appearance = normalizeAppearancePreferences(preferences);
+  const api = appearanceThemeApi();
+  if (api) {
+    return api.applyDocumentTheme(window, document, state.appearance);
+  }
+  document.documentElement.dataset.theme = "dark";
+  return "dark";
+}
+
+function syncAppearanceFormState() {
+  const overrideInput = qs('input[name="appearance_override_enabled"]');
+  const syncInput = qs('input[name="appearance_sync_enabled"]');
+  const themeSelect = qs('select[name="appearance_theme_mode"]');
+  const syncRow = qs("#appearanceSyncRow");
+  const themeLabel = qs("#appearanceThemeModeLabel");
+  const contrastSelect = qs('select[name="appearance_contrast_policy"]');
+  const motionSelect = qs('select[name="appearance_motion_policy"]');
+  const colorSelect = qs('select[name="appearance_color_separation_policy"]');
+  const spacingSelect = qs('select[name="appearance_text_spacing_policy"]');
+  const saveButton = qs('#appearanceForm button[type="submit"]');
+  if (!overrideInput || !syncInput || !themeSelect) {
+    return;
+  }
+  const isAdmin = state.role === "admin";
+  const overrideEnabled = overrideInput.checked;
+  const syncEnabled = syncInput.checked;
+  overrideInput.disabled = !isAdmin;
+  syncInput.disabled = !isAdmin || !overrideEnabled;
+  themeSelect.disabled = !isAdmin || !overrideEnabled;
+  if (syncRow) {
+    syncRow.hidden = !overrideEnabled;
+  }
+  if (themeLabel) {
+    themeLabel.textContent = syncEnabled ? "Theme mode" : "Desktop theme mode";
+  }
+  for (const control of [contrastSelect, motionSelect, colorSelect, spacingSelect]) {
+    if (control) {
+      control.disabled = !isAdmin;
+    }
+  }
+  if (saveButton) {
+    saveButton.disabled = !isAdmin;
+  }
 }
 
 function downloadTextFile(filename, content, mimeType = "application/json") {
@@ -559,6 +782,7 @@ function renderProviderChain(chain) {
   const container = qs("#providerChain");
   const summary = qs("#providerChainSummary");
   const routingPath = qs("#providerRoutingPath");
+  const routingHealth = qs("#providerRoutingHealth");
   if (!container) {
     return;
   }
@@ -573,10 +797,15 @@ function renderProviderChain(chain) {
       routing_path: "",
     };
   const nodes = Array.isArray(metadata.chain) ? metadata.chain : [];
+  const routingSummary = providerRoutingSummaryApi()?.buildProviderRoutingSummary(metadata) || null;
   if (!Array.isArray(nodes) || nodes.length === 0) {
     container.innerHTML = "<p>No enabled providers in chain.</p>";
     if (summary) {
       summary.textContent = metadata.selection_strategy || "No enabled providers in chain.";
+    }
+    if (routingHealth) {
+      routingHealth.textContent = routingSummary?.summary || "routing blocked";
+      routingHealth.className = `status ${routingSummary?.tone || "err"}`;
     }
     if (routingPath) {
       routingPath.textContent = "No routing path configured.";
@@ -588,7 +817,14 @@ function renderProviderChain(chain) {
     const activeProvider = metadata.active_provider_id || nodes[0]?.id || "none";
     const totals = `${metadata.enabled_count ?? nodes.length}/${metadata.total_count ?? nodes.length}`;
     const intent = metadata.routing_intent || "primary then fallback";
-    summary.textContent = `${metadata.selection_strategy}. Active provider: ${activeProvider}. Active/total: ${totals}. Intent: ${intent}. ${rationale}`;
+    const routingState = routingSummary
+      ? `${routingSummary.summary}. Available/enabled: ${routingSummary.metric}. ${routingSummary.detail}. `
+      : "";
+    summary.textContent = `${routingState}${metadata.selection_strategy}. Active provider: ${activeProvider}. Active/total: ${totals}. Intent: ${intent}. ${rationale}`;
+  }
+  if (routingHealth) {
+    routingHealth.textContent = routingSummary?.summary || "routing state unavailable";
+    routingHealth.className = `status ${routingSummary?.tone || ""}`;
   }
   if (routingPath) {
     const pathValue = metadata.routing_path || `${nodes.map((provider) => `${provider.id}`).join(" -> ")} (${nodes.length} nodes)`;
@@ -621,11 +857,19 @@ function renderProviderDiagnosticsHtml(payload) {
   }
   const metrics = payload.metrics || {};
   const history = Array.isArray(payload.test_history) ? payload.test_history : [];
+  const healthApi = providerHealthUiApi();
+  const healthSummary = healthApi ? healthApi.buildProviderHealthSummary(payload) : null;
+  const actionApi = providerActionUiApi();
+  const actionSummary = actionApi && payload.last_action_result
+    ? actionApi.renderProviderActionResult(payload.last_action_result)
+    : "";
   const rows = history
     .map((item) => `<li>${formatDateOrDash(item.tested_at)} — ${escapeHtml(item.status || "unknown")} (${item.models_count || 0} model(s), ${item.latency_ms || 0}ms)</li>`)
     .join("");
 
   return `
+    ${actionSummary}
+    ${healthSummary ? healthApi.renderProviderHealthSummary(healthSummary) : ""}
     <div class="status-grid">
       <div><strong>Provider:</strong> ${escapeHtml(payload.provider_id || "unknown")}</div>
       <div><strong>Latency last:</strong> ${metrics.latency_ms_last != null ? `${metrics.latency_ms_last}ms` : "n/a"}</div>
@@ -739,10 +983,14 @@ function updateRoleBadge(role, source) {
   el.className = `role-badge role-${nextRole}`;
   el.title = `Token source: ${tokenSource}`;
   syncMobilePairingAccess();
+  syncRuntimeControlAccess();
 }
 
 function buildProviderCard(provider) {
   const metadata = parseProviderMetadata(provider.metadata);
+  const healthApi = providerHealthUiApi();
+  const healthSummary = healthApi ? healthApi.buildProviderHealthSummary({ provider, metadata }) : null;
+  const selectedClass = state.selectedProviderId === provider.id ? " provider-card-selected" : "";
   const discoveredModels = Array.isArray(metadata.discovered_models) ? metadata.discovered_models : [];
   const discovery = metadata.model_discovery || {};
   const displayName = metadata.display_name || provider.name || "Unnamed provider";
@@ -772,7 +1020,7 @@ function buildProviderCard(provider) {
     : "Manual entry recommended";
 
   return `
-    <div class="card">
+    <div class="card${selectedClass}" data-provider-card-id="${escapeHtml(provider.id)}">
       <h3>${escapeHtml(displayName)}</h3>
       <p><strong>Kind:</strong> ${escapeHtml(kind)}</p>
       <p><strong>Status:</strong> ${formatProviderStatusChip(provider.status)} priority ${provider.priority}</p>
@@ -794,6 +1042,7 @@ function buildProviderCard(provider) {
       <p><strong>Model discovery:</strong> ${discoveryText}</p>
       ${discovery.error ? `<p><strong>Discovery note:</strong> ${escapeHtml(discovery.error)}</p>` : ""}
       ${discoveredLabel}
+      ${healthSummary ? healthApi.renderProviderHealthSummary(healthSummary) : ""}
       <p><strong>Provider test:</strong> ${escapeHtml(testText)}</p>
       ${testError}
       <p>
@@ -850,6 +1099,54 @@ function buildProviderCard(provider) {
       </p>
     </div>
   `;
+}
+
+function focusProviderCard(providerId, options = {}) {
+  const normalizedId = `${providerId || ""}`.trim();
+  state.selectedProviderId = normalizedId;
+  if (!normalizedId || options.scroll === false) {
+    return;
+  }
+  const selectorId = window.CSS && typeof window.CSS.escape === "function"
+    ? window.CSS.escape(normalizedId)
+    : normalizedId.replace(/["\\]/g, "\\$&");
+  window.requestAnimationFrame(() => {
+    const card = qs(`[data-provider-card-id="${selectorId}"]`);
+    if (card && typeof card.scrollIntoView === "function") {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  });
+}
+
+function recordProviderActionResult(providerId, payload) {
+  const normalizedId = `${providerId || ""}`.trim();
+  if (!normalizedId) {
+    return null;
+  }
+  const api = providerActionUiApi();
+  if (!api) {
+    return null;
+  }
+  const normalized = api.normalizeProviderActionResult({
+    providerId: normalizedId,
+    ...payload,
+    recordedAt: payload?.recordedAt || new Date().toISOString(),
+  });
+  state.providerActionResults = {
+    ...(state.providerActionResults || {}),
+    [normalizedId]: normalized,
+  };
+  if (state.providerDiagnostics?.provider_id === normalizedId) {
+    state.providerDiagnostics = {
+      ...state.providerDiagnostics,
+      last_action_result: normalized,
+    };
+    const diagnosticsRoot = qs("#providerDiagnostics");
+    if (diagnosticsRoot) {
+      diagnosticsRoot.innerHTML = renderProviderDiagnosticsHtml(state.providerDiagnostics);
+    }
+  }
+  return normalized;
 }
 
 function buildAgentCard(agent) {
@@ -1231,29 +1528,79 @@ function buildPluginCard(plugin) {
 }
 
 function renderRuntimeServices(services) {
-  const hasServices = Array.isArray(services) && services.length > 0;
-  const options = hasServices
-    ? services.map((service) => `<option value="${service.name}">${service.name}</option>`).join("")
-    : "<option value=\"busy\">busy</option>";
-
+  const runtimeView = runtimeUiApi()?.buildRuntimeViewModel(state.runtimeStatus || {}, {
+    services,
+    default_service: state.runtimeStatus?.defaultService || "busy",
+  }) || {
+    summary: {
+      defaultService: state.runtimeStatus?.defaultService || "busy",
+    },
+    services: Array.isArray(services) ? services : [],
+  };
+  const normalizedServices = runtimeView.services || [];
+  const hasServices = normalizedServices.length > 0;
   const select = qs("#runtimeService");
+  const previousValue = select?.value || "";
+  const defaultService = runtimeView.summary?.defaultService || "busy";
+  const options = hasServices
+    ? normalizedServices.map((service) => `<option value="${escapeHtml(service.name)}">${escapeHtml(service.name)}</option>`).join("")
+    : `<option value="${escapeHtml(defaultService)}">${escapeHtml(defaultService)}</option>`;
+
   if (select) {
     select.innerHTML = options;
-    if (!select.value && hasServices) {
-      select.value = "busy";
+    if (hasServices && normalizedServices.some((service) => service.name === previousValue)) {
+      select.value = previousValue;
+    } else if (hasServices && normalizedServices.some((service) => service.name === defaultService)) {
+      select.value = defaultService;
+    } else if (hasServices && normalizedServices[0]) {
+      select.value = normalizedServices[0].name;
+    } else {
+      select.value = defaultService;
     }
   }
 
-  const renderService = (service) => `
-    <div class="card">
-      <h3>${service.name}</h3>
-      <p><strong>Running:</strong> ${service.running ? "yes" : "no"}</p>
-      <p><strong>PID:</strong> ${service.pid || "-"}</p>
-      <p><strong>Log:</strong> ${service.log_file || "-"}</p>
-    </div>
-  `;
+  const canControl = state.role === "admin";
+  const renderService = (service) => {
+    const api = runtimeUiApi();
+    if (api) {
+      return api.renderServiceCard(service, { canControl });
+    }
+    return `
+      <div class="card">
+        <h3>${escapeHtml(service.name)}</h3>
+        <p><strong>Running:</strong> ${service.running ? "yes" : "no"}</p>
+        <p><strong>PID:</strong> ${service.pid || "-"}</p>
+        <p><strong>Log:</strong> ${service.log_file || "-"}</p>
+      </div>
+    `;
+  };
 
-  renderCards("#runtimeServices", services || [], renderService);
+  renderCards("#runtimeServices", normalizedServices, renderService);
+  syncRuntimeControlAccess();
+}
+
+function syncRuntimeControlAccess() {
+  const canControl = state.role === "admin";
+  const select = qs("#runtimeService");
+  if (select) {
+    select.disabled = !canControl;
+  }
+  document.querySelectorAll('[data-runtime-control="1"]').forEach((node) => {
+    node.disabled = !canControl;
+  });
+  const hint = qs("#runtimeControlHint");
+  if (!hint) {
+    return;
+  }
+  if (canControl) {
+    hint.textContent = "Admin token can start, stop, and restart runtime services.";
+    return;
+  }
+  if (state.role === "viewer") {
+    hint.textContent = "Viewer token can inspect runtime state but cannot control services.";
+    return;
+  }
+  hint.textContent = "Set an admin token to control runtime services.";
 }
 
 function setMobilePairingControlsDisabled(disabled) {
@@ -1485,6 +1832,329 @@ async function loadMobilePairingState() {
   }
 }
 
+function buildEventFilterState() {
+  return {
+    domain: qs("#eventDomainFilter")?.value || "",
+    level: qs("#eventLevelFilter")?.value || "",
+    query: qs("#eventQueryFilter")?.value.trim() || "",
+    limit: Math.min(100, Math.max(1, Number(qs("#eventLimitFilter")?.value || 50))),
+  };
+}
+
+function updateEventFilterOptions(availableDomains) {
+  const select = qs("#eventDomainFilter");
+  if (!select) {
+    return;
+  }
+  const currentValue = select.value || "";
+  const preferredOrder = ["runtime", "gm_ticket", "import", "agent", "provider", "plugin", "appearance", "mobile", "chat", "memory"];
+  const seen = new Set([""]);
+  const orderedDomains = [""];
+  for (const candidate of preferredOrder) {
+    if (Array.isArray(availableDomains) && availableDomains.includes(candidate) && !seen.has(candidate)) {
+      seen.add(candidate);
+      orderedDomains.push(candidate);
+    }
+  }
+  for (const candidate of availableDomains || []) {
+    if (!seen.has(candidate)) {
+      seen.add(candidate);
+      orderedDomains.push(candidate);
+    }
+  }
+  select.innerHTML = orderedDomains
+    .map((domain) => {
+      const label = domain || "all";
+      return `<option value="${escapeHtml(domain)}">${escapeHtml(label)}</option>`;
+    })
+    .join("");
+  select.value = seen.has(currentValue) ? currentValue : "";
+}
+
+function renderDashboardOverview() {
+  const root = qs("#dashboardOverview");
+  const headline = qs("#dashboardOverviewHeadline");
+  if (!root || !headline) {
+    return;
+  }
+  const api = dashboardOverviewApi();
+  if (!api) {
+    headline.textContent = "Dashboard overview helper unavailable.";
+    headline.className = "status err";
+    root.innerHTML = "";
+    return;
+  }
+  const view = api.buildDashboardViewModel({
+    runtimeStatus: state.runtimeStatus,
+    runtimeServices: state.runtimeServices,
+    providers: state.providers,
+    providerChain: state.providerChain,
+    providerActionResults: state.providerActionResults,
+    gmTickets: state.gmTickets,
+    startupSummaryEvent: state.startupDebugSummary,
+    events: state.events,
+    seenEventIds: state.attentionSeen?.event_ids || [],
+    cardReviewTimestamps: state.attentionSeen?.card_reviews || {},
+    now: new Date().toISOString(),
+  });
+  state.dashboardOverview = view;
+  const selectedCardStillPresent = Array.isArray(view.cards)
+    && view.cards.some((card) => card.id === state.selectedAttentionCardId);
+  if (!selectedCardStillPresent) {
+    state.selectedAttentionCardId = view.defaultCardId || "";
+  }
+  headline.textContent = view.headline || "Control-plane overview unavailable.";
+  headline.className = `status ${view.tone || ""}`.trim();
+  root.innerHTML = (view.cards || [])
+    .map((card) => api.renderDashboardCard({
+      ...card,
+      selected: card.id === state.selectedAttentionCardId,
+    }))
+    .join("");
+  renderDashboardAttentionHistory();
+}
+
+function loadAttentionSeenState() {
+  const api = attentionStateApi();
+  if (!api) {
+    state.attentionSeen = { ...SEEN_EVENT_STORAGE_FALLBACK };
+    return state.attentionSeen;
+  }
+  state.attentionSeen = api.readSeenState(window.localStorage);
+  return state.attentionSeen;
+}
+
+function markVisibleEventsSeen() {
+  const api = attentionStateApi();
+  if (!api) {
+    return;
+  }
+  state.attentionSeen = api.markEventsSeen(window.localStorage, state.attentionSeen, state.visibleEvents || []);
+}
+
+function renderDashboardAttentionHistory() {
+  const root = qs("#dashboardAttentionHistory");
+  if (!root) {
+    return;
+  }
+  const overview = state.dashboardOverview;
+  const eventsUi = eventsUiApi();
+  if (!overview || !Array.isArray(overview.cards)) {
+    root.innerHTML = "<p>Attention history unavailable.</p>";
+    return;
+  }
+  const card = overview.cards.find((entry) => entry.id === state.selectedAttentionCardId);
+  if (!card) {
+    root.innerHTML = "<p>Select a summary card to inspect recent unseen events.</p>";
+    return;
+  }
+  const focus = card.focus || {};
+  const remediationItems = Array.isArray(card.remediationItems) ? card.remediationItems : [];
+  const primaryProviderId = remediationItems[0]?.providerId || "";
+  const freshness = card.freshness && typeof card.freshness === "object" ? card.freshness : {};
+  const reviewState = card.reviewState && typeof card.reviewState === "object" ? card.reviewState : null;
+  const attentionEventCount = Array.isArray(card.attentionEvents) ? card.attentionEvents.length : 0;
+  const seenHistoryCount = Math.max(0, Number(card.seenHistoryCount || 0));
+  const showSeenHistory = Boolean(state.attentionHistoryExpandedCards?.[card.id]);
+  const seenHistoryEvents = Array.isArray(card.seenHistoryEvents) ? card.seenHistoryEvents : [];
+  const seenHistorySummary = `${card.seenHistorySummary || ""}`.trim();
+  const seenHistoryShowLabel = `${card.seenHistoryToggleLabel || `Show seen history (${seenHistoryCount})`}`.trim();
+  const seenHistoryHideLabel = `${card.seenHistoryToggleHideLabel || "Hide seen history"}`.trim();
+  const eventsSeenButton = attentionEventCount > 0
+    ? `<button type="button" data-action="mark-dashboard-card-events-seen" data-card-id="${escapeHtml(card.id || "")}">Mark ${attentionEventCount} attached event${attentionEventCount === 1 ? "" : "s"} seen</button>`
+    : "";
+  const seenHistoryToggle = seenHistoryCount > 0
+    ? `
+      <p class="control-row dashboard-attention-history-toggle">
+        <button type="button" data-action="toggle-dashboard-seen-history" data-card-id="${escapeHtml(card.id || "")}">
+          ${showSeenHistory ? escapeHtml(seenHistoryHideLabel) : escapeHtml(seenHistoryShowLabel)}
+        </button>
+        ${seenHistorySummary ? `<span class="meta">${escapeHtml(seenHistorySummary)}.</span>` : ""}
+      </p>
+    `
+    : "";
+  const remediationBlock = remediationItems.length > 0
+    ? `
+      <div class="provider-health-summary dashboard-attention-recommendations">
+        <p><strong>Recommended remediation</strong></p>
+        <p class="meta">${escapeHtml(card.remediationHint || "")}</p>
+        <ul class="compact-list provider-issue-list">
+          ${remediationItems.map((item) => `
+            <li>
+              <strong>${escapeHtml(item.providerId || "provider")}: ${escapeHtml(item.label || "issue")}</strong>
+              <span class="status ${escapeHtml(item.tone || "warn")}">${escapeHtml(item.tone === "err" ? "critical" : "review")}</span>
+              <div>${escapeHtml(item.detail || "")}</div>
+              <div class="meta">${escapeHtml(item.action || "")}</div>
+              <div>
+                <button
+                  type="button"
+                  data-action="open-dashboard-panel"
+                  data-panel-id="providersPanel"
+                  data-provider-status="${escapeHtml(focus.providerStatus || "")}"
+                  data-provider-id="${escapeHtml(item.providerId || "")}"
+                >Open diagnostics</button>
+              </div>
+            </li>
+          `).join("")}
+        </ul>
+      </div>
+    `
+    : "";
+  const actionButtons = `
+    <p class="control-row">
+      <button
+        type="button"
+        data-action="open-dashboard-panel"
+        data-panel-id="${escapeHtml(focus.panel || "")}"
+        data-provider-status="${escapeHtml(focus.providerStatus || "")}"
+        data-provider-id="${escapeHtml(primaryProviderId)}"
+        data-gm-status="${escapeHtml(focus.gmStatus || "")}"
+        data-gm-priority="${escapeHtml(focus.gmPriority || "")}"
+      >Open related panel</button>
+      <button type="button" data-action="mark-dashboard-card-reviewed" data-card-id="${escapeHtml(card.id || "")}">Mark summary reviewed</button>
+      ${eventsSeenButton}
+    </p>
+  `;
+  const eventRows = Array.isArray(card.attentionEvents) && card.attentionEvents.length > 0 && eventsUi
+    ? card.attentionEvents.map((event) => eventsUi.renderEventItem(event, {
+      actionName: "mark-dashboard-attention-event-seen",
+      actionLabel: "Mark event seen",
+      eventData: {
+        cardId: card.id || "",
+      },
+    })).join("")
+    : '<li class="card event-card"><p>No unseen events currently attached to this summary.</p></li>';
+  const seenHistoryRows = showSeenHistory
+    ? seenHistoryEvents.length > 0 && eventsUi
+      ? seenHistoryEvents.map((event) => eventsUi.renderEventItem(event)).join("")
+      : '<li class="card event-card"><p>No seen events are currently available for this summary.</p></li>'
+    : "";
+  root.innerHTML = `
+    <div class="card">
+      <h3>${escapeHtml(card.title || "Attention")}</h3>
+      <p><strong>${escapeHtml(card.summary || "")}</strong></p>
+      <p class="meta">${escapeHtml(card.detail || "")}</p>
+      ${freshness.label ? `<p class="meta dashboard-remediation-hint"><strong>Freshness:</strong> ${escapeHtml(freshness.label)} ${escapeHtml(freshness.detail || "")}</p>` : ""}
+      ${reviewState?.label ? `<p class="meta dashboard-remediation-hint"><strong>Review:</strong> ${escapeHtml(reviewState.label)}${reviewState.detail ? ` - ${escapeHtml(reviewState.detail)}` : ""}</p>` : ""}
+      ${card.remediationHint ? `<p class="meta dashboard-remediation-hint"><strong>Next:</strong> ${escapeHtml(card.remediationHint)}</p>` : ""}
+      ${card.actionSummary ? `<p class="meta dashboard-remediation-hint"><strong>Latest:</strong> ${escapeHtml(card.actionSummary)}</p>` : ""}
+      ${remediationBlock}
+      ${actionButtons}
+    </div>
+    <ul class="compact-list">
+      ${eventRows}
+    </ul>
+    ${seenHistoryToggle}
+    ${showSeenHistory ? `<ul class="compact-list">${seenHistoryRows}</ul>` : ""}
+  `;
+}
+
+function selectDashboardAttentionCard(target) {
+  state.selectedAttentionCardId = target?.dataset?.cardId || "";
+  renderDashboardAttentionHistory();
+}
+
+function toggleDashboardSeenHistory(target) {
+  const cardId = `${target?.dataset?.cardId || ""}`.trim();
+  if (!cardId) {
+    return;
+  }
+  state.attentionHistoryExpandedCards = {
+    ...state.attentionHistoryExpandedCards,
+    [cardId]: !state.attentionHistoryExpandedCards?.[cardId],
+  };
+  renderDashboardAttentionHistory();
+}
+
+function markDashboardCardSeen(target) {
+  const cardId = target?.dataset?.cardId || "";
+  if (!cardId) {
+    return;
+  }
+  const api = attentionStateApi();
+  if (!api) {
+    return;
+  }
+  state.attentionSeen = api.markCardReviewed(window.localStorage, state.attentionSeen, cardId);
+  renderDashboardOverview();
+}
+
+function markDashboardCardEventsSeen(target) {
+  const cardId = target?.dataset?.cardId || "";
+  const overview = state.dashboardOverview;
+  if (!cardId || !overview || !Array.isArray(overview.cards)) {
+    return;
+  }
+  const card = overview.cards.find((entry) => entry.id === cardId);
+  if (!card) {
+    return;
+  }
+  const api = attentionStateApi();
+  if (!api) {
+    return;
+  }
+  state.attentionSeen = api.markEventsSeen(window.localStorage, state.attentionSeen, card.attentionEvents || []);
+  renderDashboardOverview();
+}
+
+function markDashboardAttentionEventSeen(target) {
+  const eventId = `${target?.dataset?.eventId || ""}`.trim();
+  if (!eventId) {
+    return;
+  }
+  const api = attentionStateApi();
+  if (!api) {
+    return;
+  }
+  const event = (Array.isArray(state.events) ? state.events : []).find(
+    (entry) => `${entry?.id || ""}`.trim() === eventId,
+  );
+  if (!event) {
+    return;
+  }
+  state.attentionSeen = api.markEventsSeen(window.localStorage, state.attentionSeen, [event]);
+}
+
+async function openDashboardPanel(target) {
+  const panelId = target?.dataset?.panelId || "";
+  const providerStatus = target?.dataset?.providerStatus || "";
+  const providerId = target?.dataset?.providerId || "";
+  const gmStatus = target?.dataset?.gmStatus || "";
+  const gmPriority = target?.dataset?.gmPriority || "";
+  let scrollTargetId = panelId;
+
+  if (panelId === "providersPanel") {
+    const statusSelect = qs("#providerFilterStatus");
+    if (statusSelect) {
+      statusSelect.value = providerStatus;
+    }
+    await loadProviders();
+    if (providerId) {
+      focusProviderCard(providerId, { scroll: false });
+      await loadProviderDiagnostics(providerId);
+      setStatus("#providerChainStatus", `Diagnostics loaded for ${providerId}`, "ok");
+      scrollTargetId = "providerDiagnosticsPanel";
+    }
+  } else if (panelId === "gmTicketsPanel") {
+    const statusSelect = qs("#gmTicketFilterStatus");
+    const prioritySelect = qs("#gmTicketFilterPriority");
+    if (statusSelect) {
+      statusSelect.value = gmStatus;
+    }
+    if (prioritySelect) {
+      prioritySelect.value = gmPriority;
+    }
+    await loadGmTickets();
+  } else if (panelId === "runtimePanel") {
+    await loadRuntime();
+  }
+
+  const panel = scrollTargetId ? qs(`#${scrollTargetId}`) : null;
+  if (panel && typeof panel.scrollIntoView === "function") {
+    panel.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
 function renderEvents(items) {
   const list = qs("#events");
   if (!list) {
@@ -1495,9 +2165,43 @@ function renderEvents(items) {
   );
   state.startupDebugSummary = startupSummary || null;
   renderStartupDebugSummary(startupSummary);
-  list.innerHTML = (items || [])
-    .map((event) => `<li>${event.created_at} — [${event.level}] ${event.message}</li>`)
-    .join("");
+  const eventsUi = eventsUiApi();
+  if (!eventsUi) {
+    list.innerHTML = (items || [])
+      .map((event) => `<li>${escapeHtml(event.created_at)} - [${escapeHtml(event.level)}] ${escapeHtml(event.message)}</li>`)
+      .join("");
+    return;
+  }
+
+  state.eventFilters = buildEventFilterState();
+  const view = eventsUi.buildEventViewModel(items || [], {
+    ...state.eventFilters,
+    seenEventIds: state.attentionSeen?.event_ids || [],
+  });
+  state.visibleEvents = view.events || [];
+  updateEventFilterOptions(view.availableDomains);
+  const summary = qs("#eventFilterSummary");
+  if (summary) {
+    const domainParts = Object.entries(view.summary.domains || {})
+      .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+      .slice(0, 6)
+      .map(([domain, count]) => `${domain}:${count}`);
+    const filterParts = [];
+    if (view.filters.domain) {
+      filterParts.push(`domain=${view.filters.domain}`);
+    }
+    if (view.filters.level) {
+      filterParts.push(`level=${view.filters.level}`);
+    }
+    if (view.filters.query) {
+      filterParts.push(`query=${view.filters.query}`);
+    }
+    summary.textContent = `${view.filteredCount}/${view.summary.total} shown • ${view.unseenCount || 0} new • ${domainParts.join(" • ") || "no events"}${filterParts.length ? ` • filters: ${filterParts.join(", ")}` : ""}`;
+  }
+  list.innerHTML = view.events
+    .map((event) => eventsUi.renderEventItem(event))
+    .join("") || '<li class="card event-card"><p>No events match the current filters.</p></li>';
+  renderDashboardOverview();
 }
 
 function renderStartupDebugSummary(summaryEvent) {
@@ -2014,6 +2718,49 @@ async function loadSettings() {
   return payload;
 }
 
+async function loadAppearance() {
+  const payload = await fetchJson("/api/appearance");
+  const preferences = normalizeAppearancePreferences(
+    payload.appearance_preferences || {},
+  );
+  applyAppearanceTheme(preferences);
+  const overrideInput = qs('input[name="appearance_override_enabled"]');
+  const syncInput = qs('input[name="appearance_sync_enabled"]');
+  const themeSelect = qs('select[name="appearance_theme_mode"]');
+  const contrastSelect = qs('select[name="appearance_contrast_policy"]');
+  const motionSelect = qs('select[name="appearance_motion_policy"]');
+  const colorSelect = qs('select[name="appearance_color_separation_policy"]');
+  const spacingSelect = qs('select[name="appearance_text_spacing_policy"]');
+  if (overrideInput) {
+    overrideInput.checked = Boolean(preferences.override_enabled);
+  }
+  if (syncInput) {
+    syncInput.checked = Boolean(preferences.sync_theme_preferences);
+  }
+  if (themeSelect) {
+    themeSelect.value = preferences.override_enabled
+      ? (preferences.sync_theme_preferences
+        ? preferences.shared_theme_mode
+        : preferences.desktop_theme_mode)
+      : "system";
+  }
+  if (contrastSelect) {
+    contrastSelect.value = preferences.contrast_policy;
+  }
+  if (motionSelect) {
+    motionSelect.value = preferences.motion_policy;
+  }
+  if (colorSelect) {
+    colorSelect.value = preferences.color_separation_policy;
+  }
+  if (spacingSelect) {
+    spacingSelect.value = preferences.text_spacing_policy;
+  }
+  updateRoleBadge(payload.role, payload.role_source);
+  syncAppearanceFormState();
+  return payload;
+}
+
 async function loadProviders() {
   const filters = getProviderFilterState();
   const params = new URLSearchParams();
@@ -2036,6 +2783,11 @@ async function loadProviders() {
   const payload = await fetchJson(`/api/providers${query ? `?${query}` : ""}`);
   state.providers = payload.providers || [];
   renderCards("#providers", state.providers, buildProviderCard);
+  if (state.selectedProviderId && !state.providers.some((provider) => provider && provider.id === state.selectedProviderId)) {
+    state.selectedProviderId = "";
+    renderCards("#providers", state.providers, buildProviderCard);
+  }
+  renderDashboardOverview();
 }
 
 async function loadPlugins() {
@@ -2079,18 +2831,31 @@ async function loadPluginDiagnostics(pluginId) {
 
 async function loadProviderChain() {
   const payload = await fetchJson("/api/providers/routing-chain");
-  state.providerChain = payload.chain || [];
+  state.providerChain = payload;
   renderProviderChain(payload);
+  renderDashboardOverview();
 }
 
 async function loadProviderDiagnostics(providerId) {
+  focusProviderCard(providerId);
+  const provider = Array.isArray(state.providers)
+    ? state.providers.find((entry) => entry && entry.id === providerId)
+    : null;
+  const routingNode = Array.isArray(state.providerChain?.chain)
+    ? state.providerChain.chain.find((entry) => entry && entry.id === providerId)
+    : null;
   const payload = await fetchJson(`/api/providers/${providerId}/metrics`);
   const historyPayload = await fetchJson(`/api/providers/${providerId}/history`);
   const merged = {
     provider_id: providerId,
+    provider,
+    routingNode,
+    status: provider?.status || routingNode?.status || "",
+    metadata: provider?.metadata || {},
     metrics: payload.metrics || {},
     last_test: payload.last_test || {},
     test_history: historyPayload.test_history || [],
+    last_action_result: state.providerActionResults?.[providerId] || null,
   };
   state.providerDiagnostics = merged;
   const diagnosticsRoot = qs("#providerDiagnostics");
@@ -2115,7 +2880,10 @@ async function loadAgentDirectory() {
 }
 
 async function loadEvents() {
-  const payload = await fetchJson("/api/events");
+  const filters = buildEventFilterState();
+  state.eventFilters = filters;
+  const params = new URLSearchParams({ limit: String(filters.limit || 50) });
+  const payload = await fetchJson(`/api/events?${params.toString()}`);
   state.events = payload.events || [];
   renderEvents(state.events);
 }
@@ -2124,17 +2892,43 @@ async function loadRuntime() {
   try {
     const payload = await fetchJson("/api/runtime/status");
     const status = payload.runtime || {};
-    const source = status.source || "none";
-    const connected = Boolean(status.connected);
-    setStatus("#runtimeStatus", `runtime (${source}) — connected: ${connected ? "yes" : "no"}`, "ok");
-
     const servicesPayload = await fetchJson("/api/runtime/services");
-    state.runtimeServices = servicesPayload.services || [];
+    const runtimeView = runtimeUiApi()?.buildRuntimeViewModel(status, servicesPayload) || {
+      summary: {
+        statusLine: `runtime (${status.source || "none"}) - ${status.connected ? "connected" : "unavailable"}`,
+        metaLine: "",
+        statusKind: status.connected ? "ok" : "err",
+        defaultService: servicesPayload.default_service || status.default_service || "busy",
+      },
+      services: servicesPayload.services || [],
+    };
+    state.runtimeStatus = runtimeView.summary || null;
+    state.runtimeServices = runtimeView.services || [];
+    setStatus(
+      "#runtimeStatus",
+      runtimeView.summary?.statusLine || "runtime status unavailable",
+      runtimeView.summary?.statusKind || "",
+    );
+    const runtimeMeta = qs("#runtimeStatusMeta");
+    if (runtimeMeta) {
+      runtimeMeta.textContent = runtimeView.summary?.metaLine || "";
+    }
     renderRuntimeServices(state.runtimeServices);
+    renderDashboardOverview();
   } catch (err) {
     setStatus("#runtimeStatus", `runtime unavailable: ${err.message}`, "err");
+    const runtimeMeta = qs("#runtimeStatusMeta");
+    if (runtimeMeta) {
+      runtimeMeta.textContent = "Unable to load runtime services.";
+    }
+    state.runtimeStatus = {
+      connected: false,
+      defaultService: "busy",
+      error: err.message,
+    };
     state.runtimeServices = [];
     renderRuntimeServices([]);
+    renderDashboardOverview();
   }
 }
 
@@ -3061,10 +3855,12 @@ async function loadGmTickets() {
     }
     renderGmTickets(state.gmTickets);
     setStatus("#gmTicketStatus", `loaded ${state.gmTickets.length} GM ticket(s)`, "ok");
+    renderDashboardOverview();
   } catch (err) {
     state.gmTickets = [];
     renderGmTickets([]);
     setStatus("#gmTicketStatus", `failed to load GM tickets: ${err.message}`, "err");
+    renderDashboardOverview();
   }
 }
 
@@ -3470,6 +4266,68 @@ async function saveSettings(event) {
   }
 }
 
+async function saveAppearance(event) {
+  event.preventDefault();
+  if (state.role !== "admin") {
+    setStatus("#appearanceStatus", "admin token required", "err");
+    return;
+  }
+  const overrideEnabled = Boolean(
+    qs('input[name="appearance_override_enabled"]')?.checked,
+  );
+  const syncEnabled = Boolean(
+    qs('input[name="appearance_sync_enabled"]')?.checked,
+  );
+  const selectedThemeMode =
+    qs('select[name="appearance_theme_mode"]')?.value || "system";
+  const contrastPolicy =
+    qs('select[name="appearance_contrast_policy"]')?.value || "aa";
+  const motionPolicy =
+    qs('select[name="appearance_motion_policy"]')?.value || "default";
+  const colorSeparationPolicy =
+    qs('select[name="appearance_color_separation_policy"]')?.value || "default";
+  const textSpacingPolicy =
+    qs('select[name="appearance_text_spacing_policy"]')?.value || "default";
+
+  let payload = {
+    contrast_policy: contrastPolicy,
+    motion_policy: motionPolicy,
+    color_separation_policy: colorSeparationPolicy,
+    text_spacing_policy: textSpacingPolicy,
+  };
+  if (!overrideEnabled) {
+    payload.override_enabled = false;
+  } else if (syncEnabled) {
+    payload = {
+      ...payload,
+      override_enabled: true,
+      sync_theme_preferences: true,
+      shared_theme_mode: selectedThemeMode,
+    };
+  } else {
+    payload = {
+      ...payload,
+      override_enabled: true,
+      sync_theme_preferences: false,
+      desktop_theme_mode: selectedThemeMode,
+    };
+  }
+
+  setStatus("#appearanceStatus", "saving", "");
+  try {
+    const response = await patchJson("/api/appearance", payload);
+    const preferences = normalizeAppearancePreferences(
+      response.appearance_preferences || {},
+    );
+    applyAppearanceTheme(preferences);
+    syncAppearanceFormState();
+    setStatus("#appearanceStatus", "appearance saved", "ok");
+    await loadAppearance();
+  } catch (err) {
+    setStatus("#appearanceStatus", `save failed: ${err.message}`, "err");
+  }
+}
+
 async function submitMemory(event) {
   event.preventDefault();
   const scope = qs('input[name="memoryScope"]').value.trim();
@@ -3784,12 +4642,14 @@ async function submitPlugin(event) {
   }
 }
 
-async function controlRuntime(action) {
-  const service = qs("#runtimeService")?.value || "busy";
-  const body = {};
+async function controlRuntime(action, explicitServiceName = "") {
+  const service = explicitServiceName || qs("#runtimeService")?.value || state.runtimeStatus?.defaultService || "busy";
   try {
-    await postJson(`/api/runtime/services/${service}/${action}`, body);
-    setStatus("#runtimeStatusText", `${action} submitted for ${service}`, "ok");
+    const response = await postJson(`/api/runtime/services/${encodeURIComponent(service)}/${action}`, {});
+    const message = runtimeUiApi()?.formatActionStatus(action, service, response)
+      || response?.message
+      || `${action} submitted for ${service}`;
+    setStatus("#runtimeStatusText", message, response?.success ? "ok" : "err");
     await loadRuntime();
   } catch (err) {
     setStatus("#runtimeStatusText", `${action} failed: ${err.message}`, "err");
@@ -3818,8 +4678,41 @@ async function onTableChange(event) {
     return;
   }
 
+  if (action === "refresh-runtime") {
+    await loadRuntime();
+    setStatus("#runtimeStatusText", "runtime refreshed", "ok");
+    return;
+  }
+
+  if (action === "runtime-service-start") {
+    await controlRuntime("start", target.dataset.serviceName || "");
+    return;
+  }
+
+  if (action === "runtime-service-stop") {
+    await controlRuntime("stop", target.dataset.serviceName || "");
+    return;
+  }
+
+  if (action === "runtime-service-restart") {
+    await controlRuntime("restart", target.dataset.serviceName || "");
+    return;
+  }
+
   if (action === "refresh-tool-usage") {
     await loadToolUsage();
+    return;
+  }
+
+  if (action === "refresh-events") {
+    await loadEvents();
+    return;
+  }
+
+  if (action === "mark-events-seen") {
+    markVisibleEventsSeen();
+    renderEvents(state.events);
+    setStatus("#healthState", "visible events marked seen", "ok");
     return;
   }
 
@@ -4121,13 +5014,37 @@ async function onTableChange(event) {
         }
         if (Array.isArray(result?.discovered_models) && result.discovered_models.length > 0) {
           setStatus("#healthState", `Discovered ${result.discovered_models.length} model(s)`, "ok");
+          recordProviderActionResult(id, {
+            action: "model discovery",
+            tone: "ok",
+            message: `Discovered ${result.discovered_models.length} model(s)`,
+            detail: result.discovered_models.join(", "),
+          });
         } else if (result?.message) {
           setStatus("#healthState", result.message, "err");
+          recordProviderActionResult(id, {
+            action: "model discovery",
+            tone: "err",
+            message: result.message,
+            detail: "Discovery completed without usable model results.",
+          });
         } else {
           setStatus("#healthState", "Discovery returned no models. Enter model manually.", "err");
+          recordProviderActionResult(id, {
+            action: "model discovery",
+            tone: "err",
+            message: "Discovery returned no models.",
+            detail: "Manual model entry is still required.",
+          });
         }
       } catch (err) {
         setStatus("#healthState", `Discovery failed: ${err.message}`, "err");
+        recordProviderActionResult(id, {
+          action: "model discovery",
+          tone: "err",
+          message: "Discovery failed",
+          detail: err.message,
+        });
       }
       await Promise.all([loadProviders(), loadProviderChain()]);
       return;
@@ -4140,11 +5057,29 @@ async function onTableChange(event) {
         const result = await postJson(`/api/providers/${id}/test`, {});
         if (result?.status === "pass") {
           setStatus("#healthState", `Provider test passed in ${result.latency_ms}ms`, "ok");
+          recordProviderActionResult(id, {
+            action: "provider test",
+            tone: "ok",
+            message: `Provider test passed in ${result.latency_ms}ms`,
+            detail: `${result.models_count || 0} model(s) returned`,
+          });
         } else {
           setStatus("#healthState", `Provider test failed: ${result.error || "see provider card"}`, "err");
+          recordProviderActionResult(id, {
+            action: "provider test",
+            tone: "err",
+            message: "Provider test failed",
+            detail: result.error || "No error detail returned.",
+          });
         }
       } catch (err) {
         setStatus("#healthState", `Provider test failed: ${err.message}`, "err");
+        recordProviderActionResult(id, {
+          action: "provider test",
+          tone: "err",
+          message: "Provider test failed",
+          detail: err.message,
+        });
       }
       await Promise.all([loadProviders(), loadProviderChain()]);
       return;
@@ -4157,6 +5092,12 @@ async function onTableChange(event) {
       const value = keyInput?.value?.trim() || "";
       if (!value) {
         setStatus("#healthState", "provider secret requires a key", "err");
+        recordProviderActionResult(id, {
+          action: mode === "rotate" ? "secret rotation" : "secret set",
+          tone: "err",
+          message: "Provider secret requires a key",
+          detail: "No key value was provided for the requested secret update.",
+        });
         return;
       }
       setStatus("#healthState", "updating provider secret...", "");
@@ -4170,8 +5111,20 @@ async function onTableChange(event) {
         }
         const secret = result?.provider?.metadata?.secret_present;
         setStatus("#healthState", secret ? "Provider secret set" : "Provider secret updated", "ok");
+        recordProviderActionResult(id, {
+          action: mode === "rotate" ? "secret rotation" : "secret set",
+          tone: "ok",
+          message: secret ? "Provider secret available" : "Provider secret updated",
+          detail: secret ? "Credential material is now present for this provider." : "The provider metadata updated, but secret presence was not confirmed.",
+        });
       } catch (err) {
         setStatus("#healthState", `Secret update failed: ${err.message}`, "err");
+        recordProviderActionResult(id, {
+          action: mode === "rotate" ? "secret rotation" : "secret set",
+          tone: "err",
+          message: "Secret update failed",
+          detail: err.message,
+        });
       }
       await Promise.all([loadProviders(), loadProviderChain()]);
       return;
@@ -4184,8 +5137,22 @@ async function onTableChange(event) {
         const result = await postJson(`/api/providers/${id}/secret`, { action: "clear" });
         const secret = result?.provider?.metadata?.secret_present;
         setStatus("#healthState", secret ? "Provider secret still present" : "Provider secret cleared", secret ? "err" : "ok");
+        recordProviderActionResult(id, {
+          action: "secret clear",
+          tone: secret ? "err" : "ok",
+          message: secret ? "Provider secret still present" : "Provider secret cleared",
+          detail: secret
+            ? "Clear action completed but the provider still reports secret presence."
+            : "Credential material is no longer present for this provider.",
+        });
       } catch (err) {
         setStatus("#healthState", `Secret clear failed: ${err.message}`, "err");
+        recordProviderActionResult(id, {
+          action: "secret clear",
+          tone: "err",
+          message: "Secret clear failed",
+          detail: err.message,
+        });
       }
       await Promise.all([loadProviders(), loadProviderChain()]);
       return;
@@ -4434,6 +5401,7 @@ async function boot() {
   }
 
   try {
+    await loadAppearance();
     await loadSettings();
     const loadTasks = [
       loadHealth(),
@@ -4473,6 +5441,9 @@ async function boot() {
 }
 
 qs("#saveToken")?.addEventListener("click", saveToken);
+qs("#appearanceForm")?.addEventListener("submit", saveAppearance);
+qs('input[name="appearance_override_enabled"]')?.addEventListener("change", syncAppearanceFormState);
+qs('input[name="appearance_sync_enabled"]')?.addEventListener("change", syncAppearanceFormState);
 qs("#settingsForm")?.addEventListener("submit", saveSettings);
 qs("#memoryForm")?.addEventListener("submit", submitMemory);
 qs("#chatForm")?.addEventListener("submit", submitChat);
@@ -4486,10 +5457,45 @@ qs("#providerFilterSecret")?.addEventListener("change", loadProviders);
 qs("#providerSortBy")?.addEventListener("change", loadProviders);
 qs("#providerSortDesc")?.addEventListener("change", loadProviders);
 qs("#agentLifecycleFilter")?.addEventListener("change", loadAgents);
+qs("#eventDomainFilter")?.addEventListener("change", () => renderEvents(state.events));
+qs("#eventLevelFilter")?.addEventListener("change", () => renderEvents(state.events));
+qs("#eventQueryFilter")?.addEventListener("input", () => renderEvents(state.events));
+qs("#eventLimitFilter")?.addEventListener("change", loadEvents);
 document.body.addEventListener("change", onTableChange);
 document.body.addEventListener("click", (event) => {
-  const target = event.target;
+  const target = event.target?.closest?.("[data-action]") || event.target;
   const action = target?.dataset?.action;
+  if (action === "open-dashboard-focus") {
+    selectDashboardAttentionCard(target);
+    return;
+  }
+  if (action === "open-dashboard-panel") {
+    openDashboardPanel(target).catch((err) => {
+      setStatus("#healthState", `dashboard navigation failed: ${err.message}`, "err");
+    });
+    return;
+  }
+  if (action === "mark-dashboard-card-reviewed") {
+    markDashboardCardSeen(target);
+    setStatus("#healthState", "summary marked reviewed", "ok");
+    return;
+  }
+  if (action === "toggle-dashboard-seen-history") {
+    toggleDashboardSeenHistory(target);
+    return;
+  }
+  if (action === "mark-dashboard-card-events-seen") {
+    markDashboardCardEventsSeen(target);
+    renderEvents(state.events);
+    setStatus("#healthState", "attached events marked seen", "ok");
+    return;
+  }
+  if (action === "mark-dashboard-attention-event-seen") {
+    markDashboardAttentionEventSeen(target);
+    renderEvents(state.events);
+    setStatus("#healthState", "attention event marked seen", "ok");
+    return;
+  }
   if (action === "copy-mobile-pairing-code") {
     const code = target.dataset.code || "";
     if (!code) {
@@ -4521,6 +5527,12 @@ document.body.addEventListener("click", (event) => {
     && action !== "load-tool-log-session"
     && action !== "refresh-gm-tickets"
     && action !== "refresh-mobile-pairing"
+    && action !== "mark-events-seen"
+    && action !== "open-dashboard-panel"
+    && action !== "mark-dashboard-card-reviewed"
+    && action !== "toggle-dashboard-seen-history"
+    && action !== "mark-dashboard-card-events-seen"
+    && action !== "mark-dashboard-attention-event-seen"
     && action !== "copy-mobile-pairing-qr-payload"
     && action !== "open-gm-ticket"
     && action !== "rerun-import"
@@ -4558,6 +5570,7 @@ document.body.addEventListener("click", (event) => {
     && action !== "revoke-mobile-pairing"
     && action !== "archive-agent"
     && action !== "restore-agent"
+    && action !== "open-dashboard-focus"
   )) {
     return;
   }

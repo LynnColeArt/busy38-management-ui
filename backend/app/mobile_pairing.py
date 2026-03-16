@@ -37,6 +37,8 @@ except Exception as exc:  # pragma: no cover - defensive import visibility
 PAIRING_CODE_TTL_MAX_SEC = 900
 PAIRING_TOKEN_TTL_DEFAULT_SEC = 86400
 TRUSTED_DEVICE_TTL_DEFAULT_SEC = 2592000
+DISCOVERY_SERVICE_TYPE = "_busy38pair._tcp"
+DISCOVERY_PROTOCOL_VERSION = "1"
 
 
 def _runtime_root() -> str | Path | None:
@@ -93,6 +95,19 @@ def _request_bridge_origin(request_url: str | None) -> str:
     return f"{scheme}://{host}:{port}"
 
 
+def _request_control_plane_origin(request_url: str | None) -> str:
+    parsed = urlparse(str(request_url or "").strip())
+    host = str(parsed.hostname or "").strip()
+    if not host:
+        return ""
+    scheme = "https" if parsed.scheme == "https" else "http"
+    if parsed.port is not None:
+        return f"{scheme}://{host}:{parsed.port}"
+    if scheme == "https":
+        return f"{scheme}://{host}"
+    return f"http://{host}"
+
+
 def _bridge_url(*, request_url: str | None = None) -> str:
     override = (os.getenv("BUSY38_MOBILE_PAIRING_BRIDGE_URL") or "").strip()
     raw = override or (os.getenv("BUSY_BRIDGE_URL") or "").strip()
@@ -110,6 +125,31 @@ def _bridge_url(*, request_url: str | None = None) -> str:
         return _normalize_bridge_url(request_origin)
 
     return _normalize_bridge_url("ws://127.0.0.1:8787")
+
+
+def _control_plane_url(request_url: str | None = None) -> str:
+    override = (os.getenv("BUSY38_MOBILE_DISCOVERY_CONTROL_PLANE_URL") or "").strip()
+    raw = override or _request_control_plane_origin(request_url)
+    if raw:
+        return raw.rstrip("/")
+
+    host = (os.getenv("BUSY38_BRIDGE_HOST") or "").strip()
+    if host:
+        port = (os.getenv("MGMT_PORT_OVERRIDE") or "8000").strip() or "8000"
+        return f"http://{host}:{port}"
+
+    return "http://127.0.0.1:8000"
+
+
+def _discovery_display_label(state: Dict[str, Any]) -> str:
+    configured = (
+        os.getenv("BUSY38_MOBILE_DISCOVERY_LABEL")
+        or os.getenv("BUSY38_INSTANCE_DISPLAY_LABEL")
+        or ""
+    ).strip()
+    if configured:
+        return configured
+    return str(state.get("instance_id") or "").strip() or "Busy PillowFort"
 
 
 def _coerce_device_label(value: Any) -> str:
@@ -556,6 +596,14 @@ def _resolve_token_id_from_state(state: Dict[str, Any], token_id: str) -> str:
             continue
         if str(record.get("token_id") or "").strip() == token_id:
             return token_id
+    trusted_devices = state.get("trusted_devices")
+    if not isinstance(trusted_devices, dict):
+        raise PairingStateError("PAIRING_STATE_INVALID", "trusted_devices must be an object")
+    for record in trusted_devices.values():
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("token_id") or "").strip() == token_id:
+            return token_id
     raise PairingTokenError("PAIRING_TOKEN_INVALID", "pairing token id is unknown")
 
 
@@ -702,4 +750,23 @@ def list_pairing_state() -> Dict[str, Any]:
         "issued": issued_rows,
         "revoked": revoked_rows,
         "trusted_devices": trusted_device_rows,
+    }
+
+
+def discovery_descriptor(*, request_url: str | None = None) -> Dict[str, Any]:
+    _require_available()
+    state = load_pairing_state(_runtime_root())
+    return {
+        "version": DISCOVERY_PROTOCOL_VERSION,
+        "service_type": DISCOVERY_SERVICE_TYPE,
+        "instance_id": str(state["instance_id"]),
+        "display_label": _discovery_display_label(state),
+        "control_plane_url": _control_plane_url(request_url=request_url),
+        "bridge_url": _bridge_url(request_url=request_url),
+        "bootstrap_methods": [
+            "local_network_code",
+            "qr_code",
+            "manual_details",
+        ],
+        "supports_pairing_code": True,
     }

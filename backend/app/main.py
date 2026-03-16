@@ -11,6 +11,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 from pathlib import Path
@@ -56,6 +57,12 @@ from .import_contract import checksum_payload
 
 from . import mobile_pairing, storage
 from .runtime import RuntimeActionResult, load_runtime_adapter
+from core.bridge.appearance_preferences import (
+    AppearancePreferencesError,
+    apply_appearance_update,
+    load_appearance_preferences,
+    write_appearance_preferences,
+)
 
 try:
     from core.plugins.state import (
@@ -70,10 +77,20 @@ except Exception as exc:  # pragma: no cover
     raise RuntimeError("busy38 plugin state module unavailable") from exc
  
 
-app = FastAPI(title="Busy38 Management UI API", version="0.2.0")
 _STARTUP_DEBUG_LOGGER = logging.getLogger("busy38.management.startup")
 _STARTUP_PLUGIN_DEBUG_CHECKS_RAN = False
 _WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
+_EVENT_FEED_WINDOW = 100
+
+
+@asynccontextmanager
+async def _app_lifespan(_: FastAPI):
+    storage.ensure_schema()
+    _run_startup_plugin_debug_checks_once()
+    yield
+
+
+app = FastAPI(title="Busy38 Management UI API", version="0.2.0", lifespan=_app_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -860,6 +877,17 @@ class SettingsUpdate(BaseModel):
     proxy_no_proxy: Optional[str] = None
 
 
+class AppearanceUpdate(BaseModel):
+    override_enabled: Optional[bool] = None
+    sync_theme_preferences: Optional[bool] = None
+    shared_theme_mode: Optional[Literal["system", "light", "dark"]] = None
+    desktop_theme_mode: Optional[Literal["system", "light", "dark"]] = None
+    contrast_policy: Optional[Literal["aa", "aaa"]] = None
+    motion_policy: Optional[Literal["default", "reduced"]] = None
+    color_separation_policy: Optional[Literal["default", "stronger"]] = None
+    text_spacing_policy: Optional[Literal["default", "increased"]] = None
+
+
 class PluginUpdate(BaseModel):
     name: Optional[str] = None
     enabled: Optional[bool] = None
@@ -1074,12 +1102,6 @@ class PairingRefreshRequest(BaseModel):
 class PairingRevokeRequest(BaseModel):
     bridge_token: Optional[str] = None
     token_id: Optional[str] = None
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    storage.ensure_schema()
-    _run_startup_plugin_debug_checks_once()
 
 
 runtime = load_runtime_adapter()
@@ -3017,6 +3039,44 @@ async def update_settings(request: Request, update: SettingsUpdate) -> Dict[str,
     settings = storage.set_settings(payload)
     _event_for(role, "settings", "Settings updated via management UI", "info")
     return {"settings": settings, "updated_at": settings["updated_at"]}
+
+
+@app.get("/api/appearance")
+async def get_appearance(
+    request: Request,
+    token: Optional[str] = Query(default=None, alias="token"),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer", token=token)
+    auth_header = request.headers.get("Authorization") if request else None
+    try:
+        appearance = load_appearance_preferences()
+    except AppearancePreferencesError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return {
+        "appearance_preferences": appearance,
+        "updated_at": appearance["updated_at"],
+        "role": role,
+        "role_source": _token_source(auth_header, token),
+    }
+
+
+@app.patch("/api/appearance")
+async def update_appearance(request: Request, update: AppearanceUpdate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
+    if not payload:
+        raise HTTPException(status_code=400, detail="No appearance fields provided")
+    try:
+        current = load_appearance_preferences()
+        updated = apply_appearance_update(current, payload)
+        write_appearance_preferences(updated)
+    except AppearancePreferencesError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    _event_for(role, "appearance", "Appearance preferences updated via management UI", "info")
+    return {
+        "appearance_preferences": updated,
+        "updated_at": updated["updated_at"],
+    }
 
 
 @app.get("/api/providers")
@@ -5568,13 +5628,13 @@ async def events_ws(ws: WebSocket) -> None:
                 "type": "events",
                 "role": _readable_role_name(role),
                 "role_source": _token_source(ws.headers.get("authorization") or "", query_token),
-                "events": storage.list_events(25),
+                "events": storage.list_events(_EVENT_FEED_WINDOW),
                 "updated_at": _now_iso(),
                 "status": "stream-start",
             }
         )
         while True:
-            rows = storage.list_events(25)
+            rows = storage.list_events(_EVENT_FEED_WINDOW)
             current = rows[0]["id"] if rows else None
             if current != last_event_id:
                 last_event_id = current
@@ -5739,6 +5799,18 @@ async def exchange_mobile_pairing_code(
     return {"pairing": result, "updated_at": _now_iso()}
 
 
+@app.get("/api/mobile/pairing/discovery")
+async def get_mobile_pairing_discovery(request: Request) -> Dict[str, Any]:
+    try:
+        result = mobile_pairing.discovery_descriptor(request_url=str(request.url))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return {"discovery": result, "updated_at": _now_iso()}
+
+
 @app.get("/api/mobile/pairing/state")
 async def get_mobile_pairing_state(request: Request) -> Dict[str, Any]:
     _require_role(request, required="admin")
@@ -5805,8 +5877,25 @@ async def revoke_mobile_pairing_token(
 
 def _run_runtime_action(action: str, service_name: str, role: str) -> Dict[str, Any]:
     action_result: RuntimeActionResult = runtime.control_service(service_name, action)
+    runtime_status = runtime.get_status()
+    event_payload: Dict[str, Any] = {
+        "actor": role,
+        "service": service_name,
+        "action": action,
+        "success": bool(action_result.success),
+        "runtime_source": str(runtime_status.get("source") or "none"),
+        "runtime_connected": bool(runtime_status.get("connected")),
+        "default_service": str(runtime_status.get("default_service") or service_name or "busy"),
+        "result_payload": action_result.payload,
+    }
+    _event_for(
+        role,
+        "runtime.service_action",
+        action_result.message,
+        "info" if action_result.success else "warn",
+        event_payload,
+    )
     if action_result.success:
-        _event_for(role, "runtime", action_result.message, "info")
         return {
             "success": action_result.success,
             "message": action_result.message,

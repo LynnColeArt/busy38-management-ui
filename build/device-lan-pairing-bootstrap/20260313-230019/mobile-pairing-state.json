@@ -1,0 +1,21 @@
+{
+  "instance_id": "busy-local",
+  "issued_codes": {
+    "9df960b6b55d1a5e2bce8f23fc57c985dfc4e724f03821046127624a4c3281ce": {
+      "authorized_room_ids": [
+        "team-room-qa"
+      ],
+      "consumed_at": null,
+      "device_label": "PillowFort iPhone",
+      "expires_at": "2026-03-16T01:43:15.088896+00:00",
+      "issued_at": "2026-03-16T01:38:15.088896+00:00",
+      "issued_by": "admin",
+      "orchestrator_scope": [
+        "carlo"
+      ]
+    }
+  },
+  "revoked_token_ids": {},
+  "schema_version": 2,
+  "trusted_devices": {}
+}

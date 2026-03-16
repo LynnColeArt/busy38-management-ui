@@ -77,12 +77,13 @@ class _MockRuntime:
         self.overlay_histories: Dict[str, list[dict[str, object]]] = {}
 
     def get_status(self) -> Dict[str, object]:
-        return {"connected": True, "source": "mock"}
+        return {"connected": True, "source": "mock", "default_service": "busy"}
 
     def get_services(self) -> Dict[str, object]:
         return {
             "connected": True,
             "source": "mock",
+            "default_service": "busy",
             "services": [
                 {"name": "busy", "running": True, "pid": 1001, "pid_file": "/tmp/busy.pid", "log_file": "/tmp/busy.log"},
             ],
@@ -337,6 +338,75 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(reader_settings["proxy_https"], update_payload["proxy_https"])
         self.assertEqual(reader_settings["proxy_no_proxy"], update_payload["proxy_no_proxy"])
 
+    def test_appearance_preferences_require_admin_for_write(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        read_headers = {"Authorization": f"Bearer {self.read_token}"}
+        appearance_state_dir = tempfile.mkdtemp(prefix="busy38-appearance-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY_RUNTIME_PATH": appearance_state_dir,
+                },
+                clear=False,
+            ):
+                loaded = self.client.get("/api/appearance", headers=read_headers)
+                self.assertEqual(loaded.status_code, 200, loaded.text)
+                self.assertEqual(
+                    loaded.json()["appearance_preferences"]["override_enabled"],
+                    False,
+                )
+
+                viewer_blocked = self.client.patch(
+                    "/api/appearance",
+                    headers=read_headers,
+                    json={
+                        "override_enabled": True,
+                        "sync_theme_preferences": True,
+                        "shared_theme_mode": "dark",
+                        "contrast_policy": "aaa",
+                        "motion_policy": "reduced",
+                        "color_separation_policy": "stronger",
+                        "text_spacing_policy": "increased",
+                    },
+                )
+                self.assertEqual(viewer_blocked.status_code, 403, viewer_blocked.text)
+
+                updated = self.client.patch(
+                    "/api/appearance",
+                    headers=admin_headers,
+                    json={
+                        "override_enabled": True,
+                        "sync_theme_preferences": True,
+                        "shared_theme_mode": "dark",
+                        "contrast_policy": "aaa",
+                        "motion_policy": "reduced",
+                        "color_separation_policy": "stronger",
+                        "text_spacing_policy": "increased",
+                    },
+                )
+                self.assertEqual(updated.status_code, 200, updated.text)
+                appearance = updated.json()["appearance_preferences"]
+                self.assertEqual(appearance["shared_theme_mode"], "dark")
+                self.assertEqual(appearance["override_enabled"], True)
+                self.assertEqual(appearance["contrast_policy"], "aaa")
+                self.assertEqual(appearance["motion_policy"], "reduced")
+                self.assertEqual(appearance["color_separation_policy"], "stronger")
+                self.assertEqual(appearance["text_spacing_policy"], "increased")
+
+                reader_view = self.client.get("/api/appearance", headers=read_headers)
+                self.assertEqual(reader_view.status_code, 200, reader_view.text)
+                self.assertEqual(
+                    reader_view.json()["appearance_preferences"]["shared_theme_mode"],
+                    "dark",
+                )
+                self.assertEqual(
+                    reader_view.json()["appearance_preferences"]["contrast_policy"],
+                    "aaa",
+                )
+        finally:
+            shutil.rmtree(appearance_state_dir)
+
     def test_mobile_pairing_issue_exchange_and_revoke(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
@@ -510,6 +580,66 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 )
                 self.assertEqual(denied.status_code, 400, denied.text)
                 self.assertIn("refresh grant is invalid", denied.text)
+
+                revoke = self.client.post(
+                    "/api/mobile/pairing/revoke",
+                    headers={"Authorization": f"Bearer {self.admin_token}"},
+                    json={"token_id": refreshed["token_id"]},
+                )
+                self.assertEqual(revoke.status_code, 200, revoke.text)
+                self.assertEqual(revoke.json()["pairing"]["token_id"], refreshed["token_id"])
+
+                state_after_revoke = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers={"Authorization": f"Bearer {self.admin_token}"},
+                )
+                self.assertEqual(state_after_revoke.status_code, 200, state_after_revoke.text)
+                pairing_state_after_revoke = state_after_revoke.json()["pairing"]
+                revoked_token_ids_after_revoke = {row["token_id"] for row in pairing_state_after_revoke["revoked"]}
+                self.assertIn(refreshed["token_id"], revoked_token_ids_after_revoke)
+                self.assertEqual(pairing_state_after_revoke["trusted_devices"][0]["status"], "revoked")
+
+                revoked_refresh = self.client.post(
+                    "/api/mobile/trust/refresh",
+                    json={
+                        "device_relationship_id": exchanged["device_relationship_id"],
+                        "refresh_grant": refreshed["refresh_grant"],
+                    },
+                )
+                self.assertEqual(revoked_refresh.status_code, 400, revoked_refresh.text)
+                self.assertIn("trusted device has been revoked", revoked_refresh.text)
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_discovery_descriptor_exposes_lan_candidate_metadata(self):
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": os.path.join(pairing_state_dir, "state.json"),
+                    "BUSY38_MOBILE_PAIRING_BRIDGE_URL": "ws://busy.local:8787/ws",
+                    "BUSY38_MOBILE_DISCOVERY_LABEL": "Office PillowFort",
+                },
+                clear=False,
+            ):
+                response = self.client.get("/api/mobile/pairing/discovery")
+
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()["discovery"]
+            self.assertEqual(payload["version"], "1")
+            self.assertEqual(payload["service_type"], "_busy38pair._tcp")
+            self.assertEqual(payload["instance_id"], "busy-local")
+            self.assertEqual(payload["display_label"], "Office PillowFort")
+            self.assertEqual(payload["control_plane_url"], "http://testserver")
+            self.assertEqual(payload["bridge_url"], "ws://busy.local:8787/ws")
+            self.assertEqual(
+                payload["bootstrap_methods"],
+                ["local_network_code", "qr_code", "manual_details"],
+            )
+            self.assertTrue(payload["supports_pairing_code"])
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
@@ -1809,6 +1939,11 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         service_list = self.client.get("/api/runtime/services", headers=read_headers)
         self.assertEqual(service_list.status_code, 200)
         self.assertIn("services", service_list.json())
+        self.assertEqual(service_list.json()["default_service"], "busy")
+
+        runtime_status = self.client.get("/api/runtime/status", headers=read_headers)
+        self.assertEqual(runtime_status.status_code, 200)
+        self.assertEqual(runtime_status.json()["runtime"]["default_service"], "busy")
 
         blocked = self.client.post("/api/runtime/services/busy/start", headers=read_headers)
         self.assertEqual(blocked.status_code, 403)
@@ -1819,6 +1954,38 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertTrue(payload["success"])
         self.assertEqual(payload["payload"]["service"], "busy")
         self.assertEqual(self.runtime.actions[-1], ("busy", "start"))
+        runtime_events = [
+            event
+            for event in self.client.get("/api/events", headers=admin_headers).json()["events"]
+            if event["type"] == "runtime.service_action"
+        ]
+        self.assertTrue(runtime_events)
+        latest_runtime_event = runtime_events[0]
+        self.assertEqual(latest_runtime_event["level"], "info")
+        self.assertEqual(latest_runtime_event["payload"]["service"], "busy")
+        self.assertEqual(latest_runtime_event["payload"]["action"], "start")
+        self.assertEqual(latest_runtime_event["payload"]["actor"], "admin")
+        self.assertEqual(latest_runtime_event["payload"]["runtime_source"], "mock")
+        self.assertTrue(latest_runtime_event["payload"]["success"])
+
+    def test_runtime_action_failure_is_recorded_in_events(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+
+        failed = self.client.post("/api/runtime/services/missing/start", headers=admin_headers)
+        self.assertEqual(failed.status_code, 200)
+        self.assertFalse(failed.json()["success"])
+
+        runtime_events = [
+            event
+            for event in self.client.get("/api/events", headers=admin_headers).json()["events"]
+            if event["type"] == "runtime.service_action"
+        ]
+        self.assertTrue(runtime_events)
+        latest_runtime_event = runtime_events[0]
+        self.assertEqual(latest_runtime_event["level"], "warn")
+        self.assertEqual(latest_runtime_event["payload"]["service"], "missing")
+        self.assertEqual(latest_runtime_event["payload"]["action"], "start")
+        self.assertFalse(latest_runtime_event["payload"]["success"])
 
     def test_execute_plugin_ui_action_enforces_action_contract(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
