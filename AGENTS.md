@@ -1,5 +1,5 @@
 # AGENTS.md
-Pillowfort / Busy Contribution Standards (Agents + Humans)
+PillowFort / Busy Contribution Standards (Agents + Humans)
 
 Automated and AI-assisted contributions are welcome, provided they meet the same production standards as human-written code.
 
