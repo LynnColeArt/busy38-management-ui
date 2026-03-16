@@ -28,6 +28,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 try:
@@ -55,6 +56,12 @@ from .import_contract import checksum_payload
 
 from . import mobile_pairing, storage
 from .runtime import RuntimeActionResult, load_runtime_adapter
+from core.bridge.appearance_preferences import (
+    AppearancePreferencesError,
+    apply_appearance_update,
+    load_appearance_preferences,
+    write_appearance_preferences,
+)
 
 try:
     from core.plugins.state import (
@@ -72,6 +79,7 @@ except Exception as exc:  # pragma: no cover
 app = FastAPI(title="Busy38 Management UI API", version="0.2.0")
 _STARTUP_DEBUG_LOGGER = logging.getLogger("busy38.management.startup")
 _STARTUP_PLUGIN_DEBUG_CHECKS_RAN = False
+_WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 
 app.add_middleware(
     CORSMiddleware,
@@ -856,6 +864,17 @@ class SettingsUpdate(BaseModel):
     proxy_http: Optional[str] = None
     proxy_https: Optional[str] = None
     proxy_no_proxy: Optional[str] = None
+
+
+class AppearanceUpdate(BaseModel):
+    override_enabled: Optional[bool] = None
+    sync_theme_preferences: Optional[bool] = None
+    shared_theme_mode: Optional[Literal["system", "light", "dark"]] = None
+    desktop_theme_mode: Optional[Literal["system", "light", "dark"]] = None
+    contrast_policy: Optional[Literal["aa", "aaa"]] = None
+    motion_policy: Optional[Literal["default", "reduced"]] = None
+    color_separation_policy: Optional[Literal["default", "stronger"]] = None
+    text_spacing_policy: Optional[Literal["default", "increased"]] = None
 
 
 class PluginUpdate(BaseModel):
@@ -3009,6 +3028,44 @@ async def update_settings(request: Request, update: SettingsUpdate) -> Dict[str,
     settings = storage.set_settings(payload)
     _event_for(role, "settings", "Settings updated via management UI", "info")
     return {"settings": settings, "updated_at": settings["updated_at"]}
+
+
+@app.get("/api/appearance")
+async def get_appearance(
+    request: Request,
+    token: Optional[str] = Query(default=None, alias="token"),
+) -> Dict[str, Any]:
+    role = _require_role(request, required="viewer", token=token)
+    auth_header = request.headers.get("Authorization") if request else None
+    try:
+        appearance = load_appearance_preferences()
+    except AppearancePreferencesError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    return {
+        "appearance_preferences": appearance,
+        "updated_at": appearance["updated_at"],
+        "role": role,
+        "role_source": _token_source(auth_header, token),
+    }
+
+
+@app.patch("/api/appearance")
+async def update_appearance(request: Request, update: AppearanceUpdate) -> Dict[str, Any]:
+    role = _require_role(request, required="admin")
+    payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
+    if not payload:
+        raise HTTPException(status_code=400, detail="No appearance fields provided")
+    try:
+        current = load_appearance_preferences()
+        updated = apply_appearance_update(current, payload)
+        write_appearance_preferences(updated)
+    except AppearancePreferencesError as exc:
+        raise HTTPException(status_code=400, detail=exc.message) from exc
+    _event_for(role, "appearance", "Appearance preferences updated via management UI", "info")
+    return {
+        "appearance_preferences": updated,
+        "updated_at": updated["updated_at"],
+    }
 
 
 @app.get("/api/providers")
@@ -5789,3 +5846,19 @@ def _run_runtime_action(action: str, service_name: str, role: str) -> Dict[str, 
         "message": action_result.message,
         "payload": action_result.payload,
     }
+
+
+@app.get("/", include_in_schema=False)
+async def serve_web_root() -> FileResponse:
+    return FileResponse(_WEB_ROOT / "index.html")
+
+
+@app.get("/{asset_path:path}", include_in_schema=False)
+async def serve_web_asset(asset_path: str) -> FileResponse:
+    if asset_path == "api" or asset_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    candidate = (_WEB_ROOT / asset_path).resolve()
+    if candidate.is_file() and candidate.is_relative_to(_WEB_ROOT):
+        return FileResponse(candidate)
+    return FileResponse(_WEB_ROOT / "index.html")
