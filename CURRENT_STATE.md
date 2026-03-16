@@ -1,5 +1,35 @@
 # Current State
 
+## 2026-03-13
+
+- The management backend now serves the browser app at the same origin:
+  - `GET /` returns `web/index.html`
+  - unknown non-API browser paths such as `/admin` fall back to the same SPA
+    entrypoint
+  - local operator launch can now open `http://127.0.0.1:8031/` directly
+
+## 2026-03-09
+
+- Busy-owned appearance preferences are now implemented in this repo's control
+  plane:
+  - `GET /api/appearance` returns the current canonical Busy appearance record
+  - `PATCH /api/appearance` updates that record with fail-closed validation for
+    admin-authenticated callers only
+  - the browser now applies the resolved desktop theme literally from one
+    shared preference model:
+    - default `system`
+    - app override `system` / `light` / `dark`
+    - sync-on-by-default when override is enabled
+    - default accessibility/readability policy is WCAG 2.2 AA
+    - stronger overrides now exist for `AAA` contrast, reduced motion,
+      stronger color separation, and increased text spacing
+  - the browser uses the same document theme helper for both initial load and
+    post-save updates, so served pages now switch between light/dark without
+    separate local-only theme state
+  - the browser now also applies those accessibility/readability preferences
+    immediately at the document level through the same Busy-owned authority
+    path.
+
 ## 2026-03-07
 
 - Plugin-owned mobile pairing is now implemented through the management API:

@@ -25,6 +25,58 @@
       </header>
 
       <section class="panel">
+        <h2>Appearance</h2>
+        <form id="appearanceForm">
+          <label>
+            <span>Use app theme override</span>
+            <input name="appearance_override_enabled" type="checkbox" />
+          </label>
+          <label>
+            <span id="appearanceThemeModeLabel">Theme mode</span>
+            <select name="appearance_theme_mode">
+              <option value="system">System</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <label id="appearanceSyncRow">
+            <span>Keep mobile and desktop in sync</span>
+            <input name="appearance_sync_enabled" type="checkbox" checked />
+          </label>
+          <label>
+            <span>Contrast policy</span>
+            <select name="appearance_contrast_policy">
+              <option value="aa">WCAG 2.2 AA</option>
+              <option value="aaa">WCAG 2.2 AAA</option>
+            </select>
+          </label>
+          <label>
+            <span>Motion policy</span>
+            <select name="appearance_motion_policy">
+              <option value="default">Default motion</option>
+              <option value="reduced">Reduced motion</option>
+            </select>
+          </label>
+          <label>
+            <span>Color separation</span>
+            <select name="appearance_color_separation_policy">
+              <option value="default">Default separation</option>
+              <option value="stronger">Stronger separation</option>
+            </select>
+          </label>
+          <label>
+            <span>Text spacing</span>
+            <select name="appearance_text_spacing_policy">
+              <option value="default">Default spacing</option>
+              <option value="increased">Increased spacing</option>
+            </select>
+          </label>
+          <button type="submit">Save appearance</button>
+          <p id="appearanceStatus" class="status"></p>
+        </form>
+      </section>
+
+      <section class="panel">
         <h2>Service settings</h2>
         <form id="settingsForm">
           <label>
@@ -670,6 +722,7 @@
     <script src="plugin_ui_console.js"></script>
     <script src="mobile_pairing_qr.js"></script>
     <script src="management_api_base.js"></script>
+    <script src="appearance_theme.js"></script>
     <script src="app.js"></script>
   </body>
 </html>
