@@ -168,6 +168,7 @@ Import review boundary:
 - `POST /api/chat_history`
 - `POST /api/mobile/pairing/issue`
 - `POST /api/mobile/pairing/exchange`
+- `POST /api/mobile/trust/refresh`
 - `GET /api/mobile/pairing/state`
 - `POST /api/mobile/pairing/revoke`
 - `GET  /api/runtime/status`
@@ -205,6 +206,7 @@ node --test tests/test_plugin_ui_console_logging.mjs
 node --test tests/test_mobile_pairing_ui.mjs
 pip install -r backend/requirements-dev.txt
 PYTHONPATH=. .venv/bin/pytest tests
+/Users/sam/Documents/git/crucible/busy/.venv/bin/python scripts/run_trusted_device_refresh_smoke.py --busy-python /Users/sam/Documents/git/crucible/busy/.venv/bin/python
 ```
 
 See `docs/PLUGIN_DEBUGGER.md` for detailed debugger semantics, warning/error codes,
