@@ -281,6 +281,27 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self._loop.close()
         os.remove(self.db_file.name)
 
+    def test_root_serves_management_ui_html(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers.get("content-type", ""))
+        self.assertIn("busy38-management-api-base", response.text)
+
+    def test_unknown_non_api_path_falls_back_to_management_ui_html(self):
+        response = self.client.get("/admin")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers.get("content-type", ""))
+        self.assertIn("busy38-management-api-base", response.text)
+
+    def test_bare_api_namespace_root_stays_a_404(self):
+        response = self.client.get("/api")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("application/json", response.headers.get("content-type", ""))
+        self.assertEqual(response.json(), {"detail": "Not Found"})
+
     def test_viewer_and_admin_tokens(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
@@ -323,7 +344,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(reader_settings["proxy_https"], update_payload["proxy_https"])
         self.assertEqual(reader_settings["proxy_no_proxy"], update_payload["proxy_no_proxy"])
 
-    def test_appearance_preferences_round_trip_for_viewer(self):
+    def test_appearance_preferences_require_admin_for_write(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
         appearance_state_dir = tempfile.mkdtemp(prefix="busy38-appearance-")
@@ -342,9 +363,24 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                     False,
                 )
 
-                updated = self.client.patch(
+                viewer_blocked = self.client.patch(
                     "/api/appearance",
                     headers=read_headers,
+                    json={
+                        "override_enabled": True,
+                        "sync_theme_preferences": True,
+                        "shared_theme_mode": "dark",
+                        "contrast_policy": "aaa",
+                        "motion_policy": "reduced",
+                        "color_separation_policy": "stronger",
+                        "text_spacing_policy": "increased",
+                    },
+                )
+                self.assertEqual(viewer_blocked.status_code, 403, viewer_blocked.text)
+
+                updated = self.client.patch(
+                    "/api/appearance",
+                    headers=admin_headers,
                     json={
                         "override_enabled": True,
                         "sync_theme_preferences": True,
@@ -364,7 +400,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 self.assertEqual(appearance["color_separation_policy"], "stronger")
                 self.assertEqual(appearance["text_spacing_policy"], "increased")
 
-                reader_view = self.client.get("/api/appearance", headers=admin_headers)
+                reader_view = self.client.get("/api/appearance", headers=read_headers)
                 self.assertEqual(reader_view.status_code, 200, reader_view.text)
                 self.assertEqual(
                     reader_view.json()["appearance_preferences"]["shared_theme_mode"],

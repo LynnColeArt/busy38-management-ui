@@ -23,13 +23,19 @@
     and `supports_pairing_code`
   - the descriptor does not issue trust; short pairing-code confirmation
     remains mandatory through `POST /api/mobile/pairing/exchange`
+- The management backend now serves the browser app at the same origin:
+  - `GET /` returns `web/index.html`
+  - unknown non-API browser paths such as `/admin` fall back to the same SPA
+    entrypoint
+  - local operator launch can now open `http://127.0.0.1:8031/` directly
 
 ## 2026-03-09
 
 - Busy-owned appearance preferences are now implemented in this repo's control
   plane:
   - `GET /api/appearance` returns the current canonical Busy appearance record
-  - `PATCH /api/appearance` updates that record with fail-closed validation
+  - `PATCH /api/appearance` updates that record with fail-closed validation for
+    admin-authenticated callers only
   - the browser now applies the resolved desktop theme literally from one
     shared preference model:
     - default `system`
