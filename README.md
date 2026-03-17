@@ -16,7 +16,7 @@ The goal is to move operations off ad-hoc mobile flows and into a first-class ma
 
 ## Local development
 
-Start backend + static UI:
+Start the management backend:
 
 ```bash
 python3 -m venv .venv
@@ -56,7 +56,9 @@ You can also configure role-specific tokens:
 
 Token is stored locally in browser for this UI only (client-side convenience) via the `Save token` control.
 
-Then open `web/index.html` in a browser (or serve it from any static host).
+Then open `http://127.0.0.1:8031/` in a browser. The backend now serves the
+management web app at the same origin as the API, and unknown non-API browser
+paths such as `/admin` fall back to the SPA entrypoint.
 
 If you need a different backend base than the default:
 
@@ -78,6 +80,7 @@ Appearance preference authority uses the same Busy runtime path:
 
 - the browser reads and writes Busy-owned appearance preferences through
   `/api/appearance`
+- `PATCH /api/appearance` is admin-authenticated; viewer tokens remain read-only
 - default behavior is `system`
 - app override supports `system`, `light`, and `dark`
 - when override is enabled, sync remains on by default so desktop and mobile
