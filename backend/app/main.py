@@ -28,6 +28,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 try:
@@ -78,6 +79,7 @@ except Exception as exc:  # pragma: no cover
 app = FastAPI(title="Busy38 Management UI API", version="0.2.0")
 _STARTUP_DEBUG_LOGGER = logging.getLogger("busy38.management.startup")
 _STARTUP_PLUGIN_DEBUG_CHECKS_RAN = False
+_WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 
 app.add_middleware(
     CORSMiddleware,
@@ -1078,6 +1080,16 @@ class PairingExchangeRequest(BaseModel):
     pairing_code: str
     device_label: Optional[str] = None
     expected_instance_id: Optional[str] = None
+
+
+class PairingRefreshRequest(BaseModel):
+    device_relationship_id: str
+    refresh_grant: str
+    instance_id: Optional[str] = None
+    expected_instance_id: Optional[str] = None
+    device_label: Optional[str] = None
+    client_platform: Optional[str] = None
+    last_transport: Optional[Dict[str, Any]] = None
 
 
 class PairingRevokeRequest(BaseModel):
@@ -3049,7 +3061,7 @@ async def get_appearance(
 
 @app.patch("/api/appearance")
 async def update_appearance(request: Request, update: AppearanceUpdate) -> Dict[str, Any]:
-    role = _require_role(request, required="viewer")
+    role = _require_role(request, required="admin")
     payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
     if not payload:
         raise HTTPException(status_code=400, detail="No appearance fields provided")
@@ -5799,6 +5811,40 @@ async def get_mobile_pairing_state(request: Request) -> Dict[str, Any]:
     return {"pairing": result, "updated_at": _now_iso()}
 
 
+@app.post("/api/mobile/trust/refresh")
+async def refresh_mobile_trusted_device(
+    request: Request,
+    payload: PairingRefreshRequest,
+) -> Dict[str, Any]:
+    try:
+        result = mobile_pairing.refresh_trusted_device(
+            device_relationship_id=payload.device_relationship_id,
+            refresh_grant=payload.refresh_grant,
+            expected_instance_id=payload.instance_id or payload.expected_instance_id,
+            device_label=payload.device_label,
+            client_platform=payload.client_platform,
+            last_transport=payload.last_transport,
+            request_url=str(request.url),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "control_plane_temporarily_unavailable",
+                "message": str(exc),
+            },
+        ) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        code = getattr(exc, "code", "")
+        normalized_code = mobile_pairing.refresh_error_code(code)
+        payload_detail: Dict[str, Any] = {"message": detail}
+        if normalized_code:
+            payload_detail["code"] = normalized_code
+        raise HTTPException(status_code=400, detail=payload_detail) from exc
+    return {"pairing": result, "updated_at": _now_iso()}
+
+
 @app.post("/api/mobile/pairing/revoke")
 async def revoke_mobile_pairing_token(
     request: Request,
@@ -5844,3 +5890,19 @@ def _run_runtime_action(action: str, service_name: str, role: str) -> Dict[str, 
         "message": action_result.message,
         "payload": action_result.payload,
     }
+
+
+@app.get("/", include_in_schema=False)
+async def serve_web_root() -> FileResponse:
+    return FileResponse(_WEB_ROOT / "index.html")
+
+
+@app.get("/{asset_path:path}", include_in_schema=False)
+async def serve_web_asset(asset_path: str) -> FileResponse:
+    if asset_path == "api" or asset_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    candidate = (_WEB_ROOT / asset_path).resolve()
+    if candidate.is_file() and candidate.is_relative_to(_WEB_ROOT):
+        return FileResponse(candidate)
+    return FileResponse(_WEB_ROOT / "index.html")
