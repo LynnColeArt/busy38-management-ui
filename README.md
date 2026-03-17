@@ -92,6 +92,22 @@ For the shipped static page, runtime resolution is literal in this order:
 Setting a shell variable alone does not inject it into `web/index.html`; use a
 served page override if the UI and API are not on the same origin.
 
+Appearance preference authority uses the same Busy runtime path:
+
+- the browser reads and writes Busy-owned appearance preferences through
+  `/api/appearance`
+- `PATCH /api/appearance` is admin-authenticated; viewer tokens remain read-only
+- default behavior is `system`
+- app override supports `system`, `light`, and `dark`
+- when override is enabled, sync remains on by default so desktop and mobile
+  share one app-owned theme preference unless the user explicitly splits them
+- default accessibility/readability policy is WCAG 2.2 AA
+- the same Busy-owned record now also carries:
+  - `AAA` contrast override
+  - reduced motion
+  - stronger color separation
+  - increased text spacing
+
 ## Current behavior
 
 - Seeded defaults are loaded on first run and persisted in local SQLite storage.
@@ -180,6 +196,8 @@ Import review boundary:
 - `POST /api/runtime/services/{service_name}/start`
 - `POST /api/runtime/services/{service_name}/stop`
 - `POST /api/runtime/services/{service_name}/restart`
+- `GET /api/appearance`
+- `PATCH /api/appearance`
 
 ### Notable settings fields
 
