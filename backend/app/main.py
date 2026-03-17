@@ -5799,7 +5799,8 @@ async def exchange_mobile_pairing_code(
 
 
 @app.get("/api/mobile/pairing/discovery")
-async def get_mobile_pairing_discovery(request: Request) -> Dict[str, Any]:
+async def get_mobile_pairing_discovery(request: Request, token: Optional[str] = None) -> Dict[str, Any]:
+    _require_role(request, required="viewer", token=token)
     try:
         result = mobile_pairing.discovery_descriptor(request_url=str(request.url))
     except RuntimeError as exc:

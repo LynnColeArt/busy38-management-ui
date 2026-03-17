@@ -695,7 +695,10 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 },
                 clear=False,
             ):
-                response = self.client.get("/api/mobile/pairing/discovery")
+                response = self.client.get(
+                    "/api/mobile/pairing/discovery",
+                    headers={"Authorization": f"Bearer {self.read_token}"}
+                )
 
             self.assertEqual(response.status_code, 200, response.text)
             payload = response.json()["discovery"]
