@@ -29,7 +29,8 @@
 - Busy-owned appearance preferences are now implemented in this repo's control
   plane:
   - `GET /api/appearance` returns the current canonical Busy appearance record
-  - `PATCH /api/appearance` updates that record with fail-closed validation
+  - `PATCH /api/appearance` updates that record with fail-closed validation for
+    admin-authenticated callers only
   - the browser now applies the resolved desktop theme literally from one
     shared preference model:
     - default `system`

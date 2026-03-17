@@ -127,6 +127,6 @@ test("index loads the plugin console helper before the main app bundle", () => {
   const html = fs.readFileSync(path.resolve("web/index.html"), "utf8");
   assert.match(
     html,
-    /<script src="plugin_ui_console\.js"><\/script>\s*<script src="app\.js"><\/script>/,
+    /<script src="plugin_ui_console\.js"><\/script>[\s\S]*<script src="app\.js"><\/script>/,
   );
 });

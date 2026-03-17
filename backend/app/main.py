@@ -28,6 +28,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 try:
@@ -78,6 +79,7 @@ except Exception as exc:  # pragma: no cover
 app = FastAPI(title="Busy38 Management UI API", version="0.2.0")
 _STARTUP_DEBUG_LOGGER = logging.getLogger("busy38.management.startup")
 _STARTUP_PLUGIN_DEBUG_CHECKS_RAN = False
+_WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 
 app.add_middleware(
     CORSMiddleware,
@@ -3055,7 +3057,7 @@ async def get_appearance(
 
 @app.patch("/api/appearance")
 async def update_appearance(request: Request, update: AppearanceUpdate) -> Dict[str, Any]:
-    role = _require_role(request, required="viewer")
+    role = _require_role(request, required="admin")
     payload = {k: v for k, v in update.model_dump(exclude_unset=True).items() if v is not None}
     if not payload:
         raise HTTPException(status_code=400, detail="No appearance fields provided")
@@ -5882,3 +5884,19 @@ def _run_runtime_action(action: str, service_name: str, role: str) -> Dict[str, 
         "message": action_result.message,
         "payload": action_result.payload,
     }
+
+
+@app.get("/", include_in_schema=False)
+async def serve_web_root() -> FileResponse:
+    return FileResponse(_WEB_ROOT / "index.html")
+
+
+@app.get("/{asset_path:path}", include_in_schema=False)
+async def serve_web_asset(asset_path: str) -> FileResponse:
+    if asset_path == "api" or asset_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    candidate = (_WEB_ROOT / asset_path).resolve()
+    if candidate.is_file() and candidate.is_relative_to(_WEB_ROOT):
+        return FileResponse(candidate)
+    return FileResponse(_WEB_ROOT / "index.html")
