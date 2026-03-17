@@ -1,5 +1,13 @@
 # Current State
 
+## 2026-03-17
+
+- Codex Review feedback for PR #11 has been fully addressed:
+  - **Dependency Blocker**: The missing Busy pairing-helper symbols are now available in Busy main and verified against the current backend state.
+  - **Refresh Contract**: The `PairingRefreshRequest` and response structure (structured `transport` / `refresh` / `continuity` payload) have been fully restored and verified with regression tests.
+  - **Discovery Security**: `GET /api/mobile/pairing/discovery` is now secured and requires a `viewer` role to access, ensuring the LAN discovery descriptor is gated.
+  - **Error Mapping**: Typed error-code mapping for `/api/mobile/trust/refresh` remains intact and verified.
+
 ## 2026-03-13
 
 - The management backend now owns the first trusted-device continuity slice:
@@ -15,6 +23,14 @@
     device relationship when revoking its active token
   - `GET /api/mobile/pairing/state` now exposes safe trusted-device summaries
     with no raw refresh-grant recovery
+- The management backend now also owns the bounded LAN discovery descriptor:
+  - `GET /api/mobile/pairing/discovery` exposes a read-only candidate surface
+    for local-network pairing discovery
+  - the descriptor returns `version`, `service_type`, `instance_id`,
+    `display_label`, `control_plane_url`, `bridge_url`, `bootstrap_methods`,
+    and `supports_pairing_code`
+  - the descriptor does not issue trust; short pairing-code confirmation
+    remains mandatory through `POST /api/mobile/pairing/exchange`
 
 ## 2026-03-09
 

@@ -5798,6 +5798,19 @@ async def exchange_mobile_pairing_code(
     return {"pairing": result, "updated_at": _now_iso()}
 
 
+@app.get("/api/mobile/pairing/discovery")
+async def get_mobile_pairing_discovery(request: Request, token: Optional[str] = None) -> Dict[str, Any]:
+    _require_role(request, required="viewer", token=token)
+    try:
+        result = mobile_pairing.discovery_descriptor(request_url=str(request.url))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        detail = getattr(exc, "message", str(exc))
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return {"discovery": result, "updated_at": _now_iso()}
+
+
 @app.get("/api/mobile/pairing/state")
 async def get_mobile_pairing_state(request: Request) -> Dict[str, Any]:
     _require_role(request, required="admin")
