@@ -326,6 +326,27 @@ def _trusted_device_status(record: Dict[str, Any]) -> str:
     return "expired" if _timestamp_not_after_now(expires_at) else "active"
 
 
+def _advisory_refresh_after(*, expires_at: str) -> str:
+    expires_at_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+    now = _now()
+    remaining_seconds = int((expires_at_dt - now).total_seconds())
+    if remaining_seconds <= 0:
+        return now.isoformat()
+    return (now + timedelta(seconds=max(60, remaining_seconds // 2))).isoformat()
+
+
+def refresh_error_code(code: str | None) -> str:
+    normalized = str(code or "").strip().upper()
+    return {
+        "PAIRING_TRUSTED_DEVICE_REVOKED": "trusted_device_revoked",
+        "PAIRING_TRUSTED_DEVICE_EXPIRED": "trusted_device_expired",
+        "PAIRING_REFRESH_GRANT_INVALID": "refresh_grant_invalid",
+        "PAIRING_INSTANCE_MISMATCH": "instance_mismatch",
+        "PAIRING_ROOM_SCOPE_DENIED": "scope_no_longer_authorized",
+        "PAIRING_ORCHESTRATOR_SCOPE_DENIED": "scope_no_longer_authorized",
+    }.get(normalized, "")
+
+
 def _timestamp_not_after_now(value: str) -> bool:
     return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc) <= _now()
 
@@ -523,6 +544,9 @@ def refresh_trusted_device(
     device_relationship_id: Any,
     refresh_grant: Any,
     expected_instance_id: Any | None = None,
+    device_label: Any | None = None,
+    client_platform: Any | None = None,
+    last_transport: Any | None = None,
     request_url: str | None = None,
 ) -> Dict[str, Any]:
     _require_available()
@@ -573,6 +597,12 @@ def refresh_trusted_device(
     record["trusted_device_expires_at"] = (now + timedelta(seconds=_coerce_trusted_device_ttl_sec())).isoformat()
     record["token_id"] = token_id
     record["token_expires_at"] = token_expires_at
+    if str(device_label or "").strip():
+        record["device_label"] = _coerce_device_label(device_label)
+    if str(client_platform or "").strip():
+        record["last_client_platform"] = str(client_platform).strip()
+    if isinstance(last_transport, dict):
+        record["last_transport_hint"] = dict(last_transport)
     state["trusted_devices"][normalized_relationship_id] = record
     write_pairing_state(state, _runtime_root())
     return {
@@ -584,8 +614,25 @@ def refresh_trusted_device(
         "device_relationship_id": normalized_relationship_id,
         "refresh_grant": rotated_refresh_grant,
         "trusted_device_expires_at": record["trusted_device_expires_at"],
+        "display_label": str(record.get("device_label") or "").strip() or resolved_device_label,
         "authorized_room_ids": list(normalized_room_ids),
         "orchestrator_scope": list(normalized_orchestrators),
+        "transport": {
+            "bridge_url": _bridge_url(request_url=request_url),
+            "bridge_token": token,
+            "expires_at": token_expires_at,
+            "auth_mode": "pairing_scoped_token",
+        },
+        "refresh": {
+            "refresh_grant": rotated_refresh_grant,
+            "rotated": True,
+            "refresh_after": _advisory_refresh_after(expires_at=token_expires_at),
+        },
+        "continuity": {
+            "refresh_capable": True,
+            "re_pair_required": False,
+            "policy_requires_reverification": False,
+        },
     }
 
 def _resolve_token_id_from_state(state: Dict[str, Any], token_id: str) -> str:
