@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "repo": "busy38-management-ui",
+  "repo_role": "management-console",
+  "realtime_access_tier": "potential",
+  "filament_packages": [
+    "node-runtime-contract",
+    "python-runtime-cli"
+  ],
+  "filament_artifacts": [],
+  "local_ownership": [
+    "operator workflows",
+    "console state",
+    "admin policy"
+  ]
+}
