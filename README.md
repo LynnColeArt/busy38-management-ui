@@ -31,22 +31,6 @@ and falls back to `BUSY_RUNTIME_PATH` if you keep Busy elsewhere.
 The backend imports Busy core modules directly. The bootstrap script ensures the
 minimum Busy-side Python support needed for startup inside the same `.venv`.
 
-Appearance preference authority uses the same Busy runtime path:
-
-- the browser reads and writes Busy-owned appearance preferences through
-  `/api/appearance`
-- `PATCH /api/appearance` is admin-authenticated; viewer tokens remain read-only
-- default behavior is `system`
-- app override supports `system`, `light`, and `dark`
-- when override is enabled, sync remains on by default so desktop and mobile
-  share one app-owned theme preference unless the user explicitly splits them
-- default accessibility/readability policy is WCAG 2.2 AA
-- the same Busy-owned record now also carries:
-  - `AAA` contrast override
-  - reduced motion
-  - stronger color separation
-  - increased text spacing
-
 Pairing endpoints additionally require:
 
 ```bash
@@ -92,6 +76,22 @@ For the shipped static page, runtime resolution is literal in this order:
 Setting a shell variable alone does not inject it into `web/index.html`; use a
 served page override if the UI and API are not on the same origin.
 
+Appearance preference authority uses the same Busy runtime path:
+
+- the browser reads and writes Busy-owned appearance preferences through
+  `/api/appearance`
+- `PATCH /api/appearance` is admin-authenticated; viewer tokens remain read-only
+- default behavior is `system`
+- app override supports `system`, `light`, and `dark`
+- when override is enabled, sync remains on by default so desktop and mobile
+  share one app-owned theme preference unless the user explicitly splits them
+- default accessibility/readability policy is WCAG 2.2 AA
+- the same Busy-owned record now also carries:
+  - `AAA` contrast override
+  - reduced motion
+  - stronger color separation
+  - increased text spacing
+
 ## Current behavior
 
 - Seeded defaults are loaded on first run and persisted in local SQLite storage.
@@ -104,7 +104,7 @@ served page override if the UI and API are not on the same origin.
   warning shapes returned by current plugin UI handlers.
 - Mobile pairing is now plugin-owned in this repo for the first bounded slice:
   - admin-authenticated issue/revoke endpoints and an unauthenticated exchange endpoint now exist under `/api/mobile/pairing/*`
-  - unauthenticated read-only LAN discovery now exists at `GET /api/mobile/pairing/discovery`
+  - viewer-authenticated read-only LAN discovery now exists at `GET /api/mobile/pairing/discovery`
   - issued pairing state is short-lived and single-use
   - persisted pairing state must match the live Busy instance id; stale instance state fails closed before issue/exchange
   - exchange returns a scoped Busy bridge token and authoritative bridge URL

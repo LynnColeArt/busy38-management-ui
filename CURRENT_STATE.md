@@ -1,5 +1,16 @@
 # Current State
 
+## 2026-03-18
+
+- Same-origin management hardening now preserves the richer operator surface
+  while closing two routing/auth gaps:
+  - `GET /api/mobile/pairing/discovery` now requires viewer-or-admin auth
+    through either `Authorization: Bearer <token>` or `?token=<token>`
+  - bare `/api` remains a literal JSON 404 and does not fall through to the
+    SPA shell
+- Documentation, backend tests, and the live smoke path now all exercise that
+  secured discovery contract.
+
 ## 2026-03-15
 
 - The management repo now includes a live owner-level smoke path:
@@ -89,7 +100,6 @@
   - refreshed bridge tokens remain revocable by `token_id`
   - the regression is covered in backend tests so refresh rotation and revoke
     stay coherent
-
 ## 2026-03-13
 
 - The management backend now serves the browser app at the same origin:
@@ -111,8 +121,8 @@
   - `GET /api/mobile/pairing/state` now exposes safe trusted-device summaries
     with no raw refresh-grant recovery
 - The management backend now also owns the bounded LAN discovery descriptor:
-  - `GET /api/mobile/pairing/discovery` exposes a read-only candidate surface
-    for local-network pairing discovery
+  - `GET /api/mobile/pairing/discovery` exposes a viewer-authenticated
+    read-only candidate surface for local-network pairing discovery
   - the descriptor returns `version`, `service_type`, `instance_id`,
     `display_label`, `control_plane_url`, `bridge_url`, `bootstrap_methods`,
     and `supports_pairing_code`

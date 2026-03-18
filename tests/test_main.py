@@ -296,6 +296,12 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertIn("text/html", response.headers.get("content-type", ""))
         self.assertIn("busy38-management-api-base", response.text)
 
+    def test_bare_api_namespace_root_stays_a_404(self):
+        response = self.client.get("/api")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertIn("application/json", response.headers.get("content-type", ""))
+        self.assertEqual(response.json(), {"detail": "Not Found"})
     def test_viewer_and_admin_tokens(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         read_headers = {"Authorization": f"Bearer {self.read_token}"}
@@ -625,7 +631,17 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 },
                 clear=False,
             ):
-                response = self.client.get("/api/mobile/pairing/discovery")
+                unauthorized = self.client.get("/api/mobile/pairing/discovery")
+                self.assertEqual(unauthorized.status_code, 401, unauthorized.text)
+
+                response = self.client.get(
+                    "/api/mobile/pairing/discovery",
+                    headers={"Authorization": f"Bearer {self.read_token}"},
+                )
+                query_response = self.client.get(
+                    "/api/mobile/pairing/discovery",
+                    params={"token": self.read_token},
+                )
 
             self.assertEqual(response.status_code, 200, response.text)
             payload = response.json()["discovery"]
@@ -640,6 +656,8 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 ["local_network_code", "qr_code", "manual_details"],
             )
             self.assertTrue(payload["supports_pairing_code"])
+            self.assertEqual(query_response.status_code, 200, query_response.text)
+            self.assertEqual(query_response.json()["discovery"], payload)
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 

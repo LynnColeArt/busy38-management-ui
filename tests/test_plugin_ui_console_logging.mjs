@@ -125,13 +125,8 @@ test("logActionRequestFailure emits console errors for transport failures", () =
 
 test("index loads the plugin console helper before the main app bundle", () => {
   const html = fs.readFileSync(path.resolve("web/index.html"), "utf8");
-  const helperScript = '<script src="plugin_ui_console.js"></script>';
-  const appScript = '<script src="app.js"></script>';
-
-  const helperIndex = html.indexOf(helperScript);
-  const appIndex = html.indexOf(appScript);
-
-  assert.notEqual(helperIndex, -1, "expected plugin_ui_console.js script tag");
-  assert.notEqual(appIndex, -1, "expected app.js script tag");
-  assert.ok(helperIndex < appIndex, "expected plugin_ui_console.js to load before app.js");
+  assert.match(
+    html,
+    /<script src="plugin_ui_console\.js"><\/script>[\s\S]*<script src="app\.js"><\/script>/,
+  );
 });

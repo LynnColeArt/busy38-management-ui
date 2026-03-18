@@ -239,7 +239,7 @@ uvicorn.run("backend.app.main:app", host={json.dumps(host)}, port={port}, reload
         assert_equal(prefs["shared_theme_mode"], "dark", "shared theme should update")
         assert_equal(prefs["contrast_policy"], "aaa", "contrast policy should update")
 
-        status, discovery = request_json("GET", f"{base_url}/api/mobile/pairing/discovery")
+        status, discovery = request_json("GET", f"{base_url}/api/mobile/pairing/discovery", headers=read_headers)
         assert_equal(status, 200, "pairing discovery should succeed")
         descriptor = discovery["discovery"]
         assert_equal(descriptor["instance_id"], "busy-local", "discovery instance should match")

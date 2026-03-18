@@ -5800,7 +5800,8 @@ async def exchange_mobile_pairing_code(
 
 
 @app.get("/api/mobile/pairing/discovery")
-async def get_mobile_pairing_discovery(request: Request) -> Dict[str, Any]:
+async def get_mobile_pairing_discovery(request: Request, token: Optional[str] = None) -> Dict[str, Any]:
+    _require_role(request, required="viewer", token=token)
     try:
         result = mobile_pairing.discovery_descriptor(request_url=str(request.url))
     except RuntimeError as exc:
@@ -5915,7 +5916,7 @@ async def serve_web_root() -> FileResponse:
 
 @app.get("/{asset_path:path}", include_in_schema=False)
 async def serve_web_asset(asset_path: str) -> FileResponse:
-    if asset_path.startswith("api/"):
+    if asset_path == "api" or asset_path.startswith("api/"):
         raise HTTPException(status_code=404, detail="Not Found")
 
     candidate = (_WEB_ROOT / asset_path).resolve()
