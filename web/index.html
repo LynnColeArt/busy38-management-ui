@@ -25,6 +25,13 @@
       </header>
 
       <section class="panel">
+        <h2>Attention now</h2>
+        <p id="dashboardOverviewHeadline" class="status">Loading control-plane overview…</p>
+        <div id="dashboardOverview" class="dashboard-grid"></div>
+        <div id="dashboardAttentionHistory"><p>Select a summary card to inspect recent unseen events.</p></div>
+      </section>
+
+      <section class="panel">
         <h2>Appearance</h2>
         <form id="appearanceForm">
           <label>
@@ -108,9 +115,10 @@
         </form>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="runtimePanel">
         <h2>Busy runtime</h2>
-        <p id="runtimeStatus">Checking runtime…</p>
+        <p id="runtimeStatus" class="meta">Checking runtime…</p>
+        <p id="runtimeStatusMeta" class="meta">Loading runtime details…</p>
         <div class="control-row">
           <label>
             Service
@@ -118,10 +126,12 @@
               <option value="busy">busy</option>
             </select>
           </label>
-          <button type="button" data-action="runtime-start">Start</button>
-          <button type="button" data-action="runtime-stop">Stop</button>
-          <button type="button" data-action="runtime-restart">Restart</button>
+          <button type="button" data-action="runtime-start" data-runtime-control="1">Start</button>
+          <button type="button" data-action="runtime-stop" data-runtime-control="1">Stop</button>
+          <button type="button" data-action="runtime-restart" data-runtime-control="1">Restart</button>
+          <button type="button" data-action="refresh-runtime">Refresh</button>
         </div>
+        <p id="runtimeControlHint" class="meta">Set an admin token to control runtime services.</p>
         <div id="runtimeServices" class="card-list"></div>
         <p id="runtimeStatusText" class="status"></p>
       </section>
@@ -159,6 +169,7 @@
       <section class="panel">
         <h2>Provider routing chain</h2>
         <p id="providerChainSummary" class="meta">Loading provider routing chain…</p>
+        <p id="providerRoutingHealth" class="status">routing state loading…</p>
         <p id="providerRoutingPath" class="meta">Routing path not loaded.</p>
         <div id="providerChain" class="chain"></div>
         <p>
@@ -167,12 +178,12 @@
         <p id="providerChainStatus" class="status"></p>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="providerDiagnosticsPanel">
         <h2>Provider diagnostics</h2>
         <div id="providerDiagnostics"><p>Select a provider to load diagnostics.</p></div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="providersPanel">
         <h2>Providers</h2>
         <div class="control-row">
           <label>
@@ -349,7 +360,7 @@
         <p id="gmDirectMessageStatus" class="status"></p>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="gmTicketsPanel">
         <h2>GM tickets</h2>
         <div class="control-row">
           <label>
@@ -668,10 +679,38 @@
 
       <section class="panel">
         <h2>Recent events</h2>
-        <ul id="events"></ul>
+        <div class="control-row">
+          <label>
+            Domain
+            <select id="eventDomainFilter">
+              <option value="">all</option>
+            </select>
+          </label>
+          <label>
+            Level
+            <select id="eventLevelFilter">
+              <option value="">all</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+            </select>
+          </label>
+          <label>
+            Search
+            <input id="eventQueryFilter" type="text" placeholder="runtime, gm_ticket, import id..." />
+          </label>
+          <label>
+            Limit
+            <input id="eventLimitFilter" type="number" min="1" max="100" value="50" />
+          </label>
+          <button type="button" data-action="refresh-events">Load events</button>
+          <button type="button" data-action="mark-events-seen">Mark shown seen</button>
+        </div>
+        <p id="eventFilterSummary" class="meta">Loading recent events…</p>
+        <ul id="events" class="compact-list"></ul>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="startupPanel">
         <h2>Startup plugin debug summary</h2>
         <div id="startupDebugSummary"><p>Startup debug summary pending...</p></div>
       </section>
@@ -723,6 +762,13 @@
     <script src="mobile_pairing_qr.js"></script>
     <script src="management_api_base.js"></script>
     <script src="appearance_theme.js"></script>
+    <script src="attention_state.js"></script>
+    <script src="provider_action_ui.js"></script>
+    <script src="provider_health_ui.js"></script>
+    <script src="provider_routing_summary.js"></script>
+    <script src="dashboard_overview.js"></script>
+    <script src="events_ui.js"></script>
+    <script src="runtime_ui.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

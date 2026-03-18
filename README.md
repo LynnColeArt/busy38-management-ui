@@ -19,19 +19,19 @@ The goal is to move operations off ad-hoc mobile flows and into a first-class ma
 Start the management backend:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r backend/requirements.txt
-cd backend
-PYTHONPATH="/path/to/Busy:$PWD" \
-BUSY_RUNTIME_PATH="/path/to/Busy" \
-uvicorn app.main:app --reload --port 8031
+./scripts/dev.sh
 ```
 
 `backend/requirements.txt` includes the websocket transport dependency needed for the live event stream at `/api/events/ws`. A standard local install should not require an extra manual `pip install websockets`.
 
-The backend imports Busy core modules directly. Pairing endpoints additionally
-require:
+`./scripts/dev.sh` always runs through this repo's `.venv`, installs the local
+backend requirements there, auto-detects a sibling Busy checkout at `../busy`,
+and falls back to `BUSY_RUNTIME_PATH` if you keep Busy elsewhere.
+
+The backend imports Busy core modules directly. The bootstrap script ensures the
+minimum Busy-side Python support needed for startup inside the same `.venv`.
+
+Pairing endpoints additionally require:
 
 ```bash
 export BUSY38_MOBILE_PAIRING_SECRET="replace-with-local-secret"
@@ -104,6 +104,7 @@ Appearance preference authority uses the same Busy runtime path:
   warning shapes returned by current plugin UI handlers.
 - Mobile pairing is now plugin-owned in this repo for the first bounded slice:
   - admin-authenticated issue/revoke endpoints and an unauthenticated exchange endpoint now exist under `/api/mobile/pairing/*`
+  - viewer-authenticated read-only LAN discovery now exists at `GET /api/mobile/pairing/discovery`
   - issued pairing state is short-lived and single-use
   - persisted pairing state must match the live Busy instance id; stale instance state fails closed before issue/exchange
   - exchange returns a scoped Busy bridge token and authoritative bridge URL
@@ -115,12 +116,9 @@ Appearance preference authority uses the same Busy runtime path:
   - QR control-plane URL resolution is literal: explicit runtime override, then document override, then served origin, then loopback fallback
   - QR copy/render is live-response-only; reload requires issuing a new code
 - Desktop appearance preferences are now part of the control plane:
-  - `GET /api/appearance` and `PATCH /api/appearance` read/write the canonical
-    Busy appearance record
-  - the browser applies the resolved desktop theme to the document root on load
-    and after save
-  - the browser also applies the shared accessibility/readability policy to the
-    document immediately after load/save
+  - `GET /api/appearance` and `PATCH /api/appearance` read/write the canonical Busy appearance record
+  - the browser applies the resolved desktop theme to the document root on load and after save
+  - the browser also applies the shared accessibility/readability policy to the document immediately after load/save
 
 ## API surface (MVP)
 
@@ -169,8 +167,12 @@ Import review boundary:
 - `GET /api/chat_history`
 - `POST /api/memory`
 - `POST /api/chat_history`
+- `GET /api/appearance`
+- `PATCH /api/appearance`
 - `POST /api/mobile/pairing/issue`
+- `GET /api/mobile/pairing/discovery`
 - `POST /api/mobile/pairing/exchange`
+- `POST /api/mobile/trust/refresh`
 - `GET /api/mobile/pairing/state`
 - `POST /api/mobile/pairing/revoke`
 - `GET  /api/runtime/status`
@@ -178,8 +180,6 @@ Import review boundary:
 - `POST /api/runtime/services/{service_name}/start`
 - `POST /api/runtime/services/{service_name}/stop`
 - `POST /api/runtime/services/{service_name}/restart`
-- `GET /api/appearance`
-- `PATCH /api/appearance`
 
 ### Notable settings fields
 
@@ -201,14 +201,21 @@ The badge tooltip displays the token source currently in use (for example `admin
 ## Test and validation
 
 ```bash
-python3 -m py_compile backend/app/main.py backend/app/runtime.py
+./.venv/bin/python -m py_compile backend/app/main.py backend/app/runtime.py
+node -c web/appearance_theme.js
 node -c web/plugin_ui_console.js
 node -c web/app.js
+node --test tests/test_appearance_theme.mjs
 node --test tests/test_plugin_ui_console_logging.mjs
 node --test tests/test_mobile_pairing_ui.mjs
-pip install -r backend/requirements-dev.txt
-PYTHONPATH=. .venv/bin/pytest tests
+./scripts/test.sh
+python3 scripts/run_management_plane_smoke.py
 ```
+
+The smoke script boots a temporary management API against the sibling
+`../busy` checkout, seeds one GM-derived room, then verifies same-origin app
+serving, appearance read/write access control, discovery, pairing
+issue/exchange, trusted-device refresh, revoke, and safe state inspection.
 
 See `docs/PLUGIN_DEBUGGER.md` for detailed debugger semantics, warning/error codes,
 and expected payload structure.

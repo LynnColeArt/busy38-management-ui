@@ -1,0 +1,34 @@
+{
+  "instance_id": "busy-local",
+  "issued_codes": {
+    "20a9744ab17e2e5df1e8496a63b599655e26406c26daf1422f5aa03117778241": {
+      "authorized_room_ids": [
+        "team-room-qa"
+      ],
+      "consumed_at": null,
+      "device_label": "PillowFort iPhone",
+      "expires_at": "2026-03-16T01:28:27.557448+00:00",
+      "issued_at": "2026-03-16T01:23:27.557448+00:00",
+      "issued_by": "admin",
+      "orchestrator_scope": [
+        "carlo"
+      ]
+    },
+    "9985f8373f32f51dd3a8bbb6fecebe6348ae3a3f9f665a3cb83c16bc6b3270d3": {
+      "authorized_room_ids": [
+        "team-room-qa"
+      ],
+      "consumed_at": null,
+      "device_label": "PillowFort iPhone",
+      "expires_at": "2026-03-16T01:24:27.049953+00:00",
+      "issued_at": "2026-03-16T01:19:27.049953+00:00",
+      "issued_by": "admin",
+      "orchestrator_scope": [
+        "carlo"
+      ]
+    }
+  },
+  "revoked_token_ids": {},
+  "schema_version": 2,
+  "trusted_devices": {}
+}

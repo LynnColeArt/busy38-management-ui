@@ -229,6 +229,11 @@ button:disabled {
   color: #93c5fd;
 }
 
+.status-stopped {
+  border-color: #94a3b8;
+  color: #cbd5e1;
+}
+
 .status-pending {
   border-color: #f59e0b;
   color: #fbbf24;
@@ -291,8 +296,25 @@ button:disabled {
   background: var(--color-card);
 }
 
+.provider-card-selected {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 35%, transparent);
+}
+
 .card h3 {
   margin-top: 0;
+}
+
+.runtime-service-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.runtime-path {
+  display: inline-block;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .pairing-qr-block {
@@ -337,4 +359,139 @@ button:disabled {
 .compact-list li {
   padding: 8px 0;
   border-bottom: 1px solid var(--color-divider);
+}
+
+.provider-health-summary {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.provider-action-result {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.provider-action-result-ok {
+  border-color: #34d399;
+}
+
+.provider-action-result-err {
+  border-color: #ef4444;
+}
+
+.provider-action-result-warn {
+  border-color: #f59e0b;
+}
+
+.provider-issue-list li {
+  display: grid;
+  gap: 4px;
+}
+
+.event-card {
+  list-style: none;
+}
+
+.event-card.is-seen {
+  opacity: 0.82;
+}
+
+.event-card-actions {
+  margin-top: 8px;
+}
+
+.dashboard-attention-history-toggle {
+  margin: 10px 0 6px;
+}
+
+.event-seen-badge {
+  color: var(--color-muted);
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.dashboard-card {
+  min-height: 148px;
+  width: 100%;
+  text-align: left;
+  background: var(--color-card);
+  color: var(--color-text);
+}
+
+.dashboard-kicker {
+  margin: 0 0 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
+  color: var(--color-muted);
+}
+
+.dashboard-unseen-count {
+  margin-left: 6px;
+  font-size: 0.75rem;
+}
+
+.dashboard-freshness-badge {
+  margin-left: 6px;
+  font-size: 0.75rem;
+}
+
+.dashboard-review-badge {
+  margin-left: 6px;
+  font-size: 0.75rem;
+}
+
+.dashboard-remediation-hint {
+  margin-top: 8px;
+}
+
+.dashboard-metric {
+  margin: 0 0 6px;
+  font-size: 2rem;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.dashboard-ok {
+  border-color: #34d399;
+}
+
+.dashboard-warn {
+  border-color: #f59e0b;
+}
+
+.dashboard-err {
+  border-color: #ef4444;
+}
+
+.dashboard-card:hover {
+  transform: translateY(-1px);
+}
+
+.dashboard-card.is-selected {
+  box-shadow: 0 0 0 2px var(--color-primary);
+}
+
+.dashboard-attention-recommendations {
+  margin-top: 12px;
+}
+
+.event-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 12px;
+}
+
+.status.warn {
+  color: #fbbf24;
 }

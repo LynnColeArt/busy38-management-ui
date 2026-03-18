@@ -669,6 +669,7 @@ class RuntimeAdapter:
             payload: Dict[str, Any] = {
                 "source": "direct",
                 "connected": True,
+                "default_service": self.default_service,
                 "services": {
                     name: self._serialize_direct_service(status) for name, status in service_statuses.items()
                 },
@@ -684,12 +685,18 @@ class RuntimeAdapter:
         if self.bridge_url:
             health = self._request_json("GET", "/health")
             if isinstance(health, dict):
-                return {"source": "bridge", "connected": True, **health}
+                return {
+                    "source": "bridge",
+                    "connected": True,
+                    **health,
+                    "default_service": str(health.get("default_service") or self.default_service),
+                }
 
         return {
             "connected": False,
             "source": "none",
             "error": self._load_reason,
+            "default_service": self.default_service,
             "services": {},
         }
 
@@ -700,6 +707,7 @@ class RuntimeAdapter:
             return {
                 "source": "direct",
                 "connected": True,
+                "default_service": self.default_service,
                 "services": [
                     self._serialize_direct_service(service_statuses[name])
                     for name in sorted(service_statuses)
@@ -713,12 +721,14 @@ class RuntimeAdapter:
                     "source": "bridge",
                     "connected": True,
                     **data,
+                    "default_service": str(data.get("default_service") or self.default_service),
                 }
 
         return {
             "connected": False,
             "source": "none",
             "error": self._load_reason,
+            "default_service": self.default_service,
             "services": [],
         }
 
