@@ -69,10 +69,10 @@ def _load_runtime_pairing_state() -> Dict[str, Any]:
     # centralizes the one missing-key upgrade path without obscuring authority
     # checks; any present non-object value still fails closed.
     state = load_pairing_state(_runtime_root())
-    trusted_devices = state.get("trusted_devices")
-    if trusted_devices is None:
+    if "trusted_devices" not in state:
         state["trusted_devices"] = {}
         return state
+    trusted_devices = state["trusted_devices"]
     if not isinstance(trusted_devices, dict):
         raise PairingStateError("PAIRING_STATE_INVALID", "trusted_devices must be an object")
     return state
@@ -410,7 +410,7 @@ def issue_pairing_code(
     resolved_ttl = _coerce_issue_ttl(ttl_sec)
     now = _now()
     expires_at = now + timedelta(seconds=resolved_ttl)
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
 
     chosen_code = ""
     chosen_hash = ""
@@ -769,7 +769,7 @@ def list_pairing_state() -> Dict[str, Any]:
 
 def discovery_descriptor(*, request_url: str | None = None) -> Dict[str, Any]:
     _require_available()
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     return {
         "version": DISCOVERY_PROTOCOL_VERSION,
         "service_type": DISCOVERY_SERVICE_TYPE,

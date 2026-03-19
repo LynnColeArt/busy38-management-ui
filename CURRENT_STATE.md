@@ -4,10 +4,11 @@
 
 - Mobile pairing now tolerates the one legacy state shape that predates trusted
   devices:
-  - exchange, revoke, refresh, and state inspection now treat a missing
-    `trusted_devices` collection as an empty legacy map
-  - any present non-object `trusted_devices` value still fails closed as an
-    invalid pairing-state artifact
+  - issue, discovery, exchange, revoke, refresh, and state inspection now
+    treat a missing `trusted_devices` collection as the one supported legacy
+    shape
+  - explicit `trusted_devices: null` and any other present non-object value
+    still fail closed as invalid pairing-state artifacts
 - Provider overview remediation jumps now preserve each item's own provider
   status when opening diagnostics, so summary-driven drill-downs land on the
   correct bounded provider filter instead of inheriting the card-wide status.
@@ -245,3 +246,16 @@
 - The security pipeline now persists a redacted preview derivative for sensitive/quarantined imports, and downstream agent-directory surfaces use that redacted derivative instead of raw import text.
 - Canonical details live in:
   - `docs/internal/IMPORT_LOCAL_REVIEW_ISOLATION_CHANGE_REQUEST.md`
+
+## 2026-03-19
+
+**Adversarial QA review of unmerged branches** (followup/legacy-pairing-dashboard-fixes, feature/management-ui-updates, feature/realtime-*, pr/* and samuelgoff remotes) + open work:
+
+**Findings by priority (AGENTS.md):**
+- Security/authority: No regressions. `backend/app/mobile_pairing.py:68` `[SECURITY CRITICAL]` legacy upgrade centralizes missing-key handling without obscuring boundaries; missing key upgrades to `{}`, explicit `null` and other invalid map values still fail closed. All pairing paths + auth/role enforced.
+- Data/persistence/correctness: Legacy-state tests now cover read, issue, exchange, discovery, and invalid-null rejection; missing-key upgrade happens in memory first and persists on write. No silent fallbacks.
+- Parser/dispatch/permissions/edges: Strict on invalid state, scopes, tokens, non-admin; no guesswork. JS `escapeHtml` before all `innerHTML`.
+- Resource/perf/style/readability: Clean; no hot paths, explicit code, no prohibited comments or placeholders in prod.
+- Checklist: Tests expanded, CURRENT_STATE updated, no TODO/FIXME in runtime code.
+
+Branches mostly compliant; some contain superseded merge commits (recommend rebase/prune). No blocking issues. Verified via grep, git log, test coverage.

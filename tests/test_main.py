@@ -935,6 +935,90 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
+    def test_mobile_pairing_state_rejects_null_trusted_devices_artifact(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            state_path = os.path.join(pairing_state_dir, "state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "instance_id": "busy-local",
+                        "issued_codes": {},
+                        "revoked_token_ids": {},
+                        "trusted_devices": None,
+                    },
+                    handle,
+                )
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": state_path,
+                },
+                clear=False,
+            ):
+                state_response = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+            self.assertEqual(state_response.status_code, 400, state_response.text)
+            self.assertIn("pairing state maps must be objects", state_response.text)
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_issue_accepts_legacy_state_without_trusted_devices(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            state_path = os.path.join(pairing_state_dir, "state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "instance_id": "busy-local",
+                        "issued_codes": {},
+                        "revoked_token_ids": {},
+                    },
+                    handle,
+                )
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": state_path,
+                },
+                clear=False,
+            ):
+                with patch(
+                    "backend.app.mobile_pairing._load_known_pairing_scopes",
+                    return_value=({"team-room-qa"}, {"carlo", "gm"}),
+                ):
+                    issue = self.client.post(
+                        "/api/mobile/pairing/issue",
+                        headers=admin_headers,
+                        json={
+                            "device_label": "Sam iPhone",
+                            "authorized_room_ids": ["team-room-qa"],
+                            "orchestrator_scope": ["Carlo"],
+                            "ttl_sec": 300,
+                        },
+                    )
+                self.assertEqual(issue.status_code, 200, issue.text)
+                state_response = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+            self.assertEqual(state_response.status_code, 200, state_response.text)
+            pairing_state = state_response.json()["pairing"]
+            self.assertEqual(len(pairing_state["issued"]), 1)
+            self.assertEqual(pairing_state["trusted_devices"], [])
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
     def test_mobile_pairing_exchange_upgrades_legacy_state_without_trusted_devices(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
@@ -997,6 +1081,42 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
                 pairing_state["trusted_devices"][0]["device_relationship_id"],
                 exchanged["device_relationship_id"],
             )
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_discovery_accepts_legacy_state_without_trusted_devices(self):
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            state_path = os.path.join(pairing_state_dir, "state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "instance_id": "busy-local",
+                        "issued_codes": {},
+                        "revoked_token_ids": {},
+                    },
+                    handle,
+                )
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": state_path,
+                    "BUSY38_MOBILE_PAIRING_BRIDGE_URL": "ws://busy.local:8787/ws",
+                    "BUSY38_MOBILE_DISCOVERY_LABEL": "Office PillowFort",
+                },
+                clear=False,
+            ):
+                response = self.client.get(
+                    "/api/mobile/pairing/discovery",
+                    headers={"Authorization": f"Bearer {self.read_token}"},
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            payload = response.json()["discovery"]
+            self.assertEqual(payload["instance_id"], "busy-local")
+            self.assertEqual(payload["display_label"], "Office PillowFort")
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
