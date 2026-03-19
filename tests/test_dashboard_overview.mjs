@@ -146,7 +146,10 @@ test("dashboard overview helper highlights critical runtime, provider, and gm pr
   assert.match(providerCard.actionSummary, /Latest action failed for backup/);
   assert.equal(providerCard.freshness.label, "fresh");
   assert.equal(providerCard.remediationItems[0].providerId, "backup");
+  assert.equal(providerCard.remediationItems[0].providerStatus, "unreachable");
   assert.match(providerCard.remediationItems[0].latestAction, /secret rotation: Secret update failed/);
+  assert.equal(providerCard.remediationItems[1].providerId, "primary");
+  assert.equal(providerCard.remediationItems[1].providerStatus, "active");
   assert.equal(providerCard.unseenCount, 0);
   assert.equal(providerCard.seenHistoryCount, 1);
   assert.equal(providerCard.seenHistoryEvents[0].id, "evt-provider");
@@ -294,4 +297,10 @@ test("index loads the dashboard overview helper before the main app bundle", () 
   assert.ok(providerHealthIndex < helperIndex, "expected provider_health_ui.js before dashboard_overview.js");
   assert.ok(providerHelperIndex < helperIndex, "expected provider_routing_summary.js before dashboard_overview.js");
   assert.ok(helperIndex < appIndex, "expected dashboard_overview.js to load before app.js");
+});
+
+test("dashboard attention remediation buttons preserve item-specific provider status", () => {
+  const source = fs.readFileSync(path.resolve("web/app.js"), "utf8");
+
+  assert.match(source, /item\.providerStatus \|\| focus\.providerStatus \|\| ""/);
 });

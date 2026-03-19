@@ -64,6 +64,20 @@ def _require_available() -> None:
         raise RuntimeError(reason or "pairing is unavailable")
 
 
+def _load_runtime_pairing_state() -> Dict[str, Any]:
+    # [SECURITY CRITICAL] Legacy pairing state predates trusted_devices. This
+    # centralizes the one missing-key upgrade path without obscuring authority
+    # checks; any present non-object value still fails closed.
+    state = load_pairing_state(_runtime_root())
+    trusted_devices = state.get("trusted_devices")
+    if trusted_devices is None:
+        state["trusted_devices"] = {}
+        return state
+    if not isinstance(trusted_devices, dict):
+        raise PairingStateError("PAIRING_STATE_INVALID", "trusted_devices must be an object")
+    return state
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -447,7 +461,7 @@ def exchange_pairing_code(
     _require_available()
     normalized_code = normalize_pairing_code(pairing_code)
     normalized_device_label = str(device_label or "").strip()
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     resolved_expected_instance_id = _normalize_expected_instance_id(expected_instance_id)
     state_instance_id = str(state["instance_id"])
     if (
@@ -528,7 +542,7 @@ def refresh_trusted_device(
     _require_available()
     normalized_relationship_id = _normalize_device_relationship_id(device_relationship_id)
     normalized_refresh_grant = _normalize_refresh_grant(refresh_grant)
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     resolved_expected_instance_id = _normalize_expected_instance_id(expected_instance_id)
     state_instance_id = str(state["instance_id"])
     if (
@@ -614,7 +628,7 @@ def revoke_pairing_grant(
     token_id: Any | None = None,
 ) -> Dict[str, Any]:
     _require_available()
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     raw_bridge_token = str(bridge_token or "").strip()
     raw_token_id = str(token_id or "").strip()
     if bool(raw_bridge_token) == bool(raw_token_id):
@@ -651,7 +665,7 @@ def revoke_pairing_grant(
 
 def list_pairing_state() -> Dict[str, Any]:
     _require_available()
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     issued_rows: list[Dict[str, Any]] = []
     revoked_rows: list[Dict[str, Any]] = []
     trusted_device_rows: list[Dict[str, Any]] = []

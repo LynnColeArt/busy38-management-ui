@@ -395,6 +395,7 @@
         : null;
       return {
         providerId: `${entry.provider?.id || entry.routingNode?.id || "provider"}`,
+        providerStatus: `${entry.provider?.status || entry.routingNode?.status || ""}`,
         tone: actionResult?.tone === "err"
           ? "err"
           : primaryIssue?.tone || entry.summary?.tone || actionResult?.tone || "warn",

@@ -2,6 +2,15 @@
 
 ## 2026-03-18
 
+- Mobile pairing now tolerates the one legacy state shape that predates trusted
+  devices:
+  - exchange, revoke, refresh, and state inspection now treat a missing
+    `trusted_devices` collection as an empty legacy map
+  - any present non-object `trusted_devices` value still fails closed as an
+    invalid pairing-state artifact
+- Provider overview remediation jumps now preserve each item's own provider
+  status when opening diagnostics, so summary-driven drill-downs land on the
+  correct bounded provider filter instead of inheriting the card-wide status.
 - Same-origin management hardening now preserves the richer operator surface
   while closing two routing/auth gaps:
   - `GET /api/mobile/pairing/discovery` now requires viewer-or-admin auth

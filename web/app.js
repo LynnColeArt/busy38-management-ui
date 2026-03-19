@@ -1990,7 +1990,7 @@ function renderDashboardAttentionHistory() {
                   type="button"
                   data-action="open-dashboard-panel"
                   data-panel-id="providersPanel"
-                  data-provider-status="${escapeHtml(focus.providerStatus || "")}"
+                  data-provider-status="${escapeHtml(item.providerStatus || focus.providerStatus || "")}"
                   data-provider-id="${escapeHtml(item.providerId || "")}"
                 >Open diagnostics</button>
               </div>
