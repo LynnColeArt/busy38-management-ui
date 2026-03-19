@@ -32,7 +32,7 @@ test("dashboard overview helper highlights critical runtime, provider, and gm pr
     providers: [
       {
         id: "primary",
-        status: "active",
+        status: "Active ",
         enabled: true,
         metadata: {
           secret_policy: "required",
@@ -45,7 +45,7 @@ test("dashboard overview helper highlights critical runtime, provider, and gm pr
       },
       {
         id: "backup",
-        status: "unreachable",
+        status: "unreachable ",
         enabled: true,
         metadata: {
           secret_policy: "none",

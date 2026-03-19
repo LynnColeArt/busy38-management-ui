@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 
 try:
     from core.bridge.pairing import (
+        PAIRING_STATE_SCHEMA_VERSION,
         PairingStateError,
         PairingTokenError,
         build_scoped_pairing_token,
@@ -23,6 +25,7 @@ try:
         normalize_pairing_code,
         normalize_room_scope_ids,
         pairing_code_hash,
+        pairing_state_path,
         refresh_grant_hash,
         write_pairing_state,
     )
@@ -65,13 +68,22 @@ def _require_available() -> None:
 
 
 def _load_runtime_pairing_state() -> Dict[str, Any]:
-    # [SECURITY CRITICAL] Legacy pairing state predates trusted_devices. This
-    # centralizes the one missing-key upgrade path without obscuring authority
-    # checks; any present non-object value still fails closed.
+    # [SECURITY CRITICAL] Only schema_version 1 predates trusted_devices. A
+    # current-schema file that loses this key is corrupted state, and rewriting
+    # it with `{}` would silently discard trusted-device continuity.
+    state_path = pairing_state_path(_runtime_root())
+    if state_path.exists():
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            raw = None
+        if isinstance(raw, dict):
+            if raw.get("schema_version") == PAIRING_STATE_SCHEMA_VERSION and "trusted_devices" not in raw:
+                raise PairingStateError(
+                    "PAIRING_STATE_INVALID",
+                    "trusted_devices is required for schema_version 2 pairing state",
+                )
     state = load_pairing_state(_runtime_root())
-    if "trusted_devices" not in state:
-        state["trusted_devices"] = {}
-        return state
     trusted_devices = state["trusted_devices"]
     if not isinstance(trusted_devices, dict):
         raise PairingStateError("PAIRING_STATE_INVALID", "trusted_devices must be an object")

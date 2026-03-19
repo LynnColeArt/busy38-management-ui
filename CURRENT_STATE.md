@@ -4,11 +4,13 @@
 
 - Mobile pairing now tolerates the one legacy state shape that predates trusted
   devices:
-  - issue, discovery, exchange, revoke, refresh, and state inspection now
-    treat a missing `trusted_devices` collection as the one supported legacy
-    shape
+  - schema-version `1` artifacts may omit `trusted_devices`, and issue,
+    discovery, exchange, revoke, refresh, and state inspection now continue to
+    accept that one legacy shape
   - explicit `trusted_devices: null` and any other present non-object value
     still fail closed as invalid pairing-state artifacts
+  - current schema-version `2` state must keep `trusted_devices`; a missing key
+    is treated as corruption instead of being silently rewritten
 - Provider overview remediation jumps now preserve each item's own provider
   status when opening diagnostics, and the primary summary CTA now uses that
   same targeted provider status, so summary-driven drill-downs land on the

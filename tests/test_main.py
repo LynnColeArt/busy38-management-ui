@@ -897,7 +897,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             with open(state_path, "w", encoding="utf-8") as handle:
                 json.dump(
                     {
-                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "schema_version": 1,
                         "instance_id": "busy-local",
                         "issued_codes": {
                             pairing_code_hash("ABCD-2345"): {
@@ -932,6 +932,39 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             self.assertEqual(pairing_state["instance_id"], "busy-local")
             self.assertEqual(pairing_state["trusted_devices"], [])
             self.assertEqual(pairing_state["issued"][0]["status"], "pending")
+        finally:
+            shutil.rmtree(pairing_state_dir, ignore_errors=True)
+
+    def test_mobile_pairing_state_rejects_missing_trusted_devices_for_current_schema(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        pairing_state_dir = tempfile.mkdtemp(prefix="busy38-pairing-")
+        try:
+            state_path = os.path.join(pairing_state_dir, "state.json")
+            with open(state_path, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {
+                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "instance_id": "busy-local",
+                        "issued_codes": {},
+                        "revoked_token_ids": {},
+                    },
+                    handle,
+                )
+            with patch.dict(
+                os.environ,
+                {
+                    "BUSY38_MOBILE_PAIRING_SECRET": "pairing-secret",
+                    "BUSY38_INSTANCE_ID": "busy-local",
+                    "BUSY38_MOBILE_PAIRING_STATE_PATH": state_path,
+                },
+                clear=False,
+            ):
+                state_response = self.client.get(
+                    "/api/mobile/pairing/state",
+                    headers=admin_headers,
+                )
+            self.assertEqual(state_response.status_code, 400, state_response.text)
+            self.assertIn("trusted_devices is required for schema_version 2 pairing state", state_response.text)
         finally:
             shutil.rmtree(pairing_state_dir, ignore_errors=True)
 
@@ -977,7 +1010,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             with open(state_path, "w", encoding="utf-8") as handle:
                 json.dump(
                     {
-                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "schema_version": 1,
                         "instance_id": "busy-local",
                         "issued_codes": {},
                         "revoked_token_ids": {},
@@ -1028,7 +1061,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             with open(state_path, "w", encoding="utf-8") as handle:
                 json.dump(
                     {
-                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "schema_version": 1,
                         "instance_id": "busy-local",
                         "issued_codes": {
                             pairing_code_hash(pairing_code): {
@@ -1091,7 +1124,7 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
             with open(state_path, "w", encoding="utf-8") as handle:
                 json.dump(
                     {
-                        "schema_version": PAIRING_STATE_SCHEMA_VERSION,
+                        "schema_version": 1,
                         "instance_id": "busy-local",
                         "issued_codes": {},
                         "revoked_token_ids": {},
