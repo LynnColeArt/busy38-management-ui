@@ -303,4 +303,6 @@ test("dashboard attention remediation buttons preserve item-specific provider st
   const source = fs.readFileSync(path.resolve("web/app.js"), "utf8");
 
   assert.match(source, /item\.providerStatus \|\| focus\.providerStatus \|\| ""/);
+  assert.match(source, /const primaryProviderStatus = remediationItems\[0\]\?\.providerStatus \|\| focus\.providerStatus \|\| "";/);
+  assert.match(source, /data-provider-status="\$\{escapeHtml\(primaryProviderStatus\)\}"/);
 });

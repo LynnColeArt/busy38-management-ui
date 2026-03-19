@@ -1951,6 +1951,7 @@ function renderDashboardAttentionHistory() {
   const focus = card.focus || {};
   const remediationItems = Array.isArray(card.remediationItems) ? card.remediationItems : [];
   const primaryProviderId = remediationItems[0]?.providerId || "";
+  const primaryProviderStatus = remediationItems[0]?.providerStatus || focus.providerStatus || "";
   const freshness = card.freshness && typeof card.freshness === "object" ? card.freshness : {};
   const reviewState = card.reviewState && typeof card.reviewState === "object" ? card.reviewState : null;
   const attentionEventCount = Array.isArray(card.attentionEvents) ? card.attentionEvents.length : 0;
@@ -2006,7 +2007,7 @@ function renderDashboardAttentionHistory() {
         type="button"
         data-action="open-dashboard-panel"
         data-panel-id="${escapeHtml(focus.panel || "")}"
-        data-provider-status="${escapeHtml(focus.providerStatus || "")}"
+        data-provider-status="${escapeHtml(primaryProviderStatus)}"
         data-provider-id="${escapeHtml(primaryProviderId)}"
         data-gm-status="${escapeHtml(focus.gmStatus || "")}"
         data-gm-priority="${escapeHtml(focus.gmPriority || "")}"

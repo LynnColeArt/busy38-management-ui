@@ -10,7 +10,8 @@
   - explicit `trusted_devices: null` and any other present non-object value
     still fail closed as invalid pairing-state artifacts
 - Provider overview remediation jumps now preserve each item's own provider
-  status when opening diagnostics, so summary-driven drill-downs land on the
+  status when opening diagnostics, and the primary summary CTA now uses that
+  same targeted provider status, so summary-driven drill-downs land on the
   correct bounded provider filter instead of inheriting the card-wide status.
 - Same-origin management hardening now preserves the richer operator surface
   while closing two routing/auth gaps:
