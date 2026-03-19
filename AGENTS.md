@@ -11,9 +11,13 @@ This repo assumes extremely capable reviewers (including adversarial ones). Code
 - Changes to CI, CD, GitHub Actions, branch protection expectations, or other
   automated enforcement surfaces require Lynn's explicit approval before
   implementation.
-- Never push directly to `main`. Use a branch-only strategy. Name the branch
-  descriptively and concisely. All changes must go through a pull request and
-  be reviewed by Lynn and/or Sam.
+- Never push directly to `main`. Use a branch-only strategy.
+- If the execution environment pre-provisions a non-`main` working branch,
+  that branch satisfies the branch-only requirement; do not create extra
+  branches only to satisfy policy.
+- Otherwise, name the branch descriptively and concisely.
+- All changes must go through a pull request and be reviewed by Lynn and/or
+  Sam.
 
 ---
 
