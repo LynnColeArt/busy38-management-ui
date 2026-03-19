@@ -5,6 +5,20 @@ Automated and AI-assisted contributions are welcome, provided they meet the same
 
 This repo assumes extremely capable reviewers (including adversarial ones). Code must be defensible under scrutiny: explicit boundaries, fail-closed behavior, and visible failures.
 
+## Repo Non-Negotiables
+
+- No new CI without Lynn's explicit approval.
+- Changes to CI, CD, GitHub Actions, branch protection expectations, or other
+  automated enforcement surfaces require Lynn's explicit approval before
+  implementation.
+- Never push directly to `main`. Use a branch-only strategy.
+- If the execution environment pre-provisions a non-`main` working branch,
+  that branch satisfies the branch-only requirement; do not create extra
+  branches only to satisfy policy.
+- Otherwise, name the branch descriptively and concisely.
+- All changes must go through a pull request and be reviewed by Lynn and/or
+  Sam.
+
 ---
 
 ## 0) Definitions
