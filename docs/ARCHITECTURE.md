@@ -199,5 +199,7 @@ sequenceDiagram
 ## Open questions
 
 - None for the current slice. Record new authority ambiguities in
-  `CURRENT_STATE.md` and the relevant `docs/internal/*_CHANGE_REQUEST.md`
-  note before implementation.
+  `docs/internal/OPEN_QUESTIONS_AND_DECISIONS.md`; summarize behavior-shaping
+  outcomes in `CURRENT_STATE.md`; add the relevant
+  `docs/internal/*_CHANGE_REQUEST.md` note when an implementation slice needs
+  design tracking.
