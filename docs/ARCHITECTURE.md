@@ -1,5 +1,13 @@
 # Busy38 Management UI Architecture
 
+## Related docs
+
+- [AGENTS.md](../AGENTS.md)
+- [CURRENT_STATE.md](../CURRENT_STATE.md)
+- [Provider and Management UX Specification](PROVIDER_AND_MANAGEMENT_UX_SPEC.md)
+- [Plugin UI Debugger](PLUGIN_DEBUGGER.md)
+- [Client Pairing Parity Matrix](CLIENT_PAIRING_PARITY_MATRIX.md)
+
 ## Mermaid architecture diagram
 
 ```mermaid
@@ -177,3 +185,19 @@ sequenceDiagram
 - Import review is local-first:
   - raw sensitive content may remain available on the authenticated local review path,
   - security-generated redacted derivatives must be used for downstream agent/provider-facing summaries and artifacts.
+
+## Adversarial failure modes to preserve
+
+- `/api/*` routes must remain literal API surfaces. Unknown API paths fail as
+  JSON 404s instead of falling through to the SPA shell.
+- Parsing, schema validation, auth, and dispatch remain separate layers.
+  Parsed structure never implies permission or side effects.
+- Import review keeps the local-raw versus downstream-redacted split.
+  Downstream summaries and derivatives must not source directly from raw
+  sensitive payloads.
+
+## Open questions
+
+- None for the current slice. Record new authority ambiguities in
+  `CURRENT_STATE.md` and the relevant `docs/internal/*_CHANGE_REQUEST.md`
+  note before implementation.

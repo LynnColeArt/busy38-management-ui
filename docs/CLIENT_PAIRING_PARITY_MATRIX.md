@@ -1,6 +1,18 @@
 # Client Pairing Parity Matrix
 
-Last updated: 2026-03-15
+Last updated: 2026-03-19
+
+## Related docs
+
+- [AGENTS.md](../AGENTS.md)
+- [CURRENT_STATE.md](../CURRENT_STATE.md)
+- [Architecture](ARCHITECTURE.md)
+
+Audit note:
+- The repo snapshot below still reflects the 2026-03-15 cross-repo audit
+  boundary.
+- Control-plane contract notes in this document are refreshed through
+  2026-03-19 and should take precedence over older narrative references.
 
 ## Purpose
 
@@ -29,7 +41,7 @@ mobile pairing slice:
 
 The management repo currently implements:
 - short-lived single-use pairing issue,
-- unauthenticated read-only LAN discovery descriptors,
+- viewer-authenticated LAN discovery descriptors,
 - scoped bridge-token exchange,
 - durable trusted-device relationship persistence,
 - refresh-grant rotation through `POST /api/mobile/trust/refresh`,
@@ -102,6 +114,8 @@ Status:
 
 Management UI:
 - implemented at `GET /api/mobile/pairing/discovery`
+- discovery is read-only but now requires viewer-or-admin auth via bearer token
+  or query token; parity work must not assume open access
 
 Native iOS:
 - implemented and explicitly documented as Bonjour-backed local-network pairing
@@ -224,3 +238,20 @@ Concretely, the next implementation slice should be:
 Until Kotlin reaches that baseline, the management API should be treated as
 stable enough for this slice, and native parity effort should focus on client
 adoption rather than new endpoint invention.
+
+## Adversarial failure modes to preserve
+
+- Discovery auth expectations must stay explicit per endpoint contract. Client
+  parity work must not depend on undocumented open-access behavior.
+- Legacy pairing-state compatibility only applies to known schema-version `1`
+  artifacts. Corrupted current-schema state remains invalid.
+- Refresh and revoke parity proof must show superseded token invalidation, not
+  just successful reconnects.
+
+## Open questions
+
+- Kotlin still needs committed proof for real management-owned LAN discovery
+  and revoke coherence against the live control plane.
+- Future management pairing changes should state whether they alter parity
+  expectations for `pillowfort-ios-native` and `pillowfort-kotlin` before the
+  contract changes ship.

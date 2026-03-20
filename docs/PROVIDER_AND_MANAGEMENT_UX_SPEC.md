@@ -5,6 +5,12 @@ Scope: busy38-management-ui
 Owner: platform  
 Date: 2026-02-18  
 
+## Related docs
+
+- [AGENTS.md](../AGENTS.md)
+- [CURRENT_STATE.md](../CURRENT_STATE.md)
+- [Architecture](ARCHITECTURE.md)
+
 ## 1) Purpose
 
 Define the management web UX for provider configuration, health observability, and secure secret handling so operators can safely configure, test, and troubleshoot multi-provider inference without exposing sensitive material in the UI or logs.
@@ -194,3 +200,22 @@ Track and display:
 ## 10) Deployment status
 
 - This is the implementation blueprint for the next management UI and API iteration after current routing/risk hardening.
+
+## 11) Adversarial failure modes to preserve
+
+- Viewer tokens must never reach mutate, secret, or runtime control paths
+  through optimistic UI state or best-effort server repair.
+- Status and kind filters must normalize operator input and persisted values
+  consistently. Drill-down must not silently widen scope because of padding or
+  case drift.
+- Secret operations stay isolated from general provider edit flows. No
+  endpoint, websocket payload, or audit event may echo cleartext secrets.
+- Provider test and discovery failures remain visible. Manual follow-up paths
+  may be operator-directed, but they must not silently mask auth or transport
+  failures.
+
+## 12) Open questions
+
+- Should provider status normalization move fully to the storage write
+  boundary, or remain a read/filter concern so the control plane preserves the
+  literal upstream status string?
