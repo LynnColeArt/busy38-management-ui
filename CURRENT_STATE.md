@@ -236,3 +236,25 @@
 - The security pipeline now persists a redacted preview derivative for sensitive/quarantined imports, and downstream agent-directory surfaces use that redacted derivative instead of raw import text.
 - Canonical details live in:
   - `docs/internal/IMPORT_LOCAL_REVIEW_ISOLATION_CHANGE_REQUEST.md`
+
+## 2026-03-19 Docs/Specs Review
+
+**Reviewed:** docs/ARCHITECTURE.md, PROVIDER_AND_MANAGEMENT_UX_SPEC.md, PLUGIN_DEBUGGER.md, CLIENT_PAIRING_PARITY_MATRIX.md, internal/*_CHANGE_REQUEST.md.
+
+**Strengths:**
+- Strong alignment with AGENTS.md (explicit boundaries, fail-closed notes, security markers).
+- Comprehensive architecture with Mermaid diagrams for flows.
+- Detailed plugin debugger spec with response shapes, error codes.
+- UX spec covers secrets isolation, role visibility, deterministic routing.
+
+**Suggested improvements:**
+1. Add "Adversarial failure modes" section to all specs (e.g. malformed state, token edge cases, parser ambiguities) per AGENTS.md 3 & 5.
+2. Update parity matrix with current trusted-device/refresh state; mark resolved items.
+3. Cross-link all internal change requests to ARCHITECTURE.md and AGENTS.md.
+4. Add explicit "Open questions" section (AGENTS.md 7.2) in specs for authority ambiguities.
+5. Include test strategy and smoke test coverage in UX specs.
+6. Version specs or add status badges; sync dates with CURRENT_STATE.md.
+7. Diagram security boundaries more visibly (e.g. auth dispatch whitelist).
+8. Document resource/perf invariants for event WS and large import review.
+
+No critical gaps; enhances auditability. Update docs/ accordingly.
