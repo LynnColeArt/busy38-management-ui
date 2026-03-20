@@ -2,6 +2,22 @@
 
 ## 2026-03-18
 
+- Mobile pairing now tolerates the one legacy state shape that predates trusted
+  devices:
+  - schema-version `1` artifacts may omit `trusted_devices`, and issue,
+    discovery, exchange, revoke, refresh, and state inspection now continue to
+    accept that one legacy shape
+  - explicit `trusted_devices: null` and any other present non-object value
+    still fail closed as invalid pairing-state artifacts
+  - current schema-version `2` state must keep `trusted_devices`; a missing key
+    is treated as corruption instead of being silently rewritten
+- Provider overview remediation jumps now preserve each item's own provider
+  status when opening diagnostics, and the primary summary CTA now uses that
+  same targeted provider status, so summary-driven drill-downs land on the
+  correct bounded provider filter instead of inheriting the card-wide status.
+  The provider list filter now trims and lowercases persisted status values too,
+  so drill-down remains stable for older rows that stored padded or mixed-case
+  provider statuses.
 - Same-origin management hardening now preserves the richer operator surface
   while closing two routing/auth gaps:
   - `GET /api/mobile/pairing/discovery` now requires viewer-or-admin auth
@@ -236,3 +252,16 @@
 - The security pipeline now persists a redacted preview derivative for sensitive/quarantined imports, and downstream agent-directory surfaces use that redacted derivative instead of raw import text.
 - Canonical details live in:
   - `docs/internal/IMPORT_LOCAL_REVIEW_ISOLATION_CHANGE_REQUEST.md`
+
+## 2026-03-19
+
+**Adversarial QA review of unmerged branches** (followup/legacy-pairing-dashboard-fixes, feature/management-ui-updates, feature/realtime-*, pr/* and samuelgoff remotes) + open work:
+
+**Findings by priority (AGENTS.md):**
+- Security/authority: No regressions. `backend/app/mobile_pairing.py:68` `[SECURITY CRITICAL]` legacy upgrade centralizes missing-key handling without obscuring boundaries; missing key upgrades to `{}`, explicit `null` and other invalid map values still fail closed. All pairing paths + auth/role enforced.
+- Data/persistence/correctness: Legacy-state tests now cover read, issue, exchange, discovery, and invalid-null rejection; missing-key upgrade happens in memory first and persists on write. No silent fallbacks.
+- Parser/dispatch/permissions/edges: Strict on invalid state, scopes, tokens, non-admin; no guesswork. JS `escapeHtml` before all `innerHTML`.
+- Resource/perf/style/readability: Clean; no hot paths, explicit code, no prohibited comments or placeholders in prod.
+- Checklist: Tests expanded, CURRENT_STATE updated, no TODO/FIXME in runtime code.
+
+Branches mostly compliant; some contain superseded merge commits (recommend rebase/prune). No blocking issues. Verified via grep, git log, test coverage.

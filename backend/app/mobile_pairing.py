@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 
 try:
     from core.bridge.pairing import (
+        PAIRING_STATE_SCHEMA_VERSION,
         PairingStateError,
         PairingTokenError,
         build_scoped_pairing_token,
@@ -23,6 +25,7 @@ try:
         normalize_pairing_code,
         normalize_room_scope_ids,
         pairing_code_hash,
+        pairing_state_path,
         refresh_grant_hash,
         write_pairing_state,
     )
@@ -62,6 +65,29 @@ def _require_available() -> None:
     available, reason = pairing_available()
     if not available:
         raise RuntimeError(reason or "pairing is unavailable")
+
+
+def _load_runtime_pairing_state() -> Dict[str, Any]:
+    # [SECURITY CRITICAL] Only schema_version 1 predates trusted_devices. A
+    # current-schema file that loses this key is corrupted state, and rewriting
+    # it with `{}` would silently discard trusted-device continuity.
+    state_path = pairing_state_path(_runtime_root())
+    if state_path.exists():
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            raw = None
+        if isinstance(raw, dict):
+            if raw.get("schema_version") == PAIRING_STATE_SCHEMA_VERSION and "trusted_devices" not in raw:
+                raise PairingStateError(
+                    "PAIRING_STATE_INVALID",
+                    "trusted_devices is required for schema_version 2 pairing state",
+                )
+    state = load_pairing_state(_runtime_root())
+    trusted_devices = state["trusted_devices"]
+    if not isinstance(trusted_devices, dict):
+        raise PairingStateError("PAIRING_STATE_INVALID", "trusted_devices must be an object")
+    return state
 
 
 def _now() -> datetime:
@@ -396,7 +422,7 @@ def issue_pairing_code(
     resolved_ttl = _coerce_issue_ttl(ttl_sec)
     now = _now()
     expires_at = now + timedelta(seconds=resolved_ttl)
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
 
     chosen_code = ""
     chosen_hash = ""
@@ -447,7 +473,7 @@ def exchange_pairing_code(
     _require_available()
     normalized_code = normalize_pairing_code(pairing_code)
     normalized_device_label = str(device_label or "").strip()
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     resolved_expected_instance_id = _normalize_expected_instance_id(expected_instance_id)
     state_instance_id = str(state["instance_id"])
     if (
@@ -528,7 +554,7 @@ def refresh_trusted_device(
     _require_available()
     normalized_relationship_id = _normalize_device_relationship_id(device_relationship_id)
     normalized_refresh_grant = _normalize_refresh_grant(refresh_grant)
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     resolved_expected_instance_id = _normalize_expected_instance_id(expected_instance_id)
     state_instance_id = str(state["instance_id"])
     if (
@@ -614,7 +640,7 @@ def revoke_pairing_grant(
     token_id: Any | None = None,
 ) -> Dict[str, Any]:
     _require_available()
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     raw_bridge_token = str(bridge_token or "").strip()
     raw_token_id = str(token_id or "").strip()
     if bool(raw_bridge_token) == bool(raw_token_id):
@@ -651,7 +677,7 @@ def revoke_pairing_grant(
 
 def list_pairing_state() -> Dict[str, Any]:
     _require_available()
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     issued_rows: list[Dict[str, Any]] = []
     revoked_rows: list[Dict[str, Any]] = []
     trusted_device_rows: list[Dict[str, Any]] = []
@@ -755,7 +781,7 @@ def list_pairing_state() -> Dict[str, Any]:
 
 def discovery_descriptor(*, request_url: str | None = None) -> Dict[str, Any]:
     _require_available()
-    state = load_pairing_state(_runtime_root())
+    state = _load_runtime_pairing_state()
     return {
         "version": DISCOVERY_PROTOCOL_VERSION,
         "service_type": DISCOVERY_SERVICE_TYPE,
