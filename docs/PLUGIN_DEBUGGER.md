@@ -1,5 +1,11 @@
 # Plugin UI Debugger
 
+## Related docs
+
+- [AGENTS.md](../AGENTS.md)
+- [CURRENT_STATE.md](../CURRENT_STATE.md)
+- [Architecture](ARCHITECTURE.md)
+
 The Management UI plugin debugger endpoint is the single canonical place to validate
 plugin registration quality and diagnose runtime availability.
 
@@ -168,3 +174,20 @@ dependencies are validated even when plugin metadata is sparse.
 - The management UI emits `console.error(...)` for debugger `errors.entries`.
 - Console records include the plugin id, debugger status, update timestamp, and the original warning/error entry arrays.
 - This telemetry is additive only. It does not alter debugger status calculation or action dispatch.
+
+## Adversarial failure modes to preserve
+
+- Malformed or incomplete `metadata.ui` must degrade to explicit warnings and
+  errors, never inferred handlers or auto-repaired actions.
+- Browser console telemetry is observational only. It must not alter debugger
+  status, permissions, or dispatch behavior.
+- Missing required core plugins and namespace conflicts stay visible in both
+  startup summary and on-demand debugger output. They must not collapse into a
+  generic warning.
+- Local handler resolution remains explicit and deterministic. Ambiguous or
+  conflicting entry points fail the debug check instead of guessing a target.
+
+## Open questions
+
+- Should a viewer-safe, redacted debugger projection exist later, or should
+  diagnostics remain strictly admin-only for the management plane?

@@ -1,6 +1,21 @@
 # Client Pairing Parity Matrix
 
-Last updated: 2026-03-15
+Last updated: 2026-03-19
+
+## Related docs
+
+- [AGENTS.md](../AGENTS.md)
+- [CURRENT_STATE.md](../CURRENT_STATE.md)
+- [Architecture](ARCHITECTURE.md)
+
+Audit note:
+- The repo snapshot below still reflects the 2026-03-15 cross-repo audit
+  boundary.
+- Control-plane contract notes in this document are refreshed through
+  2026-03-19 and should take precedence over older narrative references.
+- The 2026-03-19 follow-up specifically rechecked discovery-auth evidence in
+  the adjacent iOS and Kotlin repos without re-auditing every other pairing
+  surface.
 
 ## Purpose
 
@@ -29,7 +44,7 @@ mobile pairing slice:
 
 The management repo currently implements:
 - short-lived single-use pairing issue,
-- unauthenticated read-only LAN discovery descriptors,
+- viewer-authenticated LAN discovery descriptors,
 - scoped bridge-token exchange,
 - durable trusted-device relationship persistence,
 - refresh-grant rotation through `POST /api/mobile/trust/refresh`,
@@ -102,20 +117,26 @@ Status:
 
 Management UI:
 - implemented at `GET /api/mobile/pairing/discovery`
+- discovery is read-only but now requires viewer-or-admin auth via bearer token
+  or query token; parity work must not assume open access
 
 Native iOS:
 - implemented and explicitly documented as Bonjour-backed local-network pairing
   discovery with short-code confirmation
-- physical-device proof path exists for LAN discovery plus chained refresh
+- checked-in runtime discovery still issues a bare
+  `GET /api/mobile/pairing/discovery` with no bearer header or query token, so
+  viewer-authenticated discovery parity is not yet re-proven after the control
+  plane tightened this endpoint
 
 Kotlin:
-- no committed evidence during this audit that the Android runtime consumes the
-  real discovery descriptor from management UI
+- local smoke scripts can capture management-owned pairing artifacts, but this
+  checkout still shows no committed Android runtime path that consumes the live
+  discovery descriptor with the tightened auth contract
 - current local docs and smoke harnesses still emphasize mock pairing exchange
   and launch-url delivery rather than management-owned LAN discovery
 
 Status:
-- native iOS aligned
+- native iOS discovery auth unverified
 - Kotlin behind
 
 ### 4. Durable trusted-device persistence
@@ -201,8 +222,14 @@ Kotlin:
 Kotlin still lacks committed parity for the most important management-owned
 continuity behaviors:
 - real management-owned LAN discovery consumption,
+- authenticated discovery consumption in the Android runtime itself,
 - proof paths that use `busy38-management-ui` instead of a local mock control
   plane for the above behaviors.
+
+Native iOS also needs one targeted parity rerun:
+- prove viewer-authenticated LAN discovery against the live management control
+  plane, or explicitly adopt the query-token/bearer-token contract in the
+  checked-in runtime and proof scripts.
 
 ## Recommendation
 
@@ -216,6 +243,8 @@ The highest-value move is:
    native iOS and Kotlin explicitly before they are treated as ready.
 
 Concretely, the next implementation slice should be:
+- native iOS proof that reruns LAN discovery against the live control plane
+  with the required viewer auth path
 - Kotlin proof automation that boots the real `busy38-management-ui` control
   plane instead of only a mock pairing exchange server
 - Kotlin consumption of the real management-owned LAN discovery descriptor
@@ -224,3 +253,22 @@ Concretely, the next implementation slice should be:
 Until Kotlin reaches that baseline, the management API should be treated as
 stable enough for this slice, and native parity effort should focus on client
 adoption rather than new endpoint invention.
+
+## Adversarial failure modes to preserve
+
+- Discovery auth expectations must stay explicit per endpoint contract. Client
+  parity work must not depend on undocumented open-access behavior.
+- Legacy pairing-state compatibility only applies to known schema-version `1`
+  artifacts. Corrupted current-schema state remains invalid.
+- Refresh and revoke parity proof must show superseded token invalidation, not
+  just successful reconnects.
+
+## Open questions
+
+- Native iOS still needs a clean, committed proof path for viewer-authenticated
+  LAN discovery against the live control plane.
+- Kotlin still needs committed proof for real management-owned LAN discovery
+  and revoke coherence against the live control plane.
+- Future management pairing changes should state whether they alter parity
+  expectations for `pillowfort-ios-native` and `pillowfort-kotlin` before the
+  contract changes ship.
