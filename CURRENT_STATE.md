@@ -15,6 +15,9 @@
   status when opening diagnostics, and the primary summary CTA now uses that
   same targeted provider status, so summary-driven drill-downs land on the
   correct bounded provider filter instead of inheriting the card-wide status.
+  The provider list filter now trims and lowercases persisted status values too,
+  so drill-down remains stable for older rows that stored padded or mixed-case
+  provider statuses.
 - Same-origin management hardening now preserves the richer operator surface
   while closing two routing/auth gaps:
   - `GET /api/mobile/pairing/discovery` now requires viewer-or-admin auth

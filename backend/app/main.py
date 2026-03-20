@@ -3099,7 +3099,11 @@ async def get_providers(
         ]
     if status:
         status_query = status.strip().lower()
-        providers = [provider for provider in providers if str(provider.get("status", "")).lower() == status_query]
+        providers = [
+            provider
+            for provider in providers
+            if str(provider.get("status", "")).strip().lower() == status_query
+        ]
     if secret_status:
         secret_query = secret_status.strip().lower().replace("-", "_")
         providers = [

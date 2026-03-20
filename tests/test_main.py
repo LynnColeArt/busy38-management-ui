@@ -4315,6 +4315,30 @@ class TestManagementApiRolesAndRuntime(unittest.TestCase):
         self.assertEqual(len(providers), 1)
         self.assertEqual(providers[0]["id"], "openai-secondary")
 
+    def test_provider_list_status_filter_trims_stored_status_values(self):
+        admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
+        storage.create_provider(
+            {
+                "id": "openai-padded-status",
+                "name": "OpenAI Padded Status",
+                "endpoint": "https://api.openai.com/v1",
+                "model": "gpt-4o-mini",
+                "status": "Unreachable ",
+                "priority": 7,
+                "enabled": True,
+                "metadata": {"kind": "openai_compatible"},
+            }
+        )
+
+        response = self.client.get(
+            "/api/providers",
+            headers=admin_headers,
+            params={"status": "unreachable"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        providers = response.json()["providers"]
+        self.assertEqual([provider["id"] for provider in providers], ["openai-padded-status"])
+
     def test_provider_create_with_routing_metadata(self):
         admin_headers = {"Authorization": f"Bearer {self.admin_token}"}
         response = self.client.post(
