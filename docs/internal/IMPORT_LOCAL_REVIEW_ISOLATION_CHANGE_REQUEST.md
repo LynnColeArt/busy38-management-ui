@@ -3,6 +3,12 @@
 **Status**: implemented
 **Date**: 2026-03-05
 
+## Related docs
+
+- [AGENTS.md](../../AGENTS.md)
+- [CURRENT_STATE.md](../../CURRENT_STATE.md)
+- [Architecture](../ARCHITECTURE.md)
+
 ## Summary
 
 Management UI import intake already quarantines sensitive items for review, but the non-SaaS threat model is narrower than a blanket "hide everything from local operators" rule:

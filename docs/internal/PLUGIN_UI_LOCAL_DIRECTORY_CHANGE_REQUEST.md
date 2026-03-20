@@ -3,6 +3,13 @@
 **Status**: implemented
 **Date**: 2026-02-28
 
+## Related docs
+
+- [AGENTS.md](../../AGENTS.md)
+- [CURRENT_STATE.md](../../CURRENT_STATE.md)
+- [Architecture](../ARCHITECTURE.md)
+- [Open Questions and Decisions](OPEN_QUESTIONS_AND_DECISIONS.md)
+
 ## Summary
 Management UI currently dispatches plugin actions through a central bridge endpoint contract even when plugin source is local.
 
@@ -22,6 +29,11 @@ The goal is to move executable UI behavior ownership into each plugin’s local 
   3. Fall back to existing bridge endpoint flow when local handler is missing/unavailable.
 
 ## Unresolved questions
+
+Track any still-live follow-up from this list in
+[OPEN_QUESTIONS_AND_DECISIONS.md](OPEN_QUESTIONS_AND_DECISIONS.md) before new
+authority-path work resumes.
+
 - Should local handler call semantics standardize strictly on keyword-only `(payload, method, context)` or remain flexible?
 - Should async handler functions be supported at all (and how should they be executed from sync call path)?
 - What failures should block fallback when local import succeeds but handler raises?

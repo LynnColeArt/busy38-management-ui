@@ -3,6 +3,12 @@
 **Status**: implemented
 **Date**: 2026-03-05
 
+## Related docs
+
+- [AGENTS.md](../../AGENTS.md)
+- [CURRENT_STATE.md](../../CURRENT_STATE.md)
+- [Architecture](../ARCHITECTURE.md)
+
 ## Summary
 
 The management UI exposes a live event stream at `GET /api/events/ws`, but the local bootstrap dependencies only installed plain `uvicorn`.
