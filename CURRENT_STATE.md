@@ -249,7 +249,7 @@
 
 **Suggested improvements:**
 1. Add "Adversarial failure modes" section to all specs (e.g. malformed state, token edge cases, parser ambiguities) per AGENTS.md 3 & 5.
-2. Update parity matrix with current trusted-device/refresh state; mark resolved items.
+2. Re-audit LAN discovery parity after the viewer-auth discovery contract tightened; mark unverified clients explicitly.
 3. Cross-link all internal change requests to ARCHITECTURE.md and AGENTS.md.
 4. Add explicit "Open questions" section (AGENTS.md 7.2) in specs for authority ambiguities.
 5. Include test strategy and smoke test coverage in UX specs.
