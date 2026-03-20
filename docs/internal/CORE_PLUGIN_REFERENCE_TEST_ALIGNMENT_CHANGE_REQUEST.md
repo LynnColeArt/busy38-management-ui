@@ -3,6 +3,12 @@
 **Status**: implemented
 **Date**: 2026-03-05
 
+## Related docs
+
+- [AGENTS.md](../../AGENTS.md)
+- [CURRENT_STATE.md](../../CURRENT_STATE.md)
+- [Architecture](../ARCHITECTURE.md)
+
 ## Summary
 
 The management-ui test for `/api/plugins/core/reference` still expected the older required-core count.

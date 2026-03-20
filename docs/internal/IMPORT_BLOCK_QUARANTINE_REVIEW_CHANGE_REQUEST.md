@@ -3,6 +3,12 @@
 **Status**: implemented
 **Date**: 2026-03-05
 
+## Related docs
+
+- [AGENTS.md](../../AGENTS.md)
+- [CURRENT_STATE.md](../../CURRENT_STATE.md)
+- [Architecture](../ARCHITECTURE.md)
+
 ## Summary
 
 Management UI import intake currently maps automated `ATTACHMENT_DECISION_BLOCK` results directly to `review_state="rejected"`.

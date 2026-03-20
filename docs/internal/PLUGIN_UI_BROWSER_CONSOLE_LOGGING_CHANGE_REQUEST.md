@@ -3,6 +3,12 @@
 **Status**: implemented
 **Date**: 2026-03-05
 
+## Related docs
+
+- [AGENTS.md](../../AGENTS.md)
+- [CURRENT_STATE.md](../../CURRENT_STATE.md)
+- [Architecture](../ARCHITECTURE.md)
+
 ## Summary
 
 The management UI already surfaces plugin debug warnings and plugin action failures in visible page status regions, but operators debugging browser-side integration work still need those warning/error details in the browser console.
